@@ -1,0 +1,2449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OKX跟单交易系统管理平台</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="styles.css" rel="stylesheet">
+
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-currency-exchange"></i>
+                OKX跟单交易系统
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="#" data-page="dashboard">
+                            <i class="bi bi-speedometer2"></i> 仪表板
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="customers">
+                            <i class="bi bi-people"></i> 客户管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="signal-sources">
+                            <i class="bi bi-broadcast"></i> 信号源管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="strategies">
+                            <i class="bi bi-gear"></i> 策略管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="rules">
+                            <i class="bi bi-list-check"></i> 规则管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="trades">
+                            <i class="bi bi-graph-up"></i> 交易记录
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="signal-trades">
+                            <i class="bi bi-broadcast"></i> 信号源交易
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="positions">
+                            <i class="bi bi-bag-check"></i> 当前持仓
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="risk-control">
+                            <i class="bi bi-shield-check"></i> 风控管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="limit-follow">
+                            <i class="bi bi-arrow-repeat"></i> 限价跟单
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="system">
+                            <i class="bi bi-cpu"></i> 系统状态
+                        </a>
+                    </li>
+                </ul>
+                <div class="navbar-nav">
+                    <div class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> 管理员
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="#" id="refreshData"><i class="bi bi-arrow-clockwise"></i> 刷新数据</a></li>
+                            <li><a class="dropdown-item" href="#" id="exportData"><i class="bi bi-download"></i> 导出数据</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="#" id="logout"><i class="bi bi-box-arrow-right"></i> 退出登录</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主要内容区域 -->
+    <div class="main-content">
+        <!-- 仪表板页面 -->
+        <div id="dashboard-page" class="page-content active">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <h2 class="mb-4"><i class="bi bi-speedometer2"></i> 系统仪表板</h2>
+                    </div>
+                </div>
+                
+                <!-- 统计卡片 -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">总客户数</h6>
+                                        <h3 class="mb-0" id="total-customers">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-people-fill text-primary"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">活跃策略</h6>
+                                        <h3 class="mb-0" id="active-strategies">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-gear-fill text-success"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">今日交易</h6>
+                                        <h3 class="mb-0" id="today-trades">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-graph-up-arrow text-warning"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">系统状态</h6>
+                                        <h3 class="mb-0" id="system-status">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-check-circle-fill text-success"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- K线图区域 -->
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">
+                                    专业K线图
+                                    <small class="text-muted ms-2">(上部K线图 + 下部成交量)</small>
+                                </h5>
+                                <div class="kline-controls">
+                                    <input type="text" class="form-control form-control-sm" id="symbolSearch" placeholder="输入币种，如: BTC-USDT-SWAP" value="BTC-USDT-SWAP">
+                                    <select class="form-select form-select-sm" id="timeframeSelect">
+                                        <option value="1m">1分钟</option>
+                                        <option value="5m">5分钟</option>
+                                        <option value="15m" selected>15分钟</option>
+                                        <option value="1H">1小时</option>
+                                        <option value="4H">4小时</option>
+                                        <option value="1D">1天</option>
+                                    </select>
+                                    <button class="btn btn-primary btn-sm" id="loadKlineBtn">
+                                        <i class="bi bi-search"></i> 加载
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="klineChart" style="height: 500px;">
+                                    <div class="separator-line"></div>
+                                    <div class="separator-text">分隔线</div>
+                                    <div class="volume-label">📊 成交量区域</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 最近活动 -->
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">最近活动</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="recent-activities">
+                                    <div class="text-center text-muted">
+                                        <i class="bi bi-hourglass-split"></i>
+                                        正在加载活动数据...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 客户管理页面 -->
+        <div id="customers-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-people"></i> 客户管理</h2>
+                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addCustomerModal">
+                                <i class="bi bi-plus"></i> 添加客户
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 搜索和筛选 -->
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="customerSearch" placeholder="搜索客户名称...">
+                            <button class="btn btn-outline-secondary" type="button" id="customerSearchBtn">
+                                <i class="bi bi-search"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6 text-end">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="customerFilter" id="allCustomers" value="all" checked>
+                            <label class="btn btn-outline-primary" for="allCustomers">全部</label>
+                            <input type="radio" class="btn-check" name="customerFilter" id="enabledCustomers" value="enabled">
+                            <label class="btn btn-outline-primary" for="enabledCustomers">启用</label>
+                            <input type="radio" class="btn-check" name="customerFilter" id="disabledCustomers" value="disabled">
+                            <label class="btn btn-outline-primary" for="disabledCustomers">禁用</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 客户列表 -->
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="customersTable">
+                                <thead>
+                                    <tr>
+                                        <th>客户ID</th>
+                                        <th>名称</th>
+                                        <th>初始资产</th>
+                                        <th>当前资产</th>
+                                        <th>交易资产</th>
+                                        <th>杠杆</th>
+                                        <th>状态</th>
+                                        <th>止损设置</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="customersTableBody">
+                                    <!-- 客户数据将在这里动态加载 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- 分页 -->
+                        <nav aria-label="客户列表分页">
+                            <ul class="pagination justify-content-center" id="customersPagination">
+                                <!-- 分页将在这里动态生成 -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 其他页面内容将在JavaScript中动态生成 -->
+        
+        <!-- 信号源管理页面 -->
+        <div id="signal-sources-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-broadcast"></i> 信号源管理</h2>
+                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addSignalSourceModal">
+                                <i class="bi bi-plus"></i> 添加信号源
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="signalSourceSearch" placeholder="搜索信号源名称...">
+                            <button class="btn btn-outline-secondary" type="button" id="signalSourceSearchBtn">
+                                <i class="bi bi-search"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6 text-end">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="signalSourceFilter" id="allSignalSources" value="all" checked>
+                            <label class="btn btn-outline-primary" for="allSignalSources">全部</label>
+                            <input type="radio" class="btn-check" name="signalSourceFilter" id="enabledSignalSources" value="enabled">
+                            <label class="btn btn-outline-primary" for="enabledSignalSources">启用</label>
+                            <input type="radio" class="btn-check" name="signalSourceFilter" id="disabledSignalSources" value="disabled">
+                            <label class="btn btn-outline-primary" for="disabledSignalSources">禁用</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="signalSourcesTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 15%">信号源ID</th>
+                                        <th style="width: 15%">名称</th>
+                                        <th style="width: 10%">交易所</th>
+                                        <th style="width: 12%">初始资产</th>
+                                        <th style="width: 12%">当前资产</th>
+                                        <th style="width: 8%">杠杆</th>
+                                        <th style="width: 8%">状态</th>
+                                        <th style="width: 10%">止损设置</th>
+                                        <th style="width: 10%">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="signalSourcesTableBody">
+                                    <!-- 信号源数据将在这里动态加载 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <nav aria-label="信号源列表分页">
+                            <ul class="pagination justify-content-center" id="signalSourcesPagination">
+                                <!-- 分页将在这里动态生成 -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 策略管理页面 -->
+        <div id="strategies-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-gear"></i> 策略管理</h2>
+                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addStrategyModal">
+                                <i class="bi bi-plus"></i> 添加策略
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="strategySearch" placeholder="搜索策略名称...">
+                            <button class="btn btn-outline-secondary" type="button" id="strategySearchBtn">
+                                <i class="bi bi-search"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6 text-end">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="strategyFilter" id="allStrategies" value="all" checked>
+                            <label class="btn btn-outline-primary" for="allStrategies">全部</label>
+                            <input type="radio" class="btn-check" name="strategyFilter" id="enabledStrategies" value="enabled">
+                            <label class="btn btn-outline-primary" for="enabledStrategies">启用</label>
+                            <input type="radio" class="btn-check" name="strategyFilter" id="disabledStrategies" value="disabled">
+                            <label class="btn btn-outline-primary" for="disabledStrategies">禁用</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="strategiesTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 15%">策略ID</th>
+                                        <th style="width: 20%">名称</th>
+                                        <th style="width: 20%">信号源</th>
+                                        <th style="width: 12%">信号源数量</th>
+                                        <th style="width: 10%">状态</th>
+                                        <th style="width: 13%">创建时间</th>
+                                        <th style="width: 10%">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="strategiesTableBody">
+                                    <!-- 策略数据将在这里动态加载 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <nav aria-label="策略列表分页">
+                            <ul class="pagination justify-content-center" id="strategiesPagination">
+                                <!-- 分页将在这里动态生成 -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 规则管理页面 -->
+        <div id="rules-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-list-check"></i> 规则管理</h2>
+                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addRuleModal">
+                                <i class="bi bi-plus"></i> 添加规则
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="ruleSearch" placeholder="搜索规则名称...">
+                            <button class="btn btn-outline-secondary" type="button" id="ruleSearchBtn">
+                                <i class="bi bi-search"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-6 text-end">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="ruleFilter" id="allRules" value="all" checked>
+                            <label class="btn btn-outline-primary" for="allRules">全部</label>
+                            <input type="radio" class="btn-check" name="ruleFilter" id="enabledRules" value="enabled">
+                            <label class="btn btn-outline-primary" for="enabledRules">启用</label>
+                            <input type="radio" class="btn-check" name="ruleFilter" id="disabledRules" value="disabled">
+                            <label class="btn btn-outline-primary" for="disabledRules">禁用</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="rulesTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 15%">规则ID</th>
+                                        <th style="width: 20%">名称</th>
+                                        <th style="width: 20%">策略</th>
+                                        <th style="width: 12%">持仓比例</th>
+                                        <th style="width: 12%">最大杠杆</th>
+                                        <th style="width: 10%">状态</th>
+                                        <th style="width: 11%">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rulesTableBody">
+                                    <!-- 规则数据将在这里动态加载 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <nav aria-label="规则列表分页">
+                            <ul class="pagination justify-content-center" id="rulesPagination">
+                                <!-- 分页将在这里动态生成 -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 交易记录页面 -->
+        <div id="trades-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <h2 class="mb-4"><i class="bi bi-graph-up"></i> 交易记录</h2>
+                    </div>
+                </div>
+                
+                <!-- 搜索表单 -->
+                <div class="row mb-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="card-title mb-0"><i class="bi bi-search"></i> 搜索筛选</h6>
+                            </div>
+                            <div class="card-body">
+                                <form id="tradesSearchForm" class="row g-3">
+                                    <div class="col-md-2">
+                                        <label for="searchCustomerUid" class="form-label">客户ID</label>
+                                        <input type="text" class="form-control form-control-sm" id="searchCustomerUid" placeholder="输入客户ID">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="searchCustomerName" class="form-label">客户姓名</label>
+                                        <input type="text" class="form-control form-control-sm" id="searchCustomerName" placeholder="输入客户姓名">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="searchSymbol" class="form-label">交易对</label>
+                                        <input type="text" class="form-control form-control-sm" id="searchSymbol" placeholder="如: BTC-USDT">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="searchDirection" class="form-label">交易方向</label>
+                                        <select class="form-select form-select-sm" id="searchDirection">
+                                            <option value="">全部</option>
+                                            <option value="buy">买入</option>
+                                            <option value="sell">卖出</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="searchPosSide" class="form-label">持仓方向</label>
+                                        <select class="form-select form-select-sm" id="searchPosSide">
+                                            <option value="">全部</option>
+                                            <option value="long">多头</option>
+                                            <option value="short">空头</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="searchStatus" class="form-label">状态</label>
+                                        <select class="form-select form-select-sm" id="searchStatus">
+                                            <option value="">全部</option>
+                                            <option value="open">开仓中</option>
+                                            <option value="closed">已平仓</option>
+                                            <option value="pending">待处理</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2 d-flex align-items-end">
+                                        <div class="d-grid gap-2 d-md-block w-100">
+                                            <button type="submit" class="btn btn-primary btn-sm">
+                                                <i class="bi bi-search"></i> 搜索
+                                            </button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm" id="resetSearchBtn">
+                                                <i class="bi bi-arrow-clockwise"></i> 重置
+                                            </button>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+
+                
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <button class="btn btn-outline-primary" id="exportTradesBtn">
+                            <i class="bi bi-download"></i> 导出交易记录
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="tradesTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 10%">交易ID</th>
+                                        <th style="width: 8%">客户ID</th>
+                                        <th style="width: 10%">客户姓名</th>
+                                        <th style="width: 10%">交易对</th>
+                                        <th style="width: 8%">方向</th>
+                                        <th style="width: 10%">持仓方向</th>
+                                        <th style="width: 8%">数量</th>
+                                        <th style="width: 10%">开仓价格</th>
+                                        <th style="width: 8%">状态</th>
+                                        <th style="width: 12%">创建时间</th>
+                                        <th style="width: 12%">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tradesTableBody">
+                                    <!-- 交易数据将在这里动态加载 -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <nav aria-label="交易记录分页">
+                            <ul class="pagination justify-content-center" id="tradesPagination">
+                                <!-- 分页将在这里动态生成 -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 交易详情弹窗 -->
+        <div class="modal fade" id="tradeDetailModal" tabindex="-1" aria-labelledby="tradeDetailModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="tradeDetailModalLabel">
+                            <i class="bi bi-info-circle"></i> 交易详情
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="fw-bold">基本信息</h6>
+                                <table class="table table-sm">
+                                    <tr><td><strong>交易ID:</strong></td><td id="detailTradeUid"></td></tr>
+                                    <tr><td><strong>客户ID:</strong></td><td id="detailCustomerUid"></td></tr>
+                                    <tr><td><strong>客户姓名:</strong></td><td id="detailCustomerName"></td></tr>
+                                    <tr><td><strong>交易对:</strong></td><td id="detailSymbol"></td></tr>
+                                    <tr><td><strong>交易方向:</strong></td><td id="detailDirection"></td></tr>
+                                    <tr><td><strong>持仓方向:</strong></td><td id="detailPosSide"></td></tr>
+                                </table>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="fw-bold">交易信息</h6>
+                                <table class="table table-sm">
+                                    <tr><td><strong>数量:</strong></td><td id="detailVolume"></td></tr>
+                                    <tr><td><strong>开仓价格:</strong></td><td id="detailOpenPx"></td></tr>
+                                    <tr><td><strong>当前价格:</strong></td><td id="detailCurrentPx"></td></tr>
+                                    <tr><td><strong>状态:</strong></td><td id="detailStatus"></td></tr>
+                                    <tr><td><strong>创建时间:</strong></td><td id="detailCreatedAt"></td></tr>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <h6 class="fw-bold">订单信息</h6>
+                                <table class="table table-sm">
+                                    <tr><td><strong>订单ID:</strong></td><td id="detailOrderId"></td></tr>
+                                    <tr><td><strong>杠杆倍数:</strong></td><td id="detailLeverage"></td></tr>
+                                    <tr><td><strong>保证金:</strong></td><td id="detailMargin"></td></tr>
+                                    <tr><td><strong>手续费:</strong></td><td id="detailFee"></td></tr>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <h6 class="fw-bold">盈亏计算</h6>
+                                <table class="table table-sm">
+                                    <tr><td><strong>未实现盈亏:</strong></td><td id="detailUnrealizedPnl"></td></tr>
+                                    <tr><td><strong>收益率:</strong></td><td id="detailReturnRate"></td></tr>
+                                    <tr><td><strong>风险等级:</strong></td><td id="detailRiskLevel"></td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <div id="tradeActionButtons">
+                            <!-- 操作按钮将在这里动态生成 -->
+                        </div>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 风控管理页面 -->
+        <div id="risk-control-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <h2 class="mb-4"><i class="bi bi-shield-check"></i> 风控管理</h2>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-lg-6 col-md-12 mb-3">
+                        <div class="card h-100">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">风控配置</h5>
+                            </div>
+                            <div class="card-body">
+                                <form id="riskConfigForm">
+                                    <div class="mb-3">
+                                        <label for="maxPositionsPerDirection" class="form-label">单方向最大持仓数量</label>
+                                        <input type="number" class="form-control" id="maxPositionsPerDirection" min="1" max="100">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="minTradeIntervalMinutes" class="form-label">最小开仓间隔（分钟）</label>
+                                        <input type="number" class="form-control" id="minTradeIntervalMinutes" min="1" max="1440">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="maxLeverage" class="form-label">最大杠杆倍数</label>
+                                        <input type="number" class="form-control" id="maxLeverage" min="1" max="100">
+                                    </div>
+                                    <div class="mb-3">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="enableTimeIntervalCheck">
+                                            <label class="form-check-label" for="enableTimeIntervalCheck">
+                                                启用时间间隔检查
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="enablePositionLimitCheck">
+                                            <label class="form-check-label" for="enablePositionLimitCheck">
+                                                启用持仓数量限制检查
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary">保存配置</button>
+                                    <button type="button" class="btn btn-outline-secondary ms-2" id="resetRiskConfigBtn">重置配置</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-lg-6 col-md-12 mb-3">
+                        <div class="card h-100">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">风控检查</h5>
+                            </div>
+                            <div class="card-body">
+                                <form id="riskCheckForm">
+                                    <div class="mb-3">
+                                        <label for="riskCheckCustomerUid" class="form-label">客户UID</label>
+                                        <input type="text" class="form-control" id="riskCheckCustomerUid" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="riskCheckSymbol" class="form-label">交易对</label>
+                                        <input type="text" class="form-control" id="riskCheckSymbol" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="riskCheckDirection" class="form-label">交易方向</label>
+                                        <select class="form-select" id="riskCheckDirection" required>
+                                            <option value="">请选择</option>
+                                            <option value="buy">买入</option>
+                                            <option value="sell">卖出</option>
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="riskCheckPosSide" class="form-label">持仓方向</label>
+                                        <select class="form-select" id="riskCheckPosSide" required>
+                                            <option value="">请选择</option>
+                                            <option value="long">多头</option>
+                                            <option value="short">空头</option>
+                                        </select>
+                                    </div>
+                                    <button type="submit" class="btn btn-warning">执行风控检查</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">风控日志</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="riskControlLogs">
+                                    <div class="text-center text-muted">
+                                        <i class="bi bi-info-circle"></i>
+                                        暂无风控日志
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 限价跟单管理页面 -->
+        <div id="limit-follow-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <h2 class="mb-4"><i class="bi bi-arrow-repeat"></i> 限价跟单管理</h2>
+                    </div>
+                </div>
+                
+                <!-- 跟单员管理 -->
+                <div class="row mb-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">跟单员管理</h5>
+                                <button class="btn btn-success" id="addLimitFollowTrader">
+                                    <i class="bi bi-person-plus"></i> 新建跟单员
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm" id="limitFollowTradersTable">
+                                        <thead>
+                                            <tr>
+                                                <th>跟单员ID</th>
+                                                <th>名称</th>
+                                                <th>描述</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">跟单策略管理</h5>
+                                <button class="btn btn-primary" id="addLimitFollowStrategy">
+                                    <i class="bi bi-plus-circle"></i> 新建策略
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm" id="limitFollowStrategiesTable">
+                                        <thead>
+                                            <tr>
+                                                <th>策略名称</th>
+                                                <th>跟单员</th>
+                                                <th>客户</th>
+                                                <th>交易对</th>
+                                                <th>方向</th>
+                                                <th>跟单类型</th>
+                                                <th>跟单值</th>
+                                                <th>状态</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">跟单订单管理</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm" id="limitFollowOrdersTable">
+                                        <thead>
+                                            <tr>
+                                                <th>订单ID</th>
+                                                <th>客户</th>
+                                                <th>交易对</th>
+                                                <th>方向</th>
+                                                <th>目标价格</th>
+                                                <th>数量</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统状态页面 -->
+        <div id="system-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <h2 class="mb-4"><i class="bi bi-cpu"></i> 系统状态</h2>
+                    </div>
+                </div>
+                
+                <div class="row mb-4">
+                    <div class="col-lg-3 col-md-6 mb-3">
+                        <div class="card stat-card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">数据库状态</h6>
+                                        <h3 class="mb-0" id="db-status">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-database-fill text-primary"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6 mb-3">
+                        <div class="card stat-card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">WebSocket状态</h6>
+                                        <h3 class="mb-0" id="ws-status">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-wifi text-success"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6 mb-3">
+                        <div class="card stat-card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">交易服务状态</h6>
+                                        <h3 class="mb-0" id="trade-service-status">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-gear-fill text-warning"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6 mb-3">
+                        <div class="card stat-card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">内存使用</h6>
+                                        <h3 class="mb-0" id="memory-usage">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-memory text-info"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-lg-6 col-md-12 mb-3">
+                        <div class="card h-100">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">系统健康检查</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="healthCheckResults">
+                                    <div class="text-center text-muted">
+                                        <i class="bi bi-hourglass-split"></i>
+                                        正在检查系统状态...
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary mt-3" id="runHealthCheckBtn">
+                                    <i class="bi bi-arrow-clockwise"></i> 重新检查
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-lg-6 col-md-12 mb-3">
+                        <div class="card h-100">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">系统操作</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-outline-primary" id="reloadRulesBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> 重新加载规则
+                                    </button>
+                                    <button class="btn btn-outline-primary" id="reloadCustomersBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> 重新加载客户
+                                    </button>
+                                    <button class="btn btn-outline-primary" id="reloadSignalSourcesBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> 重新加载信号源
+                                    </button>
+                                    <button class="btn btn-outline-warning" id="reloadTradeServiceBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> 重新加载交易服务
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">系统日志</h5>
+                                <div class="d-flex align-items-center gap-2">
+                                    <select class="form-select form-select-sm" id="systemLogsPageSize" style="width: auto;">
+                                        <option value="5">5条/页</option>
+                                        <option value="10" selected>10条/页</option>
+                                        <option value="20">20条/页</option>
+                                        <option value="50">50条/页</option>
+                                    </select>
+                                    <button class="btn btn-sm btn-outline-primary" id="refreshSystemLogsBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" id="testSystemLogsPaginationBtn">
+                                        <i class="bi bi-bug"></i> 测试分页
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="systemLogs">
+                                    <div class="text-center text-muted">
+                                        <i class="bi bi-file-text"></i>
+                                        暂无系统日志
+                                    </div>
+                                </div>
+                                
+                                <!-- 调试信息区域 -->
+                                <div id="systemLogsDebug" class="mt-3 p-2 bg-light rounded" style="display: none;">
+                                    <small class="text-muted">
+                                        <strong>调试信息:</strong><br>
+                                        <span id="debugInfo">等待数据加载...</span>
+                                    </small>
+                            </div>
+                                
+                                <!-- 分页控件 -->
+                                <div id="systemLogsPagination" class="d-flex justify-content-between align-items-center mt-3" style="display: none;">
+                                    <div class="d-flex align-items-center">
+                                        <div class="text-muted">
+                                            共 <span id="systemLogsTotal">0</span> 条日志
+                                        </div>
+                                    </div>
+                                    <nav aria-label="系统日志分页">
+                                        <ul class="pagination pagination-sm mb-0">
+                                            <li class="page-item" id="systemLogsPrevBtn">
+                                                <a class="page-link" href="#" aria-label="上一页">
+                                                    <span aria-hidden="true">&laquo;</span>
+                                                </a>
+                                            </li>
+                                            <li class="page-item" id="systemLogsNextBtn">
+                                                <a class="page-link" href="#" aria-label="下一页">
+                                                    <span aria-hidden="true">&raquo;</span>
+                                                </a>
+                                            </li>
+                                        </ul>
+                                    </nav>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    <!-- 信号源交易页面 -->
+    <div id="signal-trades-page" class="page-content">
+        <div class="container-fluid">
+            <div class="row">
+                <div class="col-12">
+                    <h2 class="mb-4"><i class="bi bi-broadcast"></i> 信号源交易记录</h2>
+                </div>
+            </div>
+            
+            <!-- 搜索和筛选 -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <form id="signalTradesSearchForm" class="row g-3">
+                                <div class="col-md-2">
+                                    <label for="signalTradesSearch" class="form-label">搜索信号源</label>
+                                    <input type="text" class="form-control" id="signalTradesSearch" placeholder="输入信号源ID">
+                                </div>
+                                <div class="col-md-2">
+                                    <label for="signalTradesSymbol" class="form-label">交易对</label>
+                                    <input type="text" class="form-control" id="signalTradesSymbol" placeholder="输入交易对">
+                                </div>
+                                <div class="col-md-2">
+                                    <label for="signalTradesStatus" class="form-label">状态</label>
+                                    <select class="form-select" id="signalTradesStatus">
+                                        <option value="">全部</option>
+                                        <option value="open">开仓中</option>
+                                        <option value="closed">已平仓</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label for="signalTradesDirection" class="form-label">方向</label>
+                                    <select class="form-select" id="signalTradesDirection">
+                                        <option value="">全部</option>
+                                        <option value="long">多</option>
+                                        <option value="short">空</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">&nbsp;</label>
+                                    <div class="d-grid">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="bi bi-search"></i> 搜索
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">&nbsp;</label>
+                                    <div class="d-grid">
+                                        <button type="button" class="btn btn-outline-secondary" id="resetSignalTradesSearchBtn">
+                                            <i class="bi bi-arrow-clockwise"></i> 重置
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+
+            
+            <!-- 信号源交易记录表格 -->
+            <div class="row">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">信号源交易记录</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>交易ID</th>
+                                            <th>信号源</th>
+                                            <th>交易对</th>
+                                            <th>方向</th>
+                                            <th>数量</th>
+                                            <th>开仓价格</th>
+                                            <th>平仓价格</th>
+                                            <th>盈亏</th>
+                                            <th>状态</th>
+                                            <th>开仓时间</th>
+                                            <th>平仓时间</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="signalTradesTableBody">
+                                        <tr>
+                                            <td colspan="12" class="text-center text-muted">加载中...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <!-- 分页 -->
+                            <div class="d-flex justify-content-between align-items-center mt-3">
+                                <div class="text-muted">
+                                    共 <span id="signalTradesTotalCount">0</span> 条记录
+                                </div>
+                                <nav>
+                                    <ul class="pagination pagination-sm mb-0" id="signalTradesPagination">
+                                        <li class="page-item disabled">
+                                            <a class="page-link" href="#" tabindex="-1">上一页</a>
+                                        </li>
+                                        <li class="page-item active">
+                                            <a class="page-link" href="#">1</a>
+                                        </li>
+                                        <li class="page-item disabled">
+                                            <a class="page-link" href="#">下一页</a>
+                                        </li>
+                                    </ul>
+                                </nav>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 当前持仓页面 -->
+    <div id="positions-page" class="page-content">
+        <div class="container-fluid">
+            <div class="row">
+                <div class="col-12">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2><i class="bi bi-bag-check"></i> 当前持仓</h2>
+                        <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#manualOpenPositionModal">
+                            <i class="bi bi-plus-circle"></i> 手动开仓
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+
+            
+            <!-- 持仓统计 -->
+            <div class="row mb-4">
+                <div class="col-md-3">
+                    <div class="card stat-card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h6 class="card-title text-muted">信号源持仓</h6>
+                                    <h3 class="mb-0" id="signal-positions-count">-</h3>
+                                </div>
+                                <div class="stat-icon">
+                                    <i class="bi bi-broadcast text-primary"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h6 class="card-title text-muted">客户持仓</h6>
+                                    <h3 class="mb-0" id="customer-positions-count">-</h3>
+                                </div>
+                                <div class="stat-icon">
+                                    <i class="bi bi-people text-success"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h6 class="card-title text-muted">总持仓价值</h6>
+                                    <h3 class="mb-0" id="total-positions-value">-</h3>
+                                </div>
+                                <div class="stat-icon">
+                                    <i class="bi bi-currency-dollar text-warning"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between">
+                                <div>
+                                    <h6 class="card-title text-muted">持仓状态</h6>
+                                    <h3 class="mb-0" id="positions-status">-</h3>
+                                </div>
+                                <div class="stat-icon">
+                                    <i class="bi bi-check-circle text-success"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 未成交订单 -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-clock-history"></i> 未成交订单
+                            </h5>
+                            <div>
+                                <button class="btn btn-outline-warning btn-sm" id="refreshPendingOrdersBtn">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                                </button>
+                                <button class="btn btn-outline-danger btn-sm" id="cancelAllPendingOrdersBtn">
+                                    <i class="bi bi-x-circle"></i> 撤单全部
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" id="cleanupDuplicatesBtn">
+                                    <i class="bi bi-trash"></i> 清理重复
+                                </button>
+                                <button class="btn btn-outline-warning btn-sm" id="cleanupInvalidPositionsBtn">
+                                    <i class="bi bi-exclamation-triangle"></i> 清理无效持仓
+                                </button>
+                                <button class="btn btn-outline-info btn-sm" id="debugOrdersBtn">
+                                    <i class="bi bi-bug"></i> 调试订单
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover" id="pendingOrdersTable">
+                                    <thead>
+                                        <tr>
+                                            <th>账户</th>
+                                            <th>交易对</th>
+                                            <th>方向</th>
+                                            <th>数量</th>
+                                            <th>价格</th>
+                                            <th>状态</th>
+                                            <th>创建时间</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="pendingOrdersTableBody">
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted">
+                                                <i class="bi bi-hourglass-split"></i> 正在加载未成交订单...
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 信号源持仓 -->
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-broadcast"></i> 信号源持仓
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>信号源</th>
+                                            <th>交易对</th>
+                                            <th>方向</th>
+                                            <th>总数量</th>
+                                            <th>已平仓</th>
+                                            <th>剩余数量</th>
+                                            <th>平均开仓价</th>
+                                            <th>首次开仓</th>
+                                            <th>最后开仓</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="signalPositionsTableBody">
+                                        <tr>
+                                            <td colspan="10" class="text-center text-muted">加载中...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 客户持仓 -->
+            <div class="row">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-people"></i> 客户持仓
+                            </h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>客户ID</th>
+                                            <th>交易对</th>
+                                            <th>方向</th>
+                                            <th>总数量</th>
+                                            <th>已平仓</th>
+                                            <th>剩余数量</th>
+                                            <th>平均开仓价</th>
+                                            <th>首次开仓</th>
+                                            <th>最后开仓</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="customerPositionsTableBody">
+                                        <tr>
+                                            <td colspan="10" class="text-center text-muted">加载中...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加客户模态框 -->
+    <div class="modal fade" id="addCustomerModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加新客户</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addCustomerForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="customerName" class="form-label">客户名称 *</label>
+                                    <input type="text" class="form-control" id="customerName" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="customerUid" class="form-label">客户UID *</label>
+                                    <input type="text" class="form-control" id="customerUid" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="apiKey" class="form-label">API Key *</label>
+                                    <input type="text" class="form-control" id="apiKey" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="apiSecret" class="form-label">API Secret *</label>
+                                    <input type="password" class="form-control" id="apiSecret" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="passphrase" class="form-label">Passphrase *</label>
+                                    <input type="password" class="form-control" id="passphrase" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="initAsset" class="form-label">初始资产 *</label>
+                                    <input type="number" class="form-control" id="initAsset" step="0.01" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="leverage" class="form-label">杠杆倍数</label>
+                                    <input type="number" class="form-control" id="leverage" value="1" min="1" max="100">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="stopLossPercent" class="form-label">止损百分比</label>
+                                    <input type="number" class="form-control" id="stopLossPercent" step="0.1" min="0" max="100">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="isDemo">
+                                <label class="form-check-label" for="isDemo">
+                                    模拟账户
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveCustomerBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加策略模态框 -->
+    <div class="modal fade" id="addStrategyModal" tabindex="-1" aria-labelledby="addStrategyModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addStrategyModalLabel">添加策略</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addStrategyForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="strategyName" class="form-label">策略名称 *</label>
+                                    <input type="text" class="form-control" id="strategyName" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="strategyDescription" class="form-label">策略描述</label>
+                                    <input type="text" class="form-control" id="strategyDescription">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSources" class="form-label">信号源 *</label>
+                                    <select class="form-select" id="signalSources" multiple required>
+                                        <option value="">请选择信号源</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="strategyType" class="form-label">策略类型</label>
+                                    <select class="form-select" id="strategyType">
+                                        <option value="trend">趋势跟踪</option>
+                                        <option value="arbitrage">套利策略</option>
+                                        <option value="grid">网格交易</option>
+                                        <option value="other">其他</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="strategyEnabled" checked>
+                                <label class="form-check-label" for="strategyEnabled">
+                                    启用策略
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveStrategyBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建跟单员模态框 -->
+    <div class="modal fade" id="addLimitFollowTraderModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">新建跟单员</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addLimitFollowTraderForm">
+                        <div class="mb-3">
+                            <label for="traderUniqueName" class="form-label">跟单员唯一标识</label>
+                            <input type="text" class="form-control" id="traderUniqueName" placeholder="如：BFF0B05FDCC878AA" required>
+                            <div class="form-text">从OKX社区获取的跟单员唯一标识</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="traderName" class="form-label">跟单员名称</label>
+                            <input type="text" class="form-control" id="traderName" placeholder="请输入跟单员名称" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="traderDescription" class="form-label">描述</label>
+                            <textarea class="form-control" id="traderDescription" rows="3" placeholder="跟单员的相关描述信息"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="traderEnabled" checked>
+                                <label class="form-check-label" for="traderEnabled">
+                                    启用跟单员
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveLimitFollowTraderBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 限价跟单策略模态框 -->
+    <div class="modal fade" id="addLimitFollowStrategyModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">添加限价跟单策略</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addLimitFollowStrategyForm">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyName" class="form-label">策略名称</label>
+                                    <input type="text" class="form-control" id="limitFollowStrategyName" placeholder="请输入策略名称" required>
+                                    <div class="form-text">为您的限价跟单策略起一个便于识别的名称</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyCustomer" class="form-label">客户</label>
+                                    <select class="form-select" id="limitFollowStrategyCustomer" required>
+                                        <option value="">选择客户</option>
+                                    </select>
+                                    <div class="form-text">客户可以是普通客户或信号源</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyTrader" class="form-label">跟单员</label>
+                                    <select class="form-select" id="limitFollowStrategyTrader" required>
+                                        <option value="">选择跟单员</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategySymbol" class="form-label">交易对设置</label>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="radio" name="symbolType" id="symbolTypeAll" value="all" checked>
+                                        <label class="form-check-label" for="symbolTypeAll">
+                                            <strong>跟随全部交易对</strong> - 自动跟随跟单员的所有交易品种
+                                        </label>
+                                    </div>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="radio" name="symbolType" id="symbolTypeSpecific" value="specific">
+                                        <label class="form-check-label" for="symbolTypeSpecific">
+                                            <strong>指定交易对</strong> - 只跟随特定的交易品种
+                                        </label>
+                                    </div>
+                                    <div id="specificSymbolsContainer" style="display: none;">
+                                        <div class="mb-2">
+                                            <label for="limitFollowStrategySymbols" class="form-label">交易对列表</label>
+                                            <select class="form-select" id="limitFollowStrategySymbols" multiple>
+                                                <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                                                <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                                                <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
+                                                <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
+                                                <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
+                                            </select>
+                                            <div class="form-text">按住Ctrl键可多选，留空表示跟随全部</div>
+                                        </div>
+                                    </div>
+                                    <div class="form-text">
+                                        <strong>智能跟随：</strong><br>
+                                        • 选择"跟随全部"时，系统会自动检测跟单员的新增交易品种<br>
+                                        • 选择"指定交易对"时，只跟随您明确选择的品种<br>
+                                        • 建议使用"跟随全部"以获得更好的跟单效果
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyPosSide" class="form-label">持仓方向</label>
+                                    <select class="form-select" id="limitFollowStrategyPosSide">
+                                        <option value="both" selected>双向跟随</option>
+                                        <option value="long">仅多仓</option>
+                                        <option value="short">仅空仓</option>
+                                    </select>
+                                    <div class="form-text">选择双向跟随可同时跟随多仓和空仓信号</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyFollowType" class="form-label">跟单类型</label>
+                                    <select class="form-select" id="limitFollowStrategyFollowType" required>
+                                        <option value="percentage">百分比</option>
+                                        <option value="fixed">固定价格</option>
+                                    </select>
+                                </div>
+                                <!-- 跟单值 -->
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyFollowValue" class="form-label">跟单值 (%)</label>
+                                    <input type="number" class="form-control" id="limitFollowStrategyFollowValue" 
+                                           step="0.1" min="0.1" max="10" value="1" required>
+                                    <div class="form-text">
+                                        <strong>价格偏移百分比：</strong><br>
+                                        • 多仓跟单：比跟单员便宜 1%/2%/3%/4% 挂单<br>
+                                        • 空仓跟单：比跟单员贵 1%/2%/3%/4% 挂单<br>
+                                        • 每个订单数量相同，按策略配置计算
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- 最小跟单值 -->
+                        <div class="mb-3">
+                            <label for="limitFollowStrategyMinFollowValue" class="form-label">最小跟单值 (%)</label>
+                            <input type="number" class="form-control" id="limitFollowStrategyMinFollowValue" 
+                                   step="0.1" min="0.1" max="5" value="0.5" required>
+                            <div class="form-text">
+                                <strong>最小价格偏移：</strong>防止价格偏移太小，建议 0.5%
+                            </div>
+                        </div>
+                        <!-- 最大跟单值 -->
+                        <div class="mb-3">
+                            <label for="limitFollowStrategyMaxFollowValue" class="form-label">最大跟单值 (%)</label>
+                            <input type="number" class="form-control" id="limitFollowStrategyMaxFollowValue" 
+                                   step="0.1" min="1" max="10" value="4" required>
+                            <div class="form-text">
+                                <strong>最大价格偏移：</strong>控制风险上限，建议 4%
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyMaxOrdersPerSignal" class="form-label">每个信号源最大跟单数量</label>
+                                    <input type="number" class="form-control" id="limitFollowStrategyMaxOrdersPerSignal" min="1" max="10" value="4">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyMaxNetLeverage" class="form-label">最大净杠杆值</label>
+                                    <input type="number" class="form-control" id="limitFollowStrategyMaxNetLeverage" value="10.0" min="0.1" max="100.0" step="0.1">
+                                    <div class="form-text">策略允许的最大净杠杆倍数</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="limitFollowStrategyProportionalPosition">
+                                        <label class="form-check-label" for="limitFollowStrategyProportionalPosition">
+                                            启用按比例开仓
+                                        </label>
+                                        <div class="form-text">根据当前持仓和可用保证金按比例计算开仓数量</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyAutoCancelOnSignalClose" class="form-label">信号源平仓时自动撤单</label>
+                                    <select class="form-select" id="limitFollowStrategyAutoCancelOnSignalClose">
+                                        <option value="true">是</option>
+                                        <option value="false">否</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary" id="saveLimitFollowModalStrategy">保存策略</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 执行限价跟单模态框 -->
+    <div class="modal fade" id="executeLimitFollowModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">执行限价跟单</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="executeLimitFollowForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="executionCustomer" class="form-label">客户</label>
+                                    <select class="form-select" id="executionCustomer" required>
+                                        <option value="">选择客户</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="executionSignalSource" class="form-label">信号源</label>
+                                    <select class="form-select" id="executionSignalSource" required>
+                                        <option value="">选择信号源</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="executionSymbol" class="form-label">交易对</label>
+                                    <input type="text" class="form-control" id="executionSymbol" placeholder="BTC-USDT-SWAP" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="executionPosSide" class="form-label">持仓方向</label>
+                                    <select class="form-select" id="executionPosSide" required>
+                                        <option value="long">多仓</option>
+                                        <option value="short">空仓</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="executionSignalPrice" class="form-label">信号价格</label>
+                                    <input type="number" class="form-control" id="executionSignalPrice" step="0.00000001" min="0" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="executionSignalVolume" class="form-label">信号数量</label>
+                                    <input type="number" class="form-control" id="executionSignalVolume" step="0.00000001" min="0" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="executionFollowPercentages" class="form-label">跟单百分比</label>
+                            <input type="text" class="form-control" id="executionFollowPercentages" placeholder="1.0,2.0,3.0,4.0" value="1.0,2.0,3.0,4.0" required>
+                            <div class="form-text">用逗号分隔的百分比值，最多4个</div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="submitLimitFollowExecution">执行跟单</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加规则模态框 -->
+    <div class="modal fade" id="addRuleModal" tabindex="-1" aria-labelledby="addRuleModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addRuleModalLabel">添加规则</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addRuleForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="ruleName" class="form-label">规则名称 *</label>
+                                    <input type="text" class="form-control" id="ruleName" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="ruleStrategy" class="form-label">所属策略 *</label>
+                                    <select class="form-select" id="ruleStrategy" required>
+                                        <option value="">请选择策略</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="positionRatio" class="form-label">持仓比例 *</label>
+                                    <input type="number" class="form-control" id="positionRatio" step="0.1" min="0" max="10" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="maxLeverage" class="form-label">最大杠杆 *</label>
+                                    <input type="number" class="form-control" id="maxLeverage" step="0.1" min="1" max="100" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="stopLossPercent" class="form-label">止损百分比</label>
+                                    <input type="number" class="form-control" id="ruleStopLossPercent" step="0.1" min="0" max="100">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="takeProfitPercent" class="form-label">止盈百分比</label>
+                                    <input type="number" class="form-control" id="takeProfitPercent" step="0.1" min="0" max="100">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="ruleEnabled" checked>
+                                <label class="form-check-label" for="ruleEnabled">
+                                    启用规则
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveRuleBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加信号源模态框 -->
+    <div class="modal fade" id="addSignalSourceModal" tabindex="-1" aria-labelledby="addSignalSourceModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addSignalSourceModalLabel">添加信号源</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addSignalSourceForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceName" class="form-label">信号源名称 *</label>
+                                    <input type="text" class="form-control" id="signalSourceName" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceExchange" class="form-label">交易所 *</label>
+                                    <select class="form-select" id="signalSourceExchange" required>
+                                        <option value="">请选择交易所</option>
+                                        <option value="OKX">OKX</option>
+                                        <option value="Binance">Binance</option>
+                                        <option value="Bybit">Bybit</option>
+                                        <option value="Gate">Gate</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceApiKey" class="form-label">API Key *</label>
+                                    <input type="text" class="form-control" id="signalSourceApiKey" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceApiSecret" class="form-label">API Secret *</label>
+                                    <input type="password" class="form-control" id="signalSourceApiSecret" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourcePassphrase" class="form-label">Passphrase *</label>
+                                    <input type="password" class="form-control" id="signalSourcePassphrase" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceInitAsset" class="form-label">初始资产 *</label>
+                                    <input type="number" class="form-control" id="signalSourceInitAsset" step="0.01" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceLeverage" class="form-label">杠杆倍数</label>
+                                    <input type="number" class="form-control" id="signalSourceLeverage" value="1" min="1" max="100">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="signalSourceStopLossPercent" class="form-label">止损百分比</label>
+                                    <input type="number" class="form-control" id="signalSourceStopLossPercent" step="0.1" min="0" max="100">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="signalSourceEnabled" checked>
+                                <label class="form-check-label" for="signalSourceEnabled">
+                                    启用信号源
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveSignalSourceBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 持仓详情模态框 -->
+    <div class="modal fade" id="positionDetailsModal" tabindex="-1" aria-labelledby="positionDetailsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="positionDetailsModalLabel">持仓详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>基本信息</h6>
+                            <table class="table table-sm">
+                                <tr><td><strong>账户类型:</strong></td><td id="positionAccountType">-</td></tr>
+                                <tr><td><strong>账户ID:</strong></td><td id="positionAccountId">-</td></tr>
+                                <tr><td><strong>交易对:</strong></td><td id="positionSymbol">-</td></tr>
+                                <tr><td><strong>持仓方向:</strong></td><td id="positionPosSide">-</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>持仓统计</h6>
+                            <table class="table table-sm">
+                                <tr><td><strong>总数量:</strong></td><td id="positionTotalVolume">-</td></tr>
+                                <tr><td><strong>已平仓:</strong></td><td id="positionClosedVolume">-</td></tr>
+                                <tr><td><strong>剩余数量:</strong></td><td id="positionRemainingVolume">-</td></tr>
+                                <tr><td><strong>平均开仓价:</strong></td><td id="positionAvgOpenPrice">-</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h6>交易记录</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>交易ID</th>
+                                            <th>开仓时间</th>
+                                            <th>数量</th>
+                                            <th>开仓价格</th>
+                                            <th>状态</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="positionTradesTableBody">
+                                        <tr><td colspan="5" class="text-center text-muted">加载中...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    <button type="button" class="btn btn-warning" id="closePositionBtn">平仓</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 手动开仓模态框 -->
+    <div class="modal fade" id="manualOpenPositionModal" tabindex="-1" aria-labelledby="manualOpenPositionModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="manualOpenPositionModalLabel">手动开仓</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="manualOpenPositionForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualAccountType" class="form-label">账户类型 *</label>
+                                    <select class="form-select" id="manualAccountType" required>
+                                        <option value="">请选择账户类型</option>
+                                        <option value="customer">客户账户</option>
+                                        <option value="signal">信号源账户</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualAccount" class="form-label">账户 *</label>
+                                    <select class="form-select" id="manualAccount" required>
+                                        <option value="">请先选择账户类型</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualStrategy" class="form-label">策略</label>
+                                    <select class="form-select" id="manualStrategy">
+                                        <option value="manual">手动操作</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualRule" class="form-label">规则</label>
+                                    <select class="form-select" id="manualRule">
+                                        <option value="manual">手动操作</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualRule" class="form-label">规则</label>
+                                    <select class="form-select" id="manualRule">
+                                        <option value="manual">手动操作</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualSymbol" class="form-label">交易对 *</label>
+                                    <select class="form-select" id="manualSymbol" required>
+                                        <option value="">请选择交易对</option>
+                                        <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                                        <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                                        <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
+                                        <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
+                                        <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
+                                        <option value="AVAX-USDT-SWAP">AVAX-USDT-SWAP</option>
+                                        <option value="ARB-USDT-SWAP">ARB-USDT-SWAP</option>
+                                        <option value="DOT-USDT-SWAP">DOT-USDT-SWAP</option>
+                                        <option value="LINK-USDT-SWAP">LINK-USDT-SWAP</option>
+                                        <option value="UNI-USDT-SWAP">UNI-USDT-SWAP</option>
+                                        <option value="custom">自定义交易对</option>
+                                    </select>
+                                    <input type="text" class="form-control mt-2" id="manualSymbolCustom" placeholder="输入自定义交易对" style="display: none;">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualDirection" class="form-label">交易方向 *</label>
+                                    <select class="form-select" id="manualDirection" required>
+                                        <option value="long">多</option>
+                                        <option value="short">空</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualVolume" class="form-label">数量 *</label>
+                                    <input type="number" class="form-control" id="manualVolume" step="0.01" required>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualOrderType" class="form-label">订单类型 *</label>
+                                    <select class="form-select" id="manualOrderType" required>
+                                        <option value="market">市价单</option>
+                                        <option value="limit">限价单</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="manualPrice" class="form-label">价格</label>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control" id="manualPrice" step="0.01" placeholder="限价单时必填">
+                                        <button class="btn btn-outline-secondary" type="button" id="getCurrentPriceBtn">
+                                            <i class="bi bi-arrow-clockwise"></i> 获取实时价格
+                                        </button>
+                                    </div>
+                                    <div class="form-text" id="priceHelpText">市价单时无需填写价格</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row" id="priceAdjustmentRow" style="display: none;">
+                            <div class="col-md-12">
+                                <div class="mb-3">
+                                    <label class="form-label">价格微调</label>
+                                    <div class="btn-group" role="group">
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="priceMinus5">-5%</button>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="priceMinus1">-1%</button>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="priceMinus01">-0.1%</button>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="priceReset">重置</button>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="pricePlus01">+0.1%</button>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="pricePlus1">+1%</button>
+                                        <button type="button" class="btn btn-outline-primary btn-sm" id="pricePlus5">+5%</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="manualIsDemo">
+                                <label class="form-check-label" for="manualIsDemo">
+                                    模拟账户
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <!-- 撤单功能区域 -->
+                        <div class="card mt-3" id="cancelOrderSection" style="display: none;">
+                            <div class="card-header">
+                                <h6 class="mb-0">
+                                    <i class="bi bi-x-circle"></i> 撤单管理
+                                </h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <button type="button" class="btn btn-outline-warning btn-sm" id="refreshOrdersBtn">
+                                            <i class="bi bi-arrow-clockwise"></i> 刷新订单状态
+                                        </button>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <button type="button" class="btn btn-outline-danger btn-sm" id="cancelAllOrdersBtn">
+                                            <i class="bi bi-x-circle"></i> 撤单所有未成交订单
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <div class="mt-3">
+                                    <h6>未成交订单列表</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm" id="pendingOrdersTable">
+                                            <thead>
+                                                <tr>
+                                                    <th>订单ID</th>
+                                                    <th>交易对</th>
+                                                    <th>方向</th>
+                                                    <th>数量</th>
+                                                    <th>状态</th>
+                                                    <th>创建时间</th>
+                                                    <th>操作</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="pendingOrdersTableBody">
+                                                <!-- 订单数据将在这里动态生成 -->
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-success" id="saveManualPositionBtn">开仓</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载提示 -->
+    <div id="loadingOverlay" class="loading-overlay d-none">
+        <div class="loading-spinner">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">加载中...</span>
+            </div>
+            <p class="mt-2 text-white">正在加载数据...</p>
+        </div>
+    </div>
+
+    <!-- Toast 通知 -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="toast" class="toast" role="alert">
+            <div class="toast-header">
+                <strong class="me-auto" id="toastTitle">通知</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="toastBody">
+                操作完成
+            </div>
+        </div>
+    </div>
+
+    <!-- 客户详情查看模态框 -->
+    <div class="modal fade" id="customerDetailModal" tabindex="-1" aria-labelledby="customerDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="customerDetailModalLabel">客户详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>基本信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>客户ID:</strong></td><td id="customerDetailUid">-</td></tr>
+                                <tr><td><strong>客户名称:</strong></td><td id="customerDetailName">-</td></tr>
+                                <tr><td><strong>交易所:</strong></td><td id="customerDetailExchange">-</td></tr>
+                                <tr><td><strong>初始资产:</strong></td><td id="customerDetailInitAsset">-</td></tr>
+                                <tr><td><strong>当前资产:</strong></td><td id="customerDetailCurrentAsset">-</td></tr>
+                                <tr><td><strong>交易资产:</strong></td><td id="customerDetailTradingAsset">-</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>交易设置</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>杠杆倍数:</strong></td><td id="customerDetailLeverage">-</td></tr>
+                                <tr><td><strong>止损百分比:</strong></td><td id="customerDetailStopLossPercent">-</td></tr>
+                                <tr><td><strong>止损启用:</strong></td><td id="customerDetailStopLossEnabled">-</td></tr>
+                                <tr><td><strong>状态:</strong></td><td id="customerDetailStatus">-</td></tr>
+                                <tr><td><strong>账户类型:</strong></td><td id="customerDetailIsDemo">-</td></tr>
+                                <tr><td><strong>创建时间:</strong></td><td id="customerDetailCreatedAt">-</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 信号源详情查看模态框 -->
+    <div class="modal fade" id="signalSourceDetailModal" tabindex="-1" aria-labelledby="signalSourceDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="signalSourceDetailModalLabel">信号源详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>基本信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>信号源ID:</strong></td><td id="signalSourceDetailUid">-</td></tr>
+                                <tr><td><strong>信号源名称:</strong></td><td id="signalSourceDetailName">-</td></tr>
+                                <tr><td><strong>交易所:</strong></td><td id="signalSourceDetailExchange">-</td></tr>
+                                <tr><td><strong>初始资产:</strong></td><td id="signalSourceDetailInitAssets">-</td></tr>
+                                <tr><td><strong>当前资产:</strong></td><td id="signalSourceDetailCurrentAsset">-</td></tr>
+                                <tr><td><strong>杠杆倍数:</strong></td><td id="signalSourceDetailLeverage">-</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>配置信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>止损百分比:</strong></td><td id="signalSourceDetailStopLossPercent">-</td></tr>
+                                <tr><td><strong>止损启用:</strong></td><td id="signalSourceDetailStopLossEnabled">-</td></tr>
+                                <tr><td><strong>状态:</strong></td><td id="signalSourceDetailStatus">-</td></tr>
+                                <tr><td><strong>账户类型:</strong></td><td id="signalSourceDetailIsDemo">-</td></tr>
+                                <tr><td><strong>创建时间:</strong></td><td id="signalSourceDetailCreatedAt">-</td></tr>
+                                <tr><td><strong>最后资产检查:</strong></td><td id="signalSourceDetailLastAssetCheck">-</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 策略详情查看模态框 -->
+    <div class="modal fade" id="strategyDetailModal" tabindex="-1" aria-labelledby="strategyDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="strategyDetailModalLabel">策略详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>基本信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>策略ID:</strong></td><td id="strategyDetailUid">-</td></tr>
+                                <tr><td><strong>策略名称:</strong></td><td id="strategyDetailName">-</td></tr>
+                                <tr><td><strong>策略描述:</strong></td><td id="strategyDetailDescription">-</td></tr>
+                                <tr><td><strong>策略类型:</strong></td><td id="strategyDetailType">-</td></tr>
+                                <tr><td><strong>状态:</strong></td><td id="strategyDetailStatus">-</td></tr>
+                                <tr><td><strong>账户类型:</strong></td><td id="strategyDetailIsDemo">-</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>关联信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>关联信号源:</strong></td><td id="strategyDetailSignalSources">-</td></tr>
+                                <tr><td><strong>信号源数量:</strong></td><td id="strategyDetailSignalSourceCount">-</td></tr>
+                                <tr><td><strong>关联规则:</strong></td><td id="strategyDetailRules">-</td></tr>
+                                <tr><td><strong>规则数量:</strong></td><td id="strategyDetailRuleCount">-</td></tr>
+                                <tr><td><strong>创建时间:</strong></td><td id="strategyDetailCreatedAt">-</td></tr>
+                                <tr><td><strong>更新时间:</strong></td><td id="strategyDetailUpdatedAt">-</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 规则详情查看模态框 -->
+    <div class="modal fade" id="ruleDetailModal" tabindex="-1" aria-labelledby="ruleDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="ruleDetailModalLabel">规则详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>基本信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>规则ID:</strong></td><td id="ruleDetailUid">-</td></tr>
+                                <tr><td><strong>规则名称:</strong></td><td id="ruleDetailName">-</td></tr>
+                                <tr><td><strong>规则描述:</strong></td><td id="ruleDetailDescription">-</td></tr>
+                                <tr><td><strong>所属策略:</strong></td><td id="ruleDetailStrategy">-</td></tr>
+                                <tr><td><strong>状态:</strong></td><td id="ruleDetailStatus">-</td></tr>
+                                <tr><td><strong>创建时间:</strong></td><td id="ruleDetailCreatedAt">-</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>交易参数</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>持仓比例:</strong></td><td id="ruleDetailPositionRatio">-</td></tr>
+                                <tr><td><strong>最大杠杆:</strong></td><td id="ruleDetailMaxLeverage">-</td></tr>
+                                <tr><td><strong>止损百分比:</strong></td><td id="ruleDetailStopLossPercent">-</td></tr>
+                                <tr><td><strong>止盈百分比:</strong></td><td id="ruleDetailTakeProfitPercent">-</td></tr>
+                                <tr><td><strong>更新时间:</strong></td><td id="ruleDetailUpdatedAt">-</td></tr>
+                                <tr><td><strong>最后执行:</strong></td><td id="ruleDetailLastExecuted">-</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html> 
