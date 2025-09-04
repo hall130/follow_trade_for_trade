@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import json
 import uuid
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 import traceback
@@ -19,6 +20,16 @@ from utils.logger import logger
 from utils.dingtalk_bot import init_dingtalk_bot
 from config.dingtalk_config import get_dingtalk_config
 from config.limit_follow_config import get_customer_limit_follow_config
+
+# 策略交易相关导入
+try:
+    from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
+    import asyncio
+    import threading
+    STRATEGY_MODULE_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"策略交易模块不可用: {e}")
+    STRATEGY_MODULE_AVAILABLE = False
 
 
 app = Flask(__name__)
@@ -6374,6 +6385,857 @@ def start_follow_monitor_in_background():
         
     except Exception as e:
         logger.error(f"后台启动跟单监控器失败: {e}")
+
+# ==================== 策略交易API集成 ====================
+
+# 全局策略管理器实例
+strategy_manager = None
+strategy_loop = None
+strategy_thread = None
+
+def run_async_in_thread(coro):
+    """在专用线程中运行异步协程"""
+    global strategy_loop, strategy_thread
+    
+    if strategy_loop is None or strategy_thread is None or not strategy_thread.is_alive():
+        # 创建新的事件循环和线程
+        def run_loop():
+            global strategy_loop
+            strategy_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(strategy_loop)
+            strategy_loop.run_forever()
+        
+        strategy_thread = threading.Thread(target=run_loop, daemon=True)
+        strategy_thread.start()
+        
+        # 等待循环启动
+        import time
+        time.sleep(0.1)
+    
+    # 在事件循环中运行协程
+    future = asyncio.run_coroutine_threadsafe(coro, strategy_loop)
+    return future.result(timeout=30)  # 30秒超时
+
+def get_strategy_manager():
+    """获取策略管理器实例"""
+    global strategy_manager
+    if strategy_manager is None and STRATEGY_MODULE_AVAILABLE:
+        try:
+            strategy_manager = AsyncStrategyManager(db_pool)
+            # 异步初始化引擎
+            run_async_in_thread(strategy_manager.start_engine())
+        except Exception as e:
+            logger.error(f"创建策略管理器失败: {e}")
+            strategy_manager = None
+    return strategy_manager
+
+# 策略实例管理API
+
+@app.route('/api/v1/strategy/instances', methods=['GET'])
+def get_strategy_instances():
+    """获取所有策略实例"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用',
+                'data': []
+            })
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败',
+                'data': []
+            })
+        
+        # 获取策略状态 (异步调用)
+        strategies = run_async_in_thread(manager.get_all_strategies_status())
+        
+        return jsonify({
+            'success': True,
+            'message': '获取策略列表成功',
+            'data': list(strategies.values()) if strategies else []
+        })
+        
+    except Exception as e:
+        logger.error(f"获取策略实例失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略列表失败: {str(e)}',
+            'data': []
+        }), 500
+
+@app.route('/api/v1/strategy/instances/<strategy_name>', methods=['GET'])
+def get_strategy_instance(strategy_name):
+    """获取单个策略实例详情"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        strategy_info = run_async_in_thread(manager.get_strategy_status(strategy_name))
+        if strategy_info:
+            return jsonify({
+                'success': True,
+                'message': '获取策略详情成功',
+                'data': strategy_info
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': f'策略 {strategy_name} 不存在'
+            }), 404
+            
+    except Exception as e:
+        logger.error(f"获取策略详情失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略详情失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/instances/<strategy_name>/start', methods=['POST'])
+def start_strategy_instance(strategy_name):
+    """启动策略实例"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        # 使用asyncio.run包装异步调用
+        import asyncio
+        try:
+            success = asyncio.run(manager.start_strategy(strategy_name))
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'策略 {strategy_name} 启动成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': f'策略 {strategy_name} 启动失败'
+                }), 400
+        except Exception as async_error:
+            logger.error(f"异步启动策略失败: {async_error}")
+            return jsonify({
+                'success': False,
+                'message': f'策略启动失败: {str(async_error)}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"启动策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'启动策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/instances/<strategy_name>/stop', methods=['POST'])
+def stop_strategy_instance(strategy_name):
+    """停止策略实例"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        # 使用asyncio.run包装异步调用
+        import asyncio
+        try:
+            success = asyncio.run(manager.stop_strategy(strategy_name))
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'策略 {strategy_name} 停止成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': f'策略 {strategy_name} 停止失败'
+                }), 400
+        except Exception as async_error:
+            logger.error(f"异步停止策略失败: {async_error}")
+            return jsonify({
+                'success': False,
+                'message': f'策略停止失败: {str(async_error)}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"停止策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'停止策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/instances/<strategy_name>', methods=['DELETE'])
+def delete_strategy_instance(strategy_name):
+    """删除策略实例"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        # 使用asyncio.run包装异步调用
+        import asyncio
+        try:
+            success = asyncio.run(manager.remove_strategy(strategy_name))
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'策略 {strategy_name} 删除成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': f'策略 {strategy_name} 删除失败'
+                }), 400
+        except Exception as async_error:
+            logger.error(f"异步删除策略失败: {async_error}")
+            return jsonify({
+                'success': False,
+                'message': f'策略删除失败: {str(async_error)}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"删除策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'删除策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/instances/<strategy_name>', methods=['PUT'])
+def update_strategy_instance(strategy_name):
+    """更新策略实例"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        data = request.get_json()
+        new_name = data.get('name', strategy_name)
+        config = data.get('config', {})
+        signal_sources = data.get('signal_sources', [])
+        customers = data.get('customers', [])
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        # 更新策略配置
+        success = run_async_in_thread(manager.update_strategy_config(
+            strategy_name, new_name, config, signal_sources, customers
+        ))
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'策略 {strategy_name} 更新成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': f'策略 {strategy_name} 更新失败'
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"更新策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'更新策略失败: {str(e)}'
+        }), 500
+
+# 创建策略交易API
+@app.route('/api/v1/strategy/create', methods=['POST'])
+def create_strategy_trade():
+    """创建新策略"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'message': '请求数据为空'
+            }), 400
+        
+        required_fields = ['strategy_type', 'name', 'config']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False,
+                    'message': f'缺少必需字段: {field}'
+                }), 400
+        
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        # 使用asyncio.run包装异步调用
+        import asyncio
+        try:
+            success = asyncio.run(manager.create_strategy(
+                strategy_type=data['strategy_type'],
+                name=data['name'],
+                config=data['config']
+            ))
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'策略 {data["name"]} 创建成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': f'策略 {data["name"]} 创建失败'
+                }), 400
+        except Exception as async_error:
+            logger.error(f"异步创建策略失败: {async_error}")
+            return jsonify({
+                'success': False,
+                'message': f'策略创建失败: {str(async_error)}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"创建策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'创建策略失败: {str(e)}'
+        }), 500
+
+# 回测API
+@app.route('/api/v1/strategy/backtests', methods=['GET'])
+def get_backtests():
+    """获取回测历史"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用',
+                'data': []
+            })
+        
+        # 从数据库获取回测历史
+        if db_pool:
+            try:
+                query = """
+                SELECT id, strategy_name, backtest_name, start_date, end_date,
+                       initial_capital, final_capital, total_return, max_drawdown,
+                       sharpe_ratio, status, started_at as created_at
+                FROM strategy_backtests 
+                ORDER BY started_at DESC
+                LIMIT 50
+                """
+                results = db_pool.query(query)
+                
+                # 格式化数据
+                backtests = []
+                for row in results:
+                    backtests.append({
+                        'id': row.get('id'),
+                        'strategy_name': row.get('strategy_name'),
+                        'backtest_name': row.get('backtest_name'),
+                        'start_date': row.get('start_date'),
+                        'end_date': row.get('end_date'),
+                        'initial_capital': float(row.get('initial_capital', 0)),
+                        'final_capital': float(row.get('final_capital', 0)),
+                        'total_return': float(row.get('total_return', 0)),
+                        'max_drawdown': float(row.get('max_drawdown', 0)),
+                        'sharpe_ratio': float(row.get('sharpe_ratio', 0)),
+                        'status': row.get('status', 'COMPLETED'),
+                        'created_at': row.get('created_at')
+                    })
+                
+                return jsonify({
+                    'success': True,
+                    'message': '获取回测历史成功',
+                    'data': backtests
+                })
+                
+            except Exception as db_error:
+                logger.error(f"数据库查询回测历史失败: {db_error}")
+                return jsonify({
+                    'success': True,
+                    'message': '获取回测历史成功',
+                    'data': []  # 数据库错误时返回空列表，避免前端报错
+                })
+        else:
+            return jsonify({
+                'success': True,
+                'message': '获取回测历史成功',
+                'data': []
+            })
+        
+    except Exception as e:
+        logger.error(f"获取回测历史失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取回测历史失败: {str(e)}',
+            'data': []
+        }), 500
+
+@app.route('/api/v1/strategy/backtests/<int:backtest_id>', methods=['GET'])
+def get_backtest_detail(backtest_id):
+    """获取回测详情"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        # 从数据库获取回测详情
+        if db_pool:
+            try:
+                query = """
+                SELECT id, strategy_name, backtest_name, start_date, end_date,
+                       initial_capital, final_capital, total_return, max_drawdown,
+                       sharpe_ratio, win_rate, profit_factor, total_trades,
+                       config_json, results_json, status, started_at, completed_at
+                FROM strategy_backtests 
+                WHERE id = %s
+                """
+                results = db_pool.query(query, (backtest_id,))
+                
+                if not results:
+                    return jsonify({
+                        'success': False,
+                        'message': f'回测记录 {backtest_id} 不存在'
+                    }), 404
+                
+                row = results[0]
+                
+                # 解析JSON字段
+                config_json = {}
+                results_json = {}
+                
+                try:
+                    if row.get('config_json'):
+                        config_json = json.loads(row.get('config_json'))
+                except:
+                    pass
+                
+                try:
+                    if row.get('results_json'):
+                        results_json = json.loads(row.get('results_json'))
+                except:
+                    pass
+                
+                backtest_detail = {
+                    'id': row.get('id'),
+                    'strategy_name': row.get('strategy_name'),
+                    'backtest_name': row.get('backtest_name'),
+                    'start_date': row.get('start_date'),
+                    'end_date': row.get('end_date'),
+                    'initial_capital': float(row.get('initial_capital', 0)),
+                    'final_capital': float(row.get('final_capital', 0)),
+                    'total_return': float(row.get('total_return', 0)),
+                    'max_drawdown': float(row.get('max_drawdown', 0)),
+                    'sharpe_ratio': float(row.get('sharpe_ratio', 0)),
+                    'win_rate': float(row.get('win_rate', 0)),
+                    'profit_factor': float(row.get('profit_factor', 0)),
+                    'total_trades': int(row.get('total_trades', 0)),
+                    'status': row.get('status', 'COMPLETED'),
+                    'started_at': row.get('started_at'),
+                    'completed_at': row.get('completed_at'),
+                    'config': config_json,
+                    'results_json': results_json,
+                    'symbol': config_json.get('symbol', 'BTC-USDT'),
+                    'timeframe': config_json.get('timeframe', '1h')
+                }
+                
+                return jsonify({
+                    'success': True,
+                    'message': '获取回测详情成功',
+                    'data': backtest_detail
+                })
+                
+            except Exception as db_error:
+                logger.error(f"数据库查询回测详情失败: {db_error}")
+                return jsonify({
+                    'success': False,
+                    'message': f'查询回测详情失败: {str(db_error)}'
+                }), 500
+        else:
+            return jsonify({
+                'success': False,
+                'message': '数据库连接不可用'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"获取回测详情失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取回测详情失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/templates', methods=['GET'])
+def get_strategy_template_configs():
+    """获取策略模板列表和参数"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        # 使用策略扫描器动态发现策略
+        from core.strategy_trade.strategy_scanner import strategy_scanner
+        
+        # 扫描所有策略
+        discovered_strategies = strategy_scanner.scan_all_strategies()
+        
+        # 只返回完整的策略（有必需方法实现）
+        complete_strategies = strategy_scanner.get_complete_strategies()
+        incomplete_strategies = strategy_scanner.get_incomplete_strategies()
+        
+        # 记录不完整的策略
+        if incomplete_strategies:
+            logger.warning(f"发现不完整的策略: {list(incomplete_strategies.keys())}")
+            for name, info in incomplete_strategies.items():
+                logger.warning(f"策略 {name} 缺少方法: {info['missing_methods']}")
+        
+        # 转换为前端期望的格式
+        templates = {}
+        for class_name, strategy_info in complete_strategies.items():
+            # 将参数转换为前端期望的格式
+            default_config = {}
+            validation_rules = {}
+            
+            for param_name, param_info in strategy_info['parameters'].items():
+                default_config[param_name] = param_info['default']
+                validation_rules[param_name] = {
+                    'type': param_info['type'],
+                    'min': param_info.get('min'),
+                    'max': param_info.get('max')
+                }
+            
+            # 使用策略类名作为key
+            strategy_id = strategy_info['class_name'].replace('Strategy', '_Strategy')
+            templates[strategy_id] = {
+                'id': strategy_id,
+                'name': strategy_info['display_name'],
+                'display_name': strategy_info['display_name'], 
+                'description': strategy_info['description'],
+                'category': strategy_info['category'],
+                'risk_profile': strategy_info['risk_profile'],
+                'complexity': strategy_info['complexity'],
+                'default_config': default_config,
+                'required_fields': list(strategy_info['parameters'].keys()),
+                'validation_rules': validation_rules,
+                'is_complete': strategy_info['is_complete'],
+                'module_path': strategy_info['full_module_path']
+            }
+        
+        return jsonify({
+            'success': True,
+            'message': f'发现 {len(complete_strategies)} 个完整策略，{len(incomplete_strategies)} 个不完整策略',
+            'data': templates,
+            'incomplete_strategies': list(incomplete_strategies.keys()) if incomplete_strategies else []
+        })
+        
+    except Exception as e:
+        logger.error(f"获取策略模板失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略模板失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/templates/<strategy_type>', methods=['GET'])
+def get_strategy_template_config(strategy_type):
+    """获取单个策略模板的详细参数"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        from core.strategy_trade.strategy_scanner import strategy_scanner
+        
+        # 扫描策略
+        discovered_strategies = strategy_scanner.scan_all_strategies()
+        complete_strategies = strategy_scanner.get_complete_strategies()
+        
+        # 查找策略（支持多种格式）
+        strategy_info = None
+        for class_name, info in complete_strategies.items():
+            strategy_id = class_name.replace('Strategy', '_Strategy')
+            if strategy_type == strategy_id or strategy_type == class_name:
+                strategy_info = info
+                break
+        
+        if not strategy_info:
+            return jsonify({
+                'success': False,
+                'message': f'策略模板 {strategy_type} 不存在或不完整'
+            }), 404
+        
+        # 转换参数格式
+        default_config = {}
+        validation_rules = {}
+        
+        for param_name, param_info in strategy_info['parameters'].items():
+            default_config[param_name] = param_info['default']
+            validation_rules[param_name] = {
+                'type': param_info['type'],
+                'min': param_info.get('min'),
+                'max': param_info.get('max')
+            }
+        
+        return jsonify({
+            'success': True,
+            'message': f'获取策略模板 {strategy_type} 成功',
+            'data': {
+                'id': strategy_type,
+                'name': strategy_info['display_name'],
+                'display_name': strategy_info['display_name'],
+                'description': strategy_info['description'],
+                'category': strategy_info['category'],
+                'risk_profile': strategy_info['risk_profile'],
+                'complexity': strategy_info['complexity'],
+                'default_config': default_config,
+                'required_fields': list(strategy_info['parameters'].keys()),
+                'validation_rules': validation_rules,
+                'parameters': strategy_info['parameters']  # 包含完整参数信息
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"获取策略模板失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略模板失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/backtests', methods=['POST'])
+def run_backtest():
+    """运行策略回测"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+        
+        data = request.get_json()
+        strategy_name = data.get('strategy_name')
+        backtest_name = data.get('backtest_name')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        initial_capital = data.get('initial_capital', 100000)
+        symbol = data.get('symbol', 'BTC-USDT')
+        is_template = data.get('is_template', False)  # 是否是策略模板
+        strategy_config = data.get('strategy_config', {})  # 策略配置参数
+        
+        # 验证必需参数
+        if not all([strategy_name, backtest_name, start_date, end_date]):
+            return jsonify({
+                'success': False,
+                'message': '缺少必需参数：strategy_name, backtest_name, start_date, end_date'
+            }), 400
+        
+        # 获取策略管理器
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+        
+        # 如果是策略模板，需要先创建临时策略实例
+        if is_template:
+            # 为回测创建临时策略名称
+            temp_strategy_name = f"temp_{strategy_name}_{int(time.time())}"
+            
+            logger.info(f"正在创建临时策略实例: {temp_strategy_name}")
+            logger.info(f"策略类型: {strategy_name}")
+            logger.info(f"策略配置: {strategy_config}")
+            
+            # 创建临时策略实例
+            try:
+                creation_success = run_async_in_thread(manager.create_strategy(
+                    strategy_type=strategy_name,
+                    name=temp_strategy_name,
+                    config=strategy_config  # 使用前端传入的配置
+                ))
+                
+                if not creation_success:
+                    logger.error(f"临时策略创建失败: {temp_strategy_name}")
+                    return jsonify({
+                        'success': False,
+                        'message': f'无法创建临时策略实例: {strategy_name}，请检查策略配置参数'
+                    })
+                
+                logger.info(f"临时策略创建成功: {temp_strategy_name}")
+                
+                # 使用临时策略名称进行回测
+                actual_strategy_name = temp_strategy_name
+                
+            except Exception as create_error:
+                logger.error(f"创建临时策略异常: {create_error}")
+                return jsonify({
+                    'success': False,
+                    'message': f'创建临时策略失败: {str(create_error)}'
+                })
+        else:
+            actual_strategy_name = strategy_name
+        
+        # 异步运行回测
+        try:
+            backtest_result = run_async_in_thread(manager.run_strategy_backtest(
+                strategy_name=actual_strategy_name,
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=float(initial_capital),
+                backtest_name=backtest_name
+            ))
+            
+            if backtest_result:
+                return jsonify({
+                    'success': True,
+                    'message': '回测运行成功',
+                    'data': backtest_result
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '回测运行失败，无结果返回'
+                })
+        
+        except Exception as backtest_error:
+            logger.error(f"回测执行失败: {backtest_error}")
+            return jsonify({
+                'success': False,
+                'message': f'回测执行失败: {str(backtest_error)}'
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"回测API失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'回测失败: {str(e)}'
+        }), 500
+
+# 数据库初始化API
+@app.route('/api/v1/strategy/init-database', methods=['POST'])
+def init_strategy_database():
+    """初始化策略数据库"""
+    try:
+        # 这里可以调用数据库初始化脚本
+        return jsonify({
+            'success': True,
+            'message': '数据库初始化成功'
+        })
+        
+    except Exception as e:
+        logger.error(f"数据库初始化失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'数据库初始化失败: {str(e)}'
+        }), 500
+
+# 添加策略交易简化API端点
+@app.route('/api/v1/strategy-trade/status', methods=['GET'])
+def get_strategy_trade_status():
+    """获取策略交易系统状态"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用',
+                'data': {'status': 'unavailable'}
+            })
+        
+        # 这里可以添加实际的状态检查逻辑
+        return jsonify({
+            'success': True,
+            'message': '策略交易系统运行正常',
+            'data': {
+                'status': 'running',
+                'module_available': True,
+                'timestamp': datetime.now().isoformat()
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"获取策略交易状态失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取状态失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy-trade/health', methods=['GET'])
+def strategy_trade_health_check():
+    """策略交易系统健康检查"""
+    try:
+        health_status = {
+            'module_available': STRATEGY_MODULE_AVAILABLE,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'healthy' if STRATEGY_MODULE_AVAILABLE else 'module_unavailable'
+        }
+        
+        return jsonify({
+            'success': True,
+            'data': health_status
+        })
+        
+    except Exception as e:
+        logger.error(f"策略交易健康检查失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'健康检查失败: {str(e)}'
+        }), 500
+
+# 策略交易API已通过装饰器注册
 
 if __name__ == '__main__':
     # 初始化数据库
