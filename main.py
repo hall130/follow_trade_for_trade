@@ -234,6 +234,47 @@ def start_trade():
     from core.market_trade.trade_server import start_trade as trade_start
     trade_start()
 
+def start_strategy_trade():
+    """启动策略交易模块"""
+    logger.info("正在启动策略交易模块...")
+    try:
+        import asyncio
+        from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
+        from database.db import MySQLPool, get_db_pool
+        from config import get_mysql_config
+        
+        async def run_strategy_trade():
+            try:
+                # 获取数据库连接池 (同步方式，但在异步环境中正确使用)
+                db_pool = get_db_pool()  # 不使用await，因为这是同步函数
+                
+                # 创建异步策略管理器
+                strategy_manager = AsyncStrategyManager(db_pool)
+                
+                # 启动策略引擎
+                await strategy_manager.start_engine()
+                
+                logger.info("策略交易模块启动成功")
+                
+                # 保持运行
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("策略交易模块接收到停止信号")
+                    await strategy_manager.stop_engine()
+                    
+            except Exception as e:
+                logger.error(f"策略交易模块运行失败: {e}")
+                raise
+        
+        # 运行异步任务
+        asyncio.run(run_strategy_trade())
+        
+    except Exception as e:
+        logger.error(f"策略交易模块启动失败: {e}")
+        raise
+
 def start_unified_api_server():
     """启动统一的API服务器（包含所有功能）"""
     try:
@@ -335,9 +376,10 @@ OKX交易所自动跟单系统启动器
 
 模式:
     trade                    - 仅启动交易模块
+    strategy                 - 仅启动策略交易模块
     api                      - 启动统一API服务器（包含所有功能）
     limit-follow             - 仅启动限价跟单监控器
-    all                      - 同时启动交易模块、统一API服务器和前端界面 (默认)
+    all                      - 同时启动交易模块、策略交易模块、统一API服务器和前端界面 (默认)
     frontend                 - 仅启动前端界面
     help                     - 显示此帮助信息
 
@@ -348,6 +390,7 @@ OKX交易所自动跟单系统启动器
 
 示例:
     python main.py trade --demo                    # 仅启动交易模块(模拟盘)
+    python main.py strategy --demo                 # 仅启动策略交易模块(模拟盘)
     python main.py api                             # 启动统一API服务器
     python main.py limit-follow                    # 仅启动跟单监控器
     python main.py all --real                      # 同时启动所有模块(实盘)
@@ -411,6 +454,9 @@ def main():
     if mode == 'trade':
         logger.info("🚀 启动交易模块...")
         start_trade()
+    elif mode == 'strategy':
+        logger.info("🚀 启动策略交易模块...")
+        start_strategy_trade()
     elif mode == 'api':
         logger.info("🚀 启动统一API服务器...")
         start_unified_api_server()
@@ -427,31 +473,34 @@ def main():
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
     elif mode == 'all':
-        logger.info("🚀 同时启动交易模块、统一API服务器和前端界面...")
+        logger.info("🚀 同时启动交易模块、策略交易模块、统一API服务器和前端界面...")
         
         # 启动前端（如果启用）
         if start_frontend_flag:
             logger.info("🌐 启动前端界面...")
             start_frontend()
         
-        # 启动两个后端进程
+        # 启动三个后端进程
         p1 = Process(target=start_flask)  # 统一API服务器
         p2 = Process(target=start_trade)  # 交易模块
+        p3 = Process(target=start_strategy_trade)  # 策略交易模块
         
         p1.start()
         p2.start()
+        p3.start()
         
         try:
             p1.join()
             p2.join()
+            p3.join()
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
-            for p in (p1, p2):
+            for p in (p1, p2, p3):
                 try:
                     p.terminate()
                 except Exception:
                     pass
-            for p in (p1, p2):
+            for p in (p1, p2, p3):
                 try:
                     p.join()
                 except Exception:
