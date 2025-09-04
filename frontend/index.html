@@ -43,6 +43,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="strategy-trade">
+                            <i class="bi bi-graph-up-arrow"></i> 策略交易
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="#" data-page="rules">
                             <i class="bi bi-list-check"></i> 规则管理
                         </a>
@@ -428,6 +433,159 @@
                                 <!-- 分页将在这里动态生成 -->
                             </ul>
                         </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 策略交易页面 -->
+        <div id="strategy-trade-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-graph-up-arrow"></i> 策略交易</h2>
+                            <div class="btn-group">
+                                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createStrategyTradeModal">
+                                    <i class="bi bi-plus"></i> 创建策略
+                                </button>
+                                <button class="btn btn-success" id="initDatabaseBtn">
+                                    <i class="bi bi-database"></i> 初始化数据库
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 系统状态卡片 -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">运行策略</h6>
+                                        <h3 class="mb-0" id="running-strategies">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-play-circle-fill text-success"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">总收益率</h6>
+                                        <h3 class="mb-0" id="total-return">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-graph-up text-primary"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">总交易数</h6>
+                                        <h3 class="mb-0" id="total-trades">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-arrow-left-right text-info"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card stat-card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between">
+                                    <div>
+                                        <h6 class="card-title text-muted">胜率</h6>
+                                        <h3 class="mb-0" id="win-rate">-</h3>
+                                    </div>
+                                    <div class="stat-icon">
+                                        <i class="bi bi-trophy-fill text-warning"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 策略列表 -->
+                <div class="row mb-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">策略列表</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover" id="strategyTradeTable">
+                                        <thead>
+                                            <tr>
+                                                <th>策略名称</th>
+                                                <th>类型</th>
+                                                <th>交易对</th>
+                                                <th>状态</th>
+                                                <th>总收益率</th>
+                                                <th>胜率</th>
+                                                <th>交易次数</th>
+                                                <th>最大回撤</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="strategyTradeTableBody">
+                                            <!-- 策略数据将在这里动态加载 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 回测历史 -->
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">回测历史</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover" id="backtestTable">
+                                        <thead>
+                                            <tr>
+                                                <th>回测名称</th>
+                                                <th>策略</th>
+                                                <th>开始日期</th>
+                                                <th>结束日期</th>
+                                                <th>初始资金</th>
+                                                <th>最终资金</th>
+                                                <th>总收益率</th>
+                                                <th>最大回撤</th>
+                                                <th>夏普比率</th>
+                                                <th>状态</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="backtestTableBody">
+                                            <!-- 回测数据将在这里动态加载 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1528,11 +1686,23 @@
                             <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="signalSources" class="form-label">信号源 *</label>
-                                    <select class="form-select" id="signalSources" multiple required>
-                                        <option value="">请选择信号源</option>
+                                    <select class="form-select" id="signalSources" multiple required size="4">
+                                        <!-- 动态加载信号源列表 -->
                                     </select>
+                                    <div class="form-text">按住Ctrl可多选</div>
                                 </div>
                             </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="customers" class="form-label">客户</label>
+                                    <select class="form-select" id="customers" multiple size="4">
+                                        <!-- 动态加载客户列表 -->
+                                    </select>
+                                    <div class="form-text">按住Ctrl可多选</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="strategyType" class="form-label">策略类型</label>
@@ -1543,6 +1713,9 @@
                                         <option value="other">其他</option>
                                     </select>
                                 </div>
+                            </div>
+                            <div class="col-md-6">
+                                <!-- 可以在这里添加其他配置 -->
                             </div>
                         </div>
                         <div class="mb-3">
@@ -2435,6 +2608,489 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建策略交易模态框 -->
+    <div class="modal fade" id="createStrategyTradeModal" tabindex="-1" aria-labelledby="createStrategyTradeModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="createStrategyTradeModalLabel">创建策略交易</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="createStrategyTradeForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="strategyType" class="form-label">策略类型</label>
+                                <select class="form-select" id="strategyType" required>
+                                    <option value="">请选择策略类型</option>
+                                    <option value="MA_Cross_Strategy">移动平均交叉策略</option>
+                                    <option value="RSI_Strategy">RSI超买超卖策略</option>
+                                    <option value="Grid_Strategy">网格交易策略</option>
+                                    <option value="Bollinger_Strategy">布林带策略</option>
+                                    <option value="MACD_Strategy">MACD策略</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="strategyName" class="form-label">策略名称</label>
+                                <input type="text" class="form-control" id="strategyName" required>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="tradingSymbol" class="form-label">交易对</label>
+                                <select class="form-select" id="tradingSymbol" required>
+                                    <option value="">请选择交易对</option>
+                                    <option value="BTC-USDT">BTC-USDT</option>
+                                    <option value="ETH-USDT">ETH-USDT</option>
+                                    <option value="BNB-USDT">BNB-USDT</option>
+                                    <option value="ADA-USDT">ADA-USDT</option>
+                                    <option value="SOL-USDT">SOL-USDT</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="timeframe" class="form-label">时间框架</label>
+                                <select class="form-select" id="timeframe" required>
+                                    <option value="">请选择时间框架</option>
+                                    <option value="1m">1分钟</option>
+                                    <option value="5m">5分钟</option>
+                                    <option value="15m">15分钟</option>
+                                    <option value="1h" selected>1小时</option>
+                                    <option value="4h">4小时</option>
+                                    <option value="1d">1天</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="riskPerTrade" class="form-label">每次交易风险比例</label>
+                                <input type="number" class="form-control" id="riskPerTrade" value="0.02" min="0.01" max="0.1" step="0.01" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="maxPositions" class="form-label">最大持仓数量</label>
+                                <input type="number" class="form-control" id="maxPositions" value="3" min="1" max="10" required>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="stopLossPct" class="form-label">止损百分比</label>
+                                <input type="number" class="form-control" id="stopLossPct" value="0.02" min="0.005" max="0.1" step="0.005" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="takeProfitPct" class="form-label">止盈百分比</label>
+                                <input type="number" class="form-control" id="takeProfitPct" value="0.06" min="0.01" max="0.5" step="0.01" required>
+                            </div>
+                        </div>
+                        
+                        <!-- 账号关联区域 -->
+                        <div class="row mt-4">
+                            <div class="col-12">
+                                <h6><i class="bi bi-people"></i> 账号关联</h6>
+                                <hr>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="signalSources" class="form-label">关联信号源</label>
+                                <select class="form-select" id="signalSources" multiple size="4">
+                                    <!-- 动态加载信号源列表 -->
+                                </select>
+                                <div class="form-text">按住Ctrl可多选</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="customers" class="form-label">关联客户</label>
+                                <select class="form-select" id="customers" multiple size="4">
+                                    <!-- 动态加载客户列表 -->
+                                </select>
+                                <div class="form-text">按住Ctrl可多选</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 策略特定参数区域 -->
+                        <div id="strategySpecificParams" class="mt-3">
+                            <!-- 这里会根据选择的策略类型动态显示参数 -->
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="createStrategyBtn">创建策略</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 策略详情模态框 -->
+    <div class="modal fade" id="strategyDetailModal" tabindex="-1" aria-labelledby="strategyDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="strategyDetailModalLabel">策略详情</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>基本信息</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>策略名称:</strong></td><td id="strategyDetailName">-</td></tr>
+                                <tr><td><strong>策略类型:</strong></td><td id="strategyDetailType">-</td></tr>
+                                <tr><td><strong>交易对:</strong></td><td id="strategyDetailSymbol">-</td></tr>
+                                <tr><td><strong>时间框架:</strong></td><td id="strategyDetailTimeframe">-</td></tr>
+                                <tr><td><strong>状态:</strong></td><td id="strategyDetailStatus">-</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>性能指标</h6>
+                            <table class="table table-borderless">
+                                <tr><td><strong>总收益率:</strong></td><td id="strategyDetailReturn">-</td></tr>
+                                <tr><td><strong>胜率:</strong></td><td id="strategyDetailWinRate">-</td></tr>
+                                <tr><td><strong>最大回撤:</strong></td><td id="strategyDetailDrawdown">-</td></tr>
+                                <tr><td><strong>交易次数:</strong></td><td id="strategyDetailTrades">-</td></tr>
+                                <tr><td><strong>夏普比率:</strong></td><td id="strategyDetailSharpe">-</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- 持仓信息 -->
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h6>当前持仓</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="strategyPositionsTable">
+                                    <thead>
+                                        <tr>
+                                            <th>交易对</th>
+                                            <th>方向</th>
+                                            <th>数量</th>
+                                            <th>开仓价格</th>
+                                            <th>当前价格</th>
+                                            <th>未实现盈亏</th>
+                                            <th>开仓时间</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="strategyPositionsTableBody">
+                                        <!-- 持仓数据将在这里动态加载 -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 最近交易 -->
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h6>最近交易</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="strategyTradesTable">
+                                    <thead>
+                                        <tr>
+                                            <th>时间</th>
+                                            <th>交易对</th>
+                                            <th>方向</th>
+                                            <th>数量</th>
+                                            <th>价格</th>
+                                            <th>盈亏</th>
+                                            <th>类型</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="strategyTradesTableBody">
+                                        <!-- 交易数据将在这里动态加载 -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 策略编辑模态框 -->
+    <div class="modal fade" id="editStrategyModal" tabindex="-1" aria-labelledby="editStrategyModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="editStrategyModalLabel">
+                        <i class="bi bi-pencil"></i> 编辑策略
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editStrategyForm">
+                        <input type="hidden" id="editStrategyId" value="">
+                        
+                        <!-- 基本信息 -->
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="editStrategyName" class="form-label">策略名称</label>
+                                <input type="text" class="form-control" id="editStrategyName" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editStrategyType" class="form-label">策略类型</label>
+                                <input type="text" class="form-control" id="editStrategyType" readonly>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="editTradingSymbol" class="form-label">交易对</label>
+                                <select class="form-select" id="editTradingSymbol" required>
+                                    <option value="BTC-USDT">BTC-USDT</option>
+                                    <option value="ETH-USDT">ETH-USDT</option>
+                                    <option value="BNB-USDT">BNB-USDT</option>
+                                    <option value="ADA-USDT">ADA-USDT</option>
+                                    <option value="SOL-USDT">SOL-USDT</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editTimeframe" class="form-label">时间框架</label>
+                                <select class="form-select" id="editTimeframe" required>
+                                    <option value="1m">1分钟</option>
+                                    <option value="5m">5分钟</option>
+                                    <option value="15m">15分钟</option>
+                                    <option value="1h">1小时</option>
+                                    <option value="4h">4小时</option>
+                                    <option value="1d">1天</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <!-- 风险参数 -->
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="editRiskPerTrade" class="form-label">每次交易风险比例</label>
+                                <input type="number" class="form-control" id="editRiskPerTrade" min="0.01" max="0.1" step="0.01" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editMaxPositions" class="form-label">最大持仓数量</label>
+                                <input type="number" class="form-control" id="editMaxPositions" min="1" max="10" required>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="editStopLossPct" class="form-label">止损百分比</label>
+                                <input type="number" class="form-control" id="editStopLossPct" min="0.005" max="0.1" step="0.005" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editTakeProfitPct" class="form-label">止盈百分比</label>
+                                <input type="number" class="form-control" id="editTakeProfitPct" min="0.01" max="0.5" step="0.01" required>
+                            </div>
+                        </div>
+                        
+                        <!-- 账号关联区域 -->
+                        <div class="row mt-4">
+                            <div class="col-12">
+                                <h6><i class="bi bi-people"></i> 账号关联</h6>
+                                <hr>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="editSignalSources" class="form-label">关联信号源</label>
+                                <select class="form-select" id="editSignalSources" multiple size="4">
+                                    <!-- 动态加载信号源列表 -->
+                                </select>
+                                <div class="form-text">按住Ctrl可多选</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editCustomers" class="form-label">关联客户</label>
+                                <select class="form-select" id="editCustomers" multiple size="4">
+                                    <!-- 动态加载客户列表 -->
+                                </select>
+                                <div class="form-text">按住Ctrl可多选</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 策略特定参数区域 -->
+                        <div id="editStrategySpecificParams" class="mt-4">
+                            <h6><i class="bi bi-gear"></i> 策略参数</h6>
+                            <hr>
+                            <!-- 这里会根据策略类型动态显示参数 -->
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveStrategyBtn">
+                        <i class="bi bi-check"></i> 保存更改
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 回测模态框 -->
+    <div class="modal fade" id="backtestModal" tabindex="-1" aria-labelledby="backtestModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="backtestModalLabel">运行回测</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="backtestForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="backtestStrategy" class="form-label">选择策略</label>
+                                <select class="form-select" id="backtestStrategy" required>
+                                    <option value="">请选择策略</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="backtestName" class="form-label">回测名称</label>
+                                <input type="text" class="form-control" id="backtestName" required>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="backtestStartDate" class="form-label">开始日期</label>
+                                <input type="date" class="form-control" id="backtestStartDate" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="backtestEndDate" class="form-label">结束日期</label>
+                                <input type="date" class="form-control" id="backtestEndDate" required>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="backtestCapital" class="form-label">初始资金</label>
+                                <input type="number" class="form-control" id="backtestCapital" value="100000" min="1000" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="backtestSymbol" class="form-label">交易对</label>
+                                <select class="form-select" id="backtestSymbol" required>
+                                    <option value="BTC-USDT">BTC-USDT</option>
+                                    <option value="ETH-USDT">ETH-USDT</option>
+                                    <option value="BNB-USDT">BNB-USDT</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <!-- 策略特定参数区域 -->
+                        <div id="backtestStrategyParams" class="mt-3" style="display: none;">
+                            <hr>
+                            <h6>策略参数配置</h6>
+                            <div id="backtestParamsContainer">
+                                <!-- 动态生成的策略参数表单 -->
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="runBacktestBtn">运行回测</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 回测详情模态框 -->
+    <div class="modal fade" id="backtestDetailModal" tabindex="-1" aria-labelledby="backtestDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="backtestDetailModalLabel">
+                        <i class="bi bi-graph-up"></i> 回测详情
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- 回测基本信息 -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6><i class="bi bi-info-circle"></i> 基本信息</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-borderless table-sm">
+                                            <tr><td><strong>回测名称:</strong></td><td id="detailBacktestName">-</td></tr>
+                                            <tr><td><strong>策略类型:</strong></td><td id="detailStrategyName">-</td></tr>
+                                            <tr><td><strong>交易对:</strong></td><td id="detailSymbol">-</td></tr>
+                                            <tr><td><strong>时间范围:</strong></td><td id="detailDateRange">-</td></tr>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6><i class="bi bi-bar-chart"></i> 性能指标</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-borderless table-sm">
+                                            <tr><td><strong>初始资金:</strong></td><td id="detailInitialCapital" class="text-end">-</td></tr>
+                                            <tr><td><strong>最终资金:</strong></td><td id="detailFinalCapital" class="text-end">-</td></tr>
+                                            <tr><td><strong>总收益率:</strong></td><td id="detailTotalReturn" class="text-end">-</td></tr>
+                                            <tr><td><strong>最大回撤:</strong></td><td id="detailMaxDrawdown" class="text-end">-</td></tr>
+                                            <tr><td><strong>夏普比率:</strong></td><td id="detailSharpeRatio" class="text-end">-</td></tr>
+                                            <tr><td><strong>胜率:</strong></td><td id="detailWinRate" class="text-end">-</td></tr>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 收益曲线图表 -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6><i class="bi bi-graph-up-arrow"></i> 策略收益曲线</h6>
+                            <div class="card">
+                                <div class="card-body p-2">
+                                    <div id="equityChart" style="height: 400px;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 回撤分析 -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6><i class="bi bi-exclamation-triangle"></i> 回撤分析</h6>
+                            <div class="card">
+                                <div class="card-body p-2">
+                                    <div id="drawdownChart" style="height: 300px;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 交易记录 -->
+                    <div class="row">
+                        <div class="col-12">
+                            <h6><i class="bi bi-list-ul"></i> 交易记录</h6>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-sm" id="backtestTradesTable">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>时间</th>
+                                            <th>类型</th>
+                                            <th>方向</th>
+                                            <th>价格</th>
+                                            <th>数量</th>
+                                            <th>金额</th>
+                                            <th>盈亏</th>
+                                            <th>累计盈亏</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="backtestTradesTableBody">
+                                        <!-- 交易记录将在这里动态加载 -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    <button type="button" class="btn btn-primary" id="exportBacktestBtn">
+                        <i class="bi bi-download"></i> 导出报告
+                    </button>
                 </div>
             </div>
         </div>

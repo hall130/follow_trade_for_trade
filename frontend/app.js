@@ -20,6 +20,7 @@ class OKXTradingApp {
                 'positions': 20000,     // 当前持仓：20秒
                 'dashboard': 30000,     // 仪表盘：30秒
                 'limit-follow': 15000,  // 限价跟单：15秒
+                'strategy-trade': 20000, // 策略交易：20秒
                 'kline': 1000         // K线图：1秒
             },
             timers: {},
@@ -39,15 +40,15 @@ class OKXTradingApp {
                 return dateTimeStr; // 如果无法解析，直接返回原字符串
             }
             
-            // 格式化为 YYYY-MM-DD HH:mm:ss
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const hours = String(date.getHours()).padStart(2, '0');
-            const minutes = String(date.getMinutes()).padStart(2, '0');
-            const seconds = String(date.getSeconds()).padStart(2, '0');
-            
-            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+            // 使用中文本地化格式，显示完整的年月日时分秒
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
         } catch (error) {
             console.error('日期格式化错误:', error, dateTimeStr);
             return dateTimeStr; // 出错时返回原字符串
@@ -421,9 +422,9 @@ class OKXTradingApp {
             addStrategyModal.addEventListener('hidden.bs.modal', () => {
                 this.clearStrategyForm();
             });
-            // 添加显示事件，加载信号源选项
+            // 添加显示事件，加载信号源和客户选项
             addStrategyModal.addEventListener('show.bs.modal', () => {
-                this.loadSignalSourcesOptions();
+                this.loadAccountsForStrategy('create');
             });
         }
 
@@ -659,6 +660,9 @@ class OKXTradingApp {
                 break;
             case 'system':
                 this.loadSystemData();
+                break;
+            case 'strategy-trade':
+                this.loadStrategyTradeData();
                 break;
             default:
                 console.warn('未知页面:', pageName);
@@ -3135,8 +3139,22 @@ class OKXTradingApp {
 
     formatTime(timestamp) {
         if (!timestamp) return '未知';
-        const date = new Date(timestamp);
-        return date.toLocaleString('zh-CN');
+        try {
+            const date = new Date(timestamp);
+            if (isNaN(date.getTime())) {
+                return timestamp; // 如果无法解析，直接返回原字符串
+            }
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        } catch (e) {
+            return timestamp || '未知';
+        }
     }
 
     showToast(title, message, type = 'info') {
@@ -6245,7 +6263,23 @@ class OKXTradingApp {
             document.getElementById('limitFollowStrategyName').value = strategy.strategy_name || '';
             document.getElementById('limitFollowStrategyTrader').value = strategy.trader_unique_name || '';
             document.getElementById('limitFollowStrategyCustomer').value = strategy.customer_uid || '';
-            document.getElementById('limitFollowStrategySymbol').value = strategy.symbol || '';
+            if (strategy.symbol === 'ALL') {
+                document.getElementById('symbolTypeAll').checked = true;
+                document.getElementById('symbolTypeSpecific').checked = false;
+                document.getElementById('specificSymbolsContainer').style.display = 'none';
+            } else {
+                document.getElementById('symbolTypeAll').checked = false;
+                document.getElementById('symbolTypeSpecific').checked = true;
+                document.getElementById('specificSymbolsContainer').style.display = 'block';
+                
+                // 设置选中的交易对
+                if (strategy.symbols && Array.isArray(strategy.symbols)) {
+                    const symbolsSelect = document.getElementById('limitFollowStrategySymbols');
+                    Array.from(symbolsSelect.options).forEach(option => {
+                        option.selected = strategy.symbols.includes(option.value);
+                    });
+                }
+            };
             document.getElementById('limitFollowStrategyPosSide').value = strategy.pos_side || 'both';
             document.getElementById('limitFollowStrategyFollowType').value = strategy.follow_type || 'percentage';
             document.getElementById('limitFollowStrategyFollowValue').value = strategy.follow_value || '';
@@ -6567,6 +6601,2204 @@ class OKXTradingApp {
         
         return formData;
     }
+
+    // ==================== 策略交易模块 ====================
+    
+    // 加载策略交易数据
+    async loadStrategyTradeData() {
+        try {
+            // 加载策略统计
+            await this.loadStrategyTradeStats();
+            
+            // 加载策略列表
+            await this.loadStrategyTradeList();
+            
+            // 加载回测历史
+            await this.loadBacktestHistory();
+            
+        } catch (error) {
+            console.error('加载策略交易数据失败:', error);
+            this.showToast('错误', '加载策略交易数据失败', 'danger');
+        }
+    }
+    
+    // 加载策略交易统计
+    async loadStrategyTradeStats() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/strategy-trade/status`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    // 更新统计卡片 - 如果API返回了统计数据
+                    document.getElementById('running-strategies').textContent = data.data.running_strategies || '-';
+                    document.getElementById('total-return').textContent = data.data.total_return ? 
+                        (data.data.total_return * 100).toFixed(2) + '%' : '-';
+                    document.getElementById('total-trades').textContent = data.data.total_trades || '-';
+                    document.getElementById('win-rate').textContent = data.data.win_rate ? 
+                        (data.data.win_rate * 100).toFixed(2) + '%' : '-';
+                }
+            } else {
+                // 如果策略交易API不可用，显示默认值
+                document.getElementById('running-strategies').textContent = '0';
+                document.getElementById('total-return').textContent = '-';
+                document.getElementById('total-trades').textContent = '0';
+                document.getElementById('win-rate').textContent = '-';
+            }
+        } catch (error) {
+            console.error('加载策略交易统计失败:', error);
+            // 显示默认值
+            document.getElementById('running-strategies').textContent = '0';
+            document.getElementById('total-return').textContent = '-';
+            document.getElementById('total-trades').textContent = '0';
+            document.getElementById('win-rate').textContent = '-';
+        }
+    }
+    
+    // 加载策略列表
+    async loadStrategyTradeList() {
+        try {
+            const tableBody = document.getElementById('strategyTradeTableBody');
+            if (!tableBody) {
+                console.warn('策略表格不存在，可能不在策略交易页面');
+                return;
+            }
+            
+            tableBody.innerHTML = '<tr><td colspan="9" class="text-center">加载中...</td></tr>';
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategy/instances`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && Array.isArray(data.data)) {
+                    this.renderStrategyTradeTable(data.data);
+                } else {
+                    tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无策略数据</td></tr>';
+                }
+            } else {
+                tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">策略交易模块不可用</td></tr>';
+            }
+        } catch (error) {
+            console.error('加载策略列表失败:', error);
+            const tableBody = document.getElementById('strategyTradeTableBody');
+            if (tableBody) {
+                tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">加载失败</td></tr>';
+            }
+        }
+    }
+    
+    // 渲染策略交易表格
+    renderStrategyTradeTable(strategies) {
+        const tableBody = document.getElementById('strategyTradeTableBody');
+        if (!tableBody) return;
+        
+        if (!strategies || strategies.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无策略数据</td></tr>';
+            return;
+        }
+        
+        tableBody.innerHTML = strategies.map(strategy => `
+            <tr>
+                <td>${strategy.name || strategy.instance_name || '-'}</td>
+                <td>${strategy.strategy_type || strategy.type || '-'}</td>
+                <td>${strategy.symbol || '-'}</td>
+                <td>
+                    <span class="badge ${this.getStatusBadgeClass(strategy.status)}">
+                        ${this.getStatusText(strategy.status)}
+                    </span>
+                </td>
+                <td class="${strategy.total_return >= 0 ? 'text-success' : 'text-danger'}">
+                    ${strategy.total_return ? (strategy.total_return * 100).toFixed(2) + '%' : '-'}
+                </td>
+                <td>${strategy.win_rate ? (strategy.win_rate * 100).toFixed(2) + '%' : '-'}</td>
+                <td>${strategy.total_trades || '0'}</td>
+                <td class="text-danger">${strategy.max_drawdown ? (strategy.max_drawdown * 100).toFixed(2) + '%' : '-'}</td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary btn-sm" onclick="app.viewStrategyDetail('${strategy.name || strategy.instance_name}')" title="查看详情">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="app.editStrategy('${strategy.name || strategy.instance_name}')" title="编辑策略">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        ${strategy.status === 'STOPPED' ? 
+                            `<button class="btn btn-outline-success btn-sm" onclick="app.startStrategy('${strategy.name || strategy.instance_name}')" title="启动策略">
+                                <i class="bi bi-play"></i>
+                            </button>` :
+                            `<button class="btn btn-outline-warning btn-sm" onclick="app.stopStrategy('${strategy.name || strategy.instance_name}')" title="停止策略">
+                                <i class="bi bi-pause"></i>
+                            </button>`
+                        }
+                        <button class="btn btn-outline-info btn-sm" onclick="app.showBacktestModal('${strategy.name || strategy.instance_name}')" title="运行回测">
+                            <i class="bi bi-graph-up"></i>
+                        </button>
+                        <button class="btn btn-outline-danger btn-sm" onclick="app.deleteStrategy('${strategy.name || strategy.instance_name}')" title="删除策略">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+    
+    // 获取状态徽章样式
+    getStatusBadgeClass(status) {
+        switch (status) {
+            case 'RUNNING': return 'bg-success';
+            case 'STOPPED': return 'bg-secondary';
+            case 'PAUSED': return 'bg-warning';
+            case 'ERROR': return 'bg-danger';
+            default: return 'bg-secondary';
+        }
+    }
+    
+    // 获取状态文本
+    getStatusText(status) {
+        switch (status) {
+            case 'RUNNING': return '运行中';
+            case 'STOPPED': return '已停止';
+            case 'PAUSED': return '已暂停';
+            case 'ERROR': return '错误';
+            default: return '未知';
+        }
+    }
+    
+    // 加载回测历史
+    async loadBacktestHistory() {
+        try {
+            const tableBody = document.getElementById('backtestTableBody');
+            if (!tableBody) {
+                console.warn('回测表格不存在，可能不在策略交易页面');
+                return;
+            }
+            
+            tableBody.innerHTML = '<tr><td colspan="11" class="text-center">加载中...</td></tr>';
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategy/backtests`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && Array.isArray(data.data)) {
+                    this.renderBacktestTable(data.data);
+                } else {
+                    tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-muted">暂无回测数据</td></tr>';
+                }
+            } else {
+                tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">无法加载回测数据</td></tr>';
+            }
+        } catch (error) {
+            console.error('加载回测历史失败:', error);
+            const tableBody = document.getElementById('backtestTableBody');
+            if (tableBody) {
+                tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">加载失败</td></tr>';
+            }
+        }
+    }
+    
+    // 渲染回测表格
+    renderBacktestTable(backtests) {
+        const tableBody = document.getElementById('backtestTableBody');
+        if (!tableBody) return;
+        
+        if (!backtests || backtests.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-muted">暂无回测数据</td></tr>';
+            return;
+        }
+        
+        tableBody.innerHTML = backtests.map(backtest => `
+            <tr>
+                <td>${backtest.backtest_name || '-'}</td>
+                <td>${backtest.strategy_name || '-'}</td>
+                <td>${backtest.start_date ? this.formatTimestamp(backtest.start_date) : '-'}</td>
+                <td>${backtest.end_date ? this.formatTimestamp(backtest.end_date) : '-'}</td>
+                <td>${backtest.initial_capital ? Number(backtest.initial_capital).toLocaleString() : '-'}</td>
+                <td>${backtest.final_capital ? Number(backtest.final_capital).toLocaleString() : '-'}</td>
+                <td class="${backtest.total_return >= 0 ? 'text-success' : 'text-danger'}">
+                    ${backtest.total_return ? (backtest.total_return * 100).toFixed(2) + '%' : '-'}
+                </td>
+                <td class="text-danger">${backtest.max_drawdown ? (backtest.max_drawdown * 100).toFixed(2) + '%' : '-'}</td>
+                <td>${backtest.sharpe_ratio ? backtest.sharpe_ratio.toFixed(2) : '-'}</td>
+                <td>
+                    <span class="badge ${this.getBacktestStatusBadgeClass(backtest.status)}">
+                        ${this.getBacktestStatusText(backtest.status)}
+                    </span>
+                </td>
+                <td>
+                    <button class="btn btn-outline-primary btn-sm" onclick="app.viewBacktestDetail('${backtest.id}')">
+                        <i class="bi bi-eye"></i> 详情
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    }
+    
+    // 获取回测状态徽章样式
+    getBacktestStatusBadgeClass(status) {
+        switch (status) {
+            case 'COMPLETED': return 'bg-success';
+            case 'RUNNING': return 'bg-primary';
+            case 'FAILED': return 'bg-danger';
+            default: return 'bg-secondary';
+        }
+    }
+    
+    // 获取回测状态文本
+    getBacktestStatusText(status) {
+        switch (status) {
+            case 'COMPLETED': return '已完成';
+            case 'RUNNING': return '运行中';
+            case 'FAILED': return '失败';
+            default: return '未知';
+        }
+    }
+    
+    // 查看策略详情
+    async viewStrategyDetail(strategyName) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.showStrategyDetailModal(data.data);
+                } else {
+                    this.showToast('错误', '获取策略详情失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '获取策略详情失败', 'danger');
+            }
+        } catch (error) {
+            console.error('获取策略详情失败:', error);
+            this.showToast('错误', '获取策略详情失败', 'danger');
+        }
+    }
+    
+    // 显示策略详情模态框
+    showStrategyDetailModal(strategy) {
+        // 填充基本信息
+        const elements = {
+            'strategyDetailName': strategy.name || '-',
+            'strategyDetailType': strategy.strategy_type || '-',
+            'strategyDetailSymbol': strategy.symbol || '-',
+            'strategyDetailTimeframe': strategy.timeframe || '-',
+            'strategyDetailReturn': strategy.total_return ? (strategy.total_return * 100).toFixed(2) + '%' : '-',
+            'strategyDetailWinRate': strategy.win_rate ? (strategy.win_rate * 100).toFixed(2) + '%' : '-',
+            'strategyDetailDrawdown': strategy.max_drawdown ? (strategy.max_drawdown * 100).toFixed(2) + '%' : '-',
+            'strategyDetailTrades': strategy.total_trades || '0',
+            'strategyDetailSharpe': strategy.sharpe_ratio ? strategy.sharpe_ratio.toFixed(2) : '-'
+        };
+        
+        for (const [id, value] of Object.entries(elements)) {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = value;
+            }
+        }
+        
+        // 设置状态
+        const statusElement = document.getElementById('strategyDetailStatus');
+        if (statusElement) {
+            statusElement.innerHTML = `<span class="badge ${this.getStatusBadgeClass(strategy.status)}">${this.getStatusText(strategy.status)}</span>`;
+        }
+        
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('strategyDetailModal'));
+        modal.show();
+    }
+    
+    // 启动策略
+    async startStrategy(strategyName) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}/start`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '策略启动成功', 'success');
+                    this.loadStrategyTradeList(); // 刷新列表
+                } else {
+                    this.showToast('错误', data.message || '策略启动失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '策略启动请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('启动策略失败:', error);
+            this.showToast('错误', '策略启动失败', 'danger');
+        }
+    }
+    
+    // 停止策略
+    async stopStrategy(strategyName) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}/stop`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '策略停止成功', 'success');
+                    this.loadStrategyTradeList(); // 刷新列表
+                } else {
+                    this.showToast('错误', data.message || '策略停止失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '策略停止请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('停止策略失败:', error);
+            this.showToast('错误', '策略停止失败', 'danger');
+        }
+    }
+    
+    // 删除策略
+    async deleteStrategy(strategyName) {
+        console.log(`🗑️ 尝试删除策略: ${strategyName}`);
+        
+        if (!confirm(`确定要删除策略 "${strategyName}" 吗？此操作不可撤销。`)) {
+            console.log('❌ 用户取消删除操作');
+            return;
+        }
+        
+        try {
+            const url = `${this.apiBaseUrl}/strategy/instances/${strategyName}`;
+            console.log(`📡 发送删除请求到: ${url}`);
+            
+            const response = await fetch(url, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            console.log(`📊 响应状态: ${response.status}`);
+            
+            if (response.ok) {
+                const data = await response.json();
+                console.log('📋 API响应数据:', data);
+                
+                if (data.success) {
+                    console.log('✅ 策略删除成功');
+                    this.showToast('成功', '策略删除成功', 'success');
+                    this.loadStrategyTradeList(); // 刷新列表
+                } else {
+                    console.error('❌ API返回删除失败:', data.message);
+                    this.showToast('错误', data.message || '策略删除失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error(`❌ HTTP请求失败: ${response.status}`, errorText);
+                this.showToast('错误', `策略删除请求失败: ${response.status}`, 'danger');
+            }
+        } catch (error) {
+            console.error('❌ 删除策略异常:', error);
+            this.showToast('错误', `策略删除失败: ${error.message}`, 'danger');
+        }
+    }
+    
+    // 加载策略列表用于回测
+    async loadStrategiesForBacktest() {
+        try {
+            const strategySelect = document.getElementById('backtestStrategy');
+            if (!strategySelect) {
+                console.warn('回测策略选择框不存在');
+                return;
+            }
+            
+            // 清空现有选项，保留默认选项
+            strategySelect.innerHTML = '<option value="">请选择策略</option>';
+            
+            // 首先获取策略模板（所有可用的策略类型）
+            const templatesResponse = await fetch(`${this.apiBaseUrl}/strategy/templates`);
+            const templates = [];
+            
+            if (templatesResponse.ok) {
+                const templatesData = await templatesResponse.json();
+                if (templatesData.success && templatesData.data) {
+                    // 如果返回的是对象，转换为数组
+                    if (Array.isArray(templatesData.data)) {
+                        templates.push(...templatesData.data);
+                    } else {
+                        // 将对象转换为数组
+                        Object.values(templatesData.data).forEach(template => {
+                            templates.push(template);
+                        });
+                    }
+                    console.log(`✅ 获取到 ${templates.length} 个策略模板`);
+                }
+            }
+            
+            // 然后获取已创建的策略实例
+            const instancesResponse = await fetch(`${this.apiBaseUrl}/strategy/instances`);
+            const instances = [];
+            
+            if (instancesResponse.ok) {
+                const instancesData = await instancesResponse.json();
+                if (instancesData.success && Array.isArray(instancesData.data)) {
+                    instances.push(...instancesData.data);
+                    console.log(`✅ 获取到 ${instances.length} 个策略实例`);
+                }
+            }
+            
+            // 添加分组：策略模板
+            if (templates.length > 0) {
+                const templateGroup = document.createElement('optgroup');
+                templateGroup.label = '策略模板（使用默认配置）';
+                
+                templates.forEach(template => {
+                    const option = document.createElement('option');
+                    option.value = `template:${template.id}`;
+                    option.textContent = `${template.name} - ${template.description}`;
+                    option.style.fontStyle = 'italic';
+                    templateGroup.appendChild(option);
+                });
+                
+                strategySelect.appendChild(templateGroup);
+            }
+            
+            // 添加分组：已创建的策略实例
+            if (instances.length > 0) {
+                const instanceGroup = document.createElement('optgroup');
+                instanceGroup.label = '已创建的策略实例';
+                
+                instances.forEach(strategy => {
+                    const option = document.createElement('option');
+                    option.value = `instance:${strategy.name || strategy.instance_name}`;
+                    option.textContent = `${strategy.name || strategy.instance_name} (${strategy.strategy_type || strategy.type || '未知类型'})`;
+                    instanceGroup.appendChild(option);
+                });
+                
+                strategySelect.appendChild(instanceGroup);
+            }
+            
+            // 如果没有任何策略，显示提示
+            if (templates.length === 0 && instances.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = '暂无可用策略，请先创建策略';
+                option.disabled = true;
+                strategySelect.appendChild(option);
+            }
+            
+            console.log(`✅ 加载策略完成: ${templates.length} 个模板 + ${instances.length} 个实例`);
+            
+        } catch (error) {
+            console.error('加载策略列表失败:', error);
+            // 添加错误提示选项
+            const strategySelect = document.getElementById('backtestStrategy');
+            if (strategySelect) {
+                strategySelect.innerHTML = '<option value="">请选择策略</option>';
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = '加载失败，请重试';
+                option.disabled = true;
+                strategySelect.appendChild(option);
+            }
+        }
+    }
+    
+    // 策略选择变化处理（回测用）
+    async onBacktestStrategyChange(strategyValue) {
+        const paramsArea = document.getElementById('backtestStrategyParams');
+        
+        if (!strategyValue || !strategyValue.startsWith('template:')) {
+            // 如果不是策略模板，隐藏参数配置
+            if (paramsArea) paramsArea.style.display = 'none';
+            return;
+        }
+        
+        // 提取策略类型
+        const strategyType = strategyValue.replace('template:', '');
+        
+        console.log(`🔄 回测策略变化: ${strategyType}`);
+        
+        // 显示参数配置区域
+        if (paramsArea) paramsArea.style.display = 'block';
+        
+        // 使用动态参数生成
+        await this.showBacktestStrategyParams(strategyType);
+    }
+    
+    // 显示回测策略参数
+    async showBacktestStrategyParams(strategyType) {
+        try {
+            console.log(`📡 获取策略 ${strategyType} 的参数模板...`);
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategy/templates/${strategyType}`);
+            if (!response.ok) {
+                throw new Error(`获取策略模板失败: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.message);
+            }
+            
+            const template = data.data;
+            console.log(`✅ 获取到策略模板:`, template);
+            
+            // 生成动态参数表单
+            const paramsHtml = this.generateBacktestStrategyParamsForm(strategyType, template.default_config, template.validation_rules, template.parameters);
+            
+            // 更新HTML
+            const paramsArea = document.getElementById('backtestStrategyParams');
+            if (paramsArea) {
+                paramsArea.innerHTML = paramsHtml;
+                console.log(`📝 回测参数表单已生成`);
+            }
+            
+        } catch (error) {
+            console.error('生成回测策略参数失败:', error);
+            // 降级到硬编码参数
+            this.generateLegacyBacktestParams(strategyType);
+        }
+    }
+    
+    // 生成回测策略参数表单
+    generateBacktestStrategyParamsForm(strategyType, config, validation, parameters) {
+        console.log(`🎨 生成回测参数表单:`, strategyType, config);
+        
+        let formHtml = '<div class="row">';
+        let hasParams = false;
+        
+        // 根据参数信息生成表单
+        if (parameters) {
+            Object.entries(parameters).forEach(([paramName, paramInfo]) => {
+                // 跳过symbol和timeframe（已在主表单中）
+                if (paramName === 'symbol' || paramName === 'timeframe') {
+                    return;
+                }
+                
+                formHtml += this.generateBacktestParamInput(paramName, paramInfo);
+                hasParams = true;
+            });
+        }
+        
+        if (!hasParams) {
+            formHtml += '<div class="col-12"><p class="text-muted">该策略使用默认参数配置</p></div>';
+        }
+        
+        formHtml += '</div>';
+        return formHtml;
+    }
+    
+    // 生成回测参数输入框
+    generateBacktestParamInput(paramName, paramInfo) {
+        const label = paramInfo.label || paramName;
+        const defaultValue = paramInfo.default || '';
+        const inputType = paramInfo.input_type || 'text';
+        const description = paramInfo.description || '';
+        
+        let inputHtml = '';
+        
+        if (inputType === 'checkbox') {
+            inputHtml = `
+                <div class="col-md-4">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="${paramName}" id="backtest_${paramName}" ${defaultValue ? 'checked' : ''}>
+                        <label class="form-check-label" for="backtest_${paramName}">
+                            ${label}
+                        </label>
+                    </div>
+                    ${description ? `<div class="form-text">${description}</div>` : ''}
+                </div>
+            `;
+        } else {
+            const step = paramInfo.step || (inputType === 'number' ? '0.001' : '');
+            const min = paramInfo.min !== undefined ? `min="${paramInfo.min}"` : '';
+            const max = paramInfo.max !== undefined ? `max="${paramInfo.max}"` : '';
+            const stepAttr = step ? `step="${step}"` : '';
+            
+            inputHtml = `
+                <div class="col-md-4">
+                    <label for="backtest_${paramName}" class="form-label">${label}</label>
+                    <input type="${inputType}" class="form-control" name="${paramName}" id="backtest_${paramName}" 
+                           value="${defaultValue}" ${min} ${max} ${stepAttr} required>
+                    ${description ? `<div class="form-text">${description}</div>` : ''}
+                </div>
+            `;
+        }
+        
+        return inputHtml;
+    }
+    
+    // 降级到硬编码参数（备用方案）
+    generateLegacyBacktestParams(strategyType) {
+        console.warn(`⚠️ 降级到硬编码参数: ${strategyType}`);
+        
+        // 生成策略特定参数表单
+        let paramsHtml = '';
+        
+        switch (strategyType) {
+            case 'MA_Cross_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="backtest_short_period" class="form-label">短期均线周期</label>
+                            <input type="number" class="form-control" id="backtest_short_period" value="10" min="5" max="50" required>
+                            <div class="form-text">短期移动平均线的计算周期</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="backtest_long_period" class="form-label">长期均线周期</label>
+                            <input type="number" class="form-control" id="backtest_long_period" value="20" min="10" max="100" required>
+                            <div class="form-text">长期移动平均线的计算周期</div>
+                        </div>
+                    </div>
+                `;
+                break;
+                
+            case 'RSI_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="backtest_rsi_period" class="form-label">RSI周期</label>
+                            <input type="number" class="form-control" id="backtest_rsi_period" value="14" min="5" max="30" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_oversold" class="form-label">超卖线</label>
+                            <input type="number" class="form-control" id="backtest_oversold" value="30" min="10" max="40" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_overbought" class="form-label">超买线</label>
+                            <input type="number" class="form-control" id="backtest_overbought" value="70" min="60" max="90" required>
+                        </div>
+                    </div>
+                `;
+                break;
+                
+            case 'MACD_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="backtest_fast_period" class="form-label">快速EMA周期</label>
+                            <input type="number" class="form-control" id="backtest_fast_period" value="12" min="5" max="20" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_slow_period" class="form-label">慢速EMA周期</label>
+                            <input type="number" class="form-control" id="backtest_slow_period" value="26" min="20" max="50" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_signal_period" class="form-label">信号线周期</label>
+                            <input type="number" class="form-control" id="backtest_signal_period" value="9" min="5" max="15" required>
+                        </div>
+                    </div>
+                `;
+                break;
+                
+            case 'Bollinger_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="backtest_bb_period" class="form-label">布林带周期</label>
+                            <input type="number" class="form-control" id="backtest_bb_period" value="20" min="10" max="50" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="backtest_bb_std" class="form-label">标准差倍数</label>
+                            <input type="number" class="form-control" id="backtest_bb_std" value="2" min="1" max="3" step="0.1" required>
+                        </div>
+                    </div>
+                `;
+                break;
+                
+            case 'Grid_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="backtest_grid_size" class="form-label">网格大小 (%)</label>
+                            <input type="number" class="form-control" id="backtest_grid_size" value="1" min="0.1" max="5" step="0.1" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_max_grids" class="form-label">最大网格数</label>
+                            <input type="number" class="form-control" id="backtest_max_grids" value="10" min="3" max="20" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_base_amount" class="form-label">基础下单金额</label>
+                            <input type="number" class="form-control" id="backtest_base_amount" value="100" min="10" max="1000" required>
+                        </div>
+                    </div>
+                `;
+                break;
+                
+            default:
+                paramsHtml = '<p class="text-muted">该策略使用默认参数配置</p>';
+        }
+        
+        if (paramsContainer) {
+            paramsContainer.innerHTML = paramsHtml;
+        }
+    }
+    
+    // 显示回测模态框
+    async showBacktestModal(strategyName) {
+        // 设置默认日期
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - 3); // 默认3个月前
+        
+        const startDateElement = document.getElementById('backtestStartDate');
+        const endDateElement = document.getElementById('backtestEndDate');
+        const strategyElement = document.getElementById('backtestStrategy');
+        const nameElement = document.getElementById('backtestName');
+        
+        if (startDateElement) startDateElement.value = startDate.toISOString().split('T')[0];
+        if (endDateElement) endDateElement.value = endDate.toISOString().split('T')[0];
+        
+        // 加载策略列表到下拉框
+        await this.loadStrategiesForBacktest();
+        
+        // 绑定策略选择变化事件
+        if (strategyElement) {
+            strategyElement.addEventListener('change', async (e) => {
+                await this.onBacktestStrategyChange(e.target.value);
+            });
+        }
+        
+        if (strategyName) {
+            if (strategyElement) {
+                strategyElement.value = strategyName;
+                // 触发参数配置显示
+                await this.onBacktestStrategyChange(strategyName);
+            }
+            if (nameElement) nameElement.value = `${strategyName}_backtest_${Date.now()}`;
+        }
+        
+        const modal = new bootstrap.Modal(document.getElementById('backtestModal'));
+        modal.show();
+    }
+    
+    // 查看回测详情
+    async viewBacktestDetail(backtestId) {
+        try {
+            console.log('查看回测详情:', backtestId);
+            
+            // 获取回测详情数据
+            const response = await fetch(`${this.apiBaseUrl}/strategy/backtests/${backtestId}`);
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.showBacktestDetailModal(data.data);
+                } else {
+                    this.showToast('错误', data.message || '获取回测详情失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '获取回测详情请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('查看回测详情失败:', error);
+            this.showToast('错误', '查看回测详情失败', 'danger');
+        }
+    }
+
+    // 显示回测详情模态框
+    showBacktestDetailModal(backtestData) {
+        console.log('显示回测详情:', backtestData);
+
+        // 填充基本信息
+        document.getElementById('detailBacktestName').textContent = backtestData.backtest_name || '-';
+        document.getElementById('detailStrategyName').textContent = backtestData.strategy_name || '-';
+        document.getElementById('detailSymbol').textContent = backtestData.symbol || '-';
+        document.getElementById('detailDateRange').textContent = 
+            `${this.formatTimestamp(backtestData.start_date)} 至 ${this.formatTimestamp(backtestData.end_date)}`;
+
+        // 填充性能指标
+        document.getElementById('detailInitialCapital').textContent = 
+            `¥${this.formatNumber(backtestData.initial_capital)}`;
+        document.getElementById('detailFinalCapital').textContent = 
+            `¥${this.formatNumber(backtestData.final_capital)}`;
+        const totalReturnElement = document.getElementById('detailTotalReturn');
+        const totalReturnValue = backtestData.total_return * 100;
+        totalReturnElement.textContent = `${totalReturnValue.toFixed(2)}%`;
+        
+        // 添加颜色样式
+        totalReturnElement.classList.remove('positive', 'negative');
+        if (totalReturnValue > 0) {
+            totalReturnElement.classList.add('positive');
+        } else if (totalReturnValue < 0) {
+            totalReturnElement.classList.add('negative');
+        }
+        document.getElementById('detailMaxDrawdown').textContent = 
+            `${(backtestData.max_drawdown * 100).toFixed(2)}%`;
+        document.getElementById('detailSharpeRatio').textContent = 
+            backtestData.sharpe_ratio?.toFixed(3) || '-';
+        document.getElementById('detailWinRate').textContent = 
+            `${(backtestData.win_rate * 100).toFixed(1)}%`;
+
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('backtestDetailModal'));
+        modal.show();
+
+        // 等待模态框显示后再初始化图表
+        modal._element.addEventListener('shown.bs.modal', () => {
+            this.initBacktestCharts(backtestData);
+        }, { once: true });
+    }
+
+    // 初始化回测图表
+    initBacktestCharts(backtestData) {
+        console.log('初始化回测图表:', backtestData);
+
+        // 解析结果数据
+        let results = {};
+        try {
+            if (typeof backtestData.results_json === 'string') {
+                results = JSON.parse(backtestData.results_json);
+            } else {
+                results = backtestData.results_json || {};
+            }
+        } catch (e) {
+            console.warn('解析回测结果数据失败:', e);
+            results = {};
+        }
+
+        // 初始化收益曲线图表
+        this.initEquityChart(results);
+        
+        // 初始化回撤分析图表
+        this.initDrawdownChart(results);
+        
+        // 填充交易记录表格
+        this.populateTradeHistory(results.trade_history || []);
+    }
+
+    // 初始化价格图表（包含买入卖出点）
+    initPriceChart(results) {
+        const chartContainer = document.getElementById('backtestChart');
+        if (!chartContainer) return;
+
+        // 清除现有图表
+        chartContainer.innerHTML = '';
+
+        try {
+            // 创建图表
+            const chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.offsetWidth,
+                height: 400,
+                layout: {
+                    backgroundColor: '#ffffff',
+                    textColor: '#333',
+                },
+                grid: {
+                    vertLines: { color: '#f0f0f0' },
+                    horzLines: { color: '#f0f0f0' },
+                },
+                timeScale: {
+                    borderColor: '#ccc',
+                },
+                rightPriceScale: {
+                    borderColor: '#ccc',
+                },
+            });
+
+            // 模拟价格数据（实际应该从后端获取）
+            const priceData = this.generateSamplePriceData(results);
+            
+            // 添加K线图
+            const candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            });
+            
+            candlestickSeries.setData(priceData);
+
+            // 添加买入卖出标记
+            this.addTradeMarkers(chart, results.trade_history || []);
+
+            // 响应式调整
+            new ResizeObserver(() => {
+                chart.applyOptions({ width: chartContainer.offsetWidth });
+            }).observe(chartContainer);
+
+        } catch (error) {
+            console.error('初始化价格图表失败:', error);
+            chartContainer.innerHTML = '<div class="text-center p-4 text-muted">价格图表加载失败</div>';
+        }
+    }
+
+    // 初始化收益曲线图表
+    initEquityChart(results) {
+        console.log('🎯 初始化收益曲线图表', results);
+        const chartContainer = document.getElementById('equityChart');
+        if (!chartContainer) {
+            console.error('❌ 找不到equityChart容器');
+            return;
+        }
+
+        // 清除现有图表
+        chartContainer.innerHTML = '';
+
+        try {
+            // 创建图表
+            const chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.offsetWidth,
+                height: 400,
+                layout: {
+                    backgroundColor: '#ffffff',
+                    textColor: '#333',
+                },
+                grid: {
+                    vertLines: { color: '#f0f0f0' },
+                    horzLines: { color: '#f0f0f0' },
+                },
+                timeScale: {
+                    borderColor: '#ccc',
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+                rightPriceScale: {
+                    borderColor: '#ccc',
+                    visible: true,
+                },
+            });
+
+            // 生成收益曲线数据
+            const equityData = this.generateEquityCurve(results);
+            const returnData = this.generateReturnCurve(equityData);
+            
+            // 添加收益率曲线（主图）
+            const returnSeries = chart.addLineSeries({
+                color: '#26a69a',
+                lineWidth: 3,
+                title: '累计收益率',
+            });
+            
+            returnSeries.setData(returnData);
+
+            // 添加基准线（0%收益率）
+            const baselineSeries = chart.addLineSeries({
+                color: '#666666',
+                lineWidth: 1,
+                lineStyle: 2, // 虚线
+                title: '基准线',
+            });
+            
+            const baselineData = returnData.map(point => ({
+                time: point.time,
+                value: 0
+            }));
+            baselineSeries.setData(baselineData);
+
+            // 标记交易点
+            this.addTradeMarkersToChart(chart, results.trade_history || []);
+
+            // 响应式调整
+            new ResizeObserver(() => {
+                chart.applyOptions({ width: chartContainer.offsetWidth });
+            }).observe(chartContainer);
+
+            // 添加图表说明
+            this.addChartLegend(chartContainer, {
+                '绿色线': '策略累计收益率',
+                '灰色虚线': '0%基准线',
+                '🔺': '买入信号',
+                '🔻': '卖出信号'
+            });
+
+        } catch (error) {
+            console.error('初始化收益曲线图表失败:', error);
+            chartContainer.innerHTML = '<div class="text-center p-4 text-muted">收益曲线图表加载失败</div>';
+        }
+    }
+
+    // 初始化回撤分析图表
+    initDrawdownChart(results) {
+        const chartContainer = document.getElementById('drawdownChart');
+        if (!chartContainer) return;
+
+        // 清除现有图表
+        chartContainer.innerHTML = '';
+
+        try {
+            // 创建图表
+            const chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.offsetWidth,
+                height: 300,
+                layout: {
+                    backgroundColor: '#ffffff',
+                    textColor: '#333',
+                },
+                grid: {
+                    vertLines: { color: '#f0f0f0' },
+                    horzLines: { color: '#f0f0f0' },
+                },
+                timeScale: {
+                    borderColor: '#ccc',
+                },
+                rightPriceScale: {
+                    borderColor: '#ccc',
+                },
+            });
+
+            // 生成回撤数据
+            const drawdownData = this.generateDrawdownCurve(results);
+            
+            // 添加回撤曲线
+            const drawdownSeries = chart.addAreaSeries({
+                topColor: 'rgba(239, 83, 80, 0.4)',
+                bottomColor: 'rgba(239, 83, 80, 0.1)', 
+                lineColor: '#ef5350',
+                lineWidth: 2,
+                title: '回撤百分比',
+            });
+            
+            drawdownSeries.setData(drawdownData);
+
+            // 响应式调整
+            new ResizeObserver(() => {
+                chart.applyOptions({ width: chartContainer.offsetWidth });
+            }).observe(chartContainer);
+
+            // 添加回撤统计信息
+            this.addDrawdownStats(chartContainer, results);
+
+        } catch (error) {
+            console.error('初始化回撤分析图表失败:', error);
+            chartContainer.innerHTML = '<div class="text-center p-4 text-muted">回撤分析图表加载失败</div>';
+        }
+    }
+
+    // 生成示例价格数据
+    generateSamplePriceData(results) {
+        const data = [];
+        const startPrice = 50000;
+        let currentPrice = startPrice;
+        
+        // 生成30天的数据
+        for (let i = 0; i < 30; i++) {
+            const date = new Date();
+            date.setDate(date.getDate() - 30 + i);
+            
+            // 模拟价格波动
+            const change = (Math.random() - 0.5) * 0.1;
+            currentPrice *= (1 + change);
+            
+            const high = currentPrice * (1 + Math.random() * 0.02);
+            const low = currentPrice * (1 - Math.random() * 0.02);
+            const open = currentPrice * (1 + (Math.random() - 0.5) * 0.01);
+            
+            data.push({
+                time: Math.floor(date.getTime() / 1000),
+                open: open,
+                high: Math.max(open, high),
+                low: Math.min(open, low),
+                close: currentPrice,
+            });
+        }
+        
+        return data;
+    }
+
+    // 添加交易标记
+    addTradeMarkers(chart, tradeHistory) {
+        const markers = [];
+        
+        tradeHistory.forEach(trade => {
+            if (trade.type === 'BUY' || trade.type === 'SELL') {
+                const timestamp = this.parseTradeTimestamp(trade.timestamp);
+                
+                markers.push({
+                    time: timestamp,
+                    position: trade.type === 'BUY' ? 'belowBar' : 'aboveBar',
+                    color: trade.type === 'BUY' ? '#26a69a' : '#ef5350',
+                    shape: trade.type === 'BUY' ? 'arrowUp' : 'arrowDown',
+                    text: trade.type === 'BUY' ? 'B' : 'S',
+                    size: 1,
+                });
+            }
+        });
+        
+        if (markers.length > 0) {
+            chart.setMarkers(markers);
+        }
+    }
+
+    // 解析交易时间戳
+    parseTradeTimestamp(timestamp) {
+        try {
+            if (typeof timestamp === 'string') {
+                return Math.floor(new Date(timestamp).getTime() / 1000);
+            } else if (typeof timestamp === 'number') {
+                return timestamp > 1000000000000 ? Math.floor(timestamp / 1000) : timestamp;
+            }
+        } catch (e) {
+            console.warn('解析时间戳失败:', timestamp);
+        }
+        return Math.floor(Date.now() / 1000);
+    }
+
+    // 生成资金曲线数据
+    generateEquityCurve(results) {
+        const equityData = [];
+        
+        if (results.equity_curve && Array.isArray(results.equity_curve)) {
+            console.log('📈 处理equity_curve数据:', results.equity_curve.length, '个点');
+            results.equity_curve.forEach(point => {
+                equityData.push({
+                    time: this.parseTradeTimestamp(point.timestamp || point.time),
+                    value: point.total_value || point.equity || point.value || 0
+                });
+            });
+            console.log('📊 生成equity数据:', equityData.length, '个点');
+        } else {
+            // 如果没有资金曲线数据，从交易历史生成
+            let equity = results.initial_capital || 100000;
+            equityData.push({
+                time: Math.floor(Date.now() / 1000) - 30 * 24 * 3600,
+                value: equity
+            });
+            
+            const trades = results.trade_history || [];
+            trades.forEach(trade => {
+                if (trade.type === 'CLOSE') {
+                    equity += trade.pnl || 0;
+                    equityData.push({
+                        time: this.parseTradeTimestamp(trade.timestamp),
+                        value: equity
+                    });
+                }
+            });
+        }
+        
+        return equityData;
+    }
+
+    // 生成收益率曲线数据
+    generateReturnCurve(equityData) {
+        if (!equityData || equityData.length === 0) return [];
+        
+        const initialValue = equityData[0].value;
+        return equityData.map(point => ({
+            time: point.time,
+            value: ((point.value - initialValue) / initialValue) * 100 // 转换为百分比
+        }));
+    }
+
+    // 生成回撤曲线数据
+    generateDrawdownCurve(results) {
+        const equityData = this.generateEquityCurve(results);
+        if (equityData.length === 0) return [];
+        
+        const drawdownData = [];
+        let peak = equityData[0].value;
+        
+        equityData.forEach(point => {
+            // 更新最高点
+            if (point.value > peak) {
+                peak = point.value;
+            }
+            
+            // 计算回撤百分比
+            const drawdown = ((point.value - peak) / peak) * 100;
+            drawdownData.push({
+                time: point.time,
+                value: drawdown // 负数表示回撤
+            });
+        });
+        
+        return drawdownData;
+    }
+
+    // 为图表添加交易标记
+    addTradeMarkersToChart(chart, tradeHistory) {
+        const markers = [];
+        
+        tradeHistory.forEach(trade => {
+            if (trade.type === 'BUY' || trade.type === 'SELL') {
+                const timestamp = this.parseTradeTimestamp(trade.timestamp);
+                
+                markers.push({
+                    time: timestamp,
+                    position: trade.type === 'BUY' ? 'belowBar' : 'aboveBar',
+                    color: trade.type === 'BUY' ? '#26a69a' : '#ef5350',
+                    shape: trade.type === 'BUY' ? 'arrowUp' : 'arrowDown',
+                    text: trade.type === 'BUY' ? 'B' : 'S',
+                    size: 1,
+                });
+            }
+        });
+        
+        if (markers.length > 0) {
+            chart.setMarkers(markers);
+        }
+    }
+
+    // 添加图表图例
+    addChartLegend(container, legendItems) {
+        const legend = document.createElement('div');
+        legend.className = 'chart-legend mt-2';
+        legend.style.cssText = 'font-size: 12px; color: #666; text-align: center;';
+        
+        const legendText = Object.entries(legendItems)
+            .map(([key, value]) => `<span style="margin: 0 10px;"><strong>${key}:</strong> ${value}</span>`)
+            .join('');
+        
+        legend.innerHTML = legendText;
+        container.appendChild(legend);
+    }
+
+    // 添加回撤统计信息
+    addDrawdownStats(container, results) {
+        const maxDrawdown = results.performance_stats?.max_drawdown || 0;
+        const avgDrawdown = this.calculateAverageDrawdown(results);
+        
+        const statsDiv = document.createElement('div');
+        statsDiv.className = 'drawdown-stats mt-2 p-2';
+        statsDiv.style.cssText = 'background: #f8f9fa; border-radius: 4px; font-size: 12px;';
+        
+        statsDiv.innerHTML = `
+            <div class="row text-center">
+                <div class="col-md-4">
+                    <strong>最大回撤:</strong> 
+                    <span class="text-danger">${(maxDrawdown * 100).toFixed(2)}%</span>
+                </div>
+                <div class="col-md-4">
+                    <strong>平均回撤:</strong> 
+                    <span class="text-warning">${(avgDrawdown * 100).toFixed(2)}%</span>
+                </div>
+                <div class="col-md-4">
+                    <strong>回撤风险:</strong> 
+                    <span class="${this.getDrawdownRiskClass(maxDrawdown)}">${this.getDrawdownRiskText(maxDrawdown)}</span>
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(statsDiv);
+    }
+
+    // 计算平均回撤
+    calculateAverageDrawdown(results) {
+        const drawdownData = this.generateDrawdownCurve(results);
+        if (drawdownData.length === 0) return 0;
+        
+        const negativeDrawdowns = drawdownData.filter(point => point.value < 0);
+        if (negativeDrawdowns.length === 0) return 0;
+        
+        const totalDrawdown = negativeDrawdowns.reduce((sum, point) => sum + Math.abs(point.value), 0);
+        return (totalDrawdown / negativeDrawdowns.length) / 100; // 转换为小数
+    }
+
+    // 获取回撤风险等级样式
+    getDrawdownRiskClass(maxDrawdown) {
+        const dd = Math.abs(maxDrawdown);
+        if (dd < 0.05) return 'text-success';      // 小于5%：低风险
+        if (dd < 0.15) return 'text-warning';      // 5%-15%：中等风险  
+        return 'text-danger';                      // 大于15%：高风险
+    }
+
+    // 获取回撤风险等级文本
+    getDrawdownRiskText(maxDrawdown) {
+        const dd = Math.abs(maxDrawdown);
+        if (dd < 0.05) return '低风险';
+        if (dd < 0.15) return '中等风险';
+        return '高风险';
+    }
+
+    // 填充交易记录表格
+    populateTradeHistory(tradeHistory) {
+        const tbody = document.getElementById('backtestTradesTableBody');
+        if (!tbody) return;
+
+        tbody.innerHTML = '';
+        
+        let cumulativePnl = 0;
+        
+        tradeHistory.forEach(trade => {
+            if (trade.pnl) {
+                cumulativePnl += trade.pnl;
+            }
+            
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${this.formatTimestamp(trade.timestamp)}</td>
+                <td><span class="badge bg-${trade.type === 'BUY' ? 'primary' : 'secondary'}">${trade.type}</span></td>
+                <td><span class="badge bg-${trade.side === 'LONG' ? 'success' : 'danger'}">${trade.side}</span></td>
+                <td>$${this.formatNumber(trade.price)}</td>
+                <td>${this.formatNumber(trade.quantity)}</td>
+                <td>$${this.formatNumber(trade.price * trade.quantity)}</td>
+                <td class="${trade.pnl > 0 ? 'text-success' : trade.pnl < 0 ? 'text-danger' : ''}">
+                    ${trade.pnl ? `$${this.formatNumber(trade.pnl)}` : '-'}
+                </td>
+                <td class="${cumulativePnl > 0 ? 'text-success' : cumulativePnl < 0 ? 'text-danger' : ''}">
+                    $${this.formatNumber(cumulativePnl)}
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+        
+        if (tradeHistory.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无交易记录</td></tr>';
+        }
+    }
+
+    // 格式化时间戳
+    formatTimestamp(timestamp) {
+        try {
+            const date = new Date(timestamp);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        } catch (e) {
+            return timestamp || '-';
+        }
+    }
+    
+    // 初始化数据库
+    async initDatabase() {
+        try {
+            this.showToast('信息', '正在初始化数据库...', 'info');
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategy/init-database`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '数据库初始化成功', 'success');
+                } else {
+                    this.showToast('错误', data.message || '数据库初始化失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '数据库初始化请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('初始化数据库失败:', error);
+            this.showToast('错误', '数据库初始化失败', 'danger');
+        }
+    }
+    
+    // 创建策略交易
+    async createStrategyTrade() {
+        try {
+            const form = document.getElementById('createStrategyTradeForm');
+            if (!form) {
+                this.showToast('错误', '表单不存在', 'danger');
+                return;
+            }
+            
+            const formData = new FormData(form);
+            const strategyType = formData.get('strategyType') || document.getElementById('strategyType')?.value;
+            const strategyName = formData.get('strategyName') || document.getElementById('strategyName')?.value;
+            const tradingSymbol = formData.get('tradingSymbol') || document.getElementById('tradingSymbol')?.value;
+            const timeframe = formData.get('timeframe') || document.getElementById('timeframe')?.value;
+            const riskPerTrade = formData.get('riskPerTrade') || document.getElementById('riskPerTrade')?.value;
+            const maxPositions = formData.get('maxPositions') || document.getElementById('maxPositions')?.value;
+            const stopLossPct = formData.get('stopLossPct') || document.getElementById('stopLossPct')?.value;
+            const takeProfitPct = formData.get('takeProfitPct') || document.getElementById('takeProfitPct')?.value;
+            
+            if (!strategyType || !strategyName || !tradingSymbol || !timeframe) {
+                this.showToast('错误', '请填写所有必需字段', 'danger');
+                return;
+            }
+            
+            const config = {
+                symbol: tradingSymbol,
+                timeframe: timeframe,
+                risk_per_trade: parseFloat(riskPerTrade),
+                max_positions: parseInt(maxPositions),
+                stop_loss_pct: parseFloat(stopLossPct),
+                take_profit_pct: parseFloat(takeProfitPct)
+            };
+            
+            // 动态收集策略特定参数
+            this.collectDynamicStrategyParams(config);
+            
+            // 获取选中的客户和信号源
+            const selectedSignalSources = Array.from(document.getElementById('signalSources')?.selectedOptions || [])
+                .map(option => option.value);
+            const selectedCustomers = Array.from(document.getElementById('customers')?.selectedOptions || [])
+                .map(option => option.value);
+
+            const requestData = {
+                strategy_type: strategyType,
+                name: strategyName,
+                config: config,
+                signal_sources: selectedSignalSources,
+                customers: selectedCustomers
+            };
+            
+            this.showToast('信息', '正在创建策略...', 'info');
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategy/create`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData)
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '策略创建成功', 'success');
+                    
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('createStrategyTradeModal'));
+                    if (modal) modal.hide();
+                    
+                    // 重置表单
+                    form.reset();
+                    
+                    // 刷新策略列表
+                    this.loadStrategyTradeList();
+                } else {
+                    this.showToast('错误', data.message || '策略创建失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '策略创建请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('创建策略失败:', error);
+            this.showToast('错误', '策略创建失败', 'danger');
+        }
+    }
+    
+    // 编辑策略
+    async editStrategy(strategyName) {
+        try {
+            console.log('编辑策略:', strategyName);
+            
+            // 获取策略详情
+            const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}`);
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.showEditStrategyModal(data.data);
+                } else {
+                    this.showToast('错误', data.message || '获取策略详情失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '获取策略详情请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('编辑策略失败:', error);
+            this.showToast('错误', '编辑策略失败', 'danger');
+        }
+    }
+
+    // 显示策略编辑模态框
+    async showEditStrategyModal(strategyData) {
+        console.log('显示策略编辑模态框:', strategyData);
+
+        // 填充基本信息
+        document.getElementById('editStrategyId').value = strategyData.name || strategyData.instance_name;
+        document.getElementById('editStrategyName').value = strategyData.name || strategyData.instance_name;
+        document.getElementById('editStrategyType').value = strategyData.strategy_type || strategyData.type;
+        document.getElementById('editTradingSymbol').value = strategyData.symbol || 'BTC-USDT';
+        document.getElementById('editTimeframe').value = strategyData.timeframe || '1h';
+
+        // 填充风险参数
+        if (strategyData.config) {
+            document.getElementById('editRiskPerTrade').value = strategyData.config.risk_per_trade || 0.02;
+            document.getElementById('editMaxPositions').value = strategyData.config.max_positions || 3;
+            document.getElementById('editStopLossPct').value = strategyData.config.stop_loss_pct || 0.02;
+            document.getElementById('editTakeProfitPct').value = strategyData.config.take_profit_pct || 0.06;
+        }
+
+        // 加载客户和信号源列表
+        await this.loadAccountsForStrategy('edit');
+
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('editStrategyModal'));
+        modal.show();
+
+        // 动态显示策略特定参数
+        this.showEditStrategyParams(strategyData.strategy_type || strategyData.type, strategyData.config);
+    }
+
+    // 显示编辑策略的特定参数
+    showEditStrategyParams(strategyType, config) {
+        const paramsContainer = document.getElementById('editStrategySpecificParams');
+        if (!paramsContainer) return;
+
+        let paramsHtml = '';
+
+        switch (strategyType) {
+            case 'MA_Cross_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="edit_short_period" class="form-label">短期均线周期</label>
+                            <input type="number" class="form-control" id="edit_short_period" 
+                                   value="${config?.short_period || 10}" min="5" max="50" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="edit_long_period" class="form-label">长期均线周期</label>
+                            <input type="number" class="form-control" id="edit_long_period" 
+                                   value="${config?.long_period || 20}" min="10" max="100" required>
+                        </div>
+                    </div>
+                `;
+                break;
+            case 'RSI_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="edit_rsi_period" class="form-label">RSI周期</label>
+                            <input type="number" class="form-control" id="edit_rsi_period" 
+                                   value="${config?.rsi_period || 14}" min="5" max="50" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="edit_oversold" class="form-label">超卖线</label>
+                            <input type="number" class="form-control" id="edit_oversold" 
+                                   value="${config?.rsi_oversold || config?.oversold || 30}" min="10" max="40" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="edit_overbought" class="form-label">超买线</label>
+                            <input type="number" class="form-control" id="edit_overbought" 
+                                   value="${config?.rsi_overbought || config?.overbought || 70}" min="60" max="90" required>
+                        </div>
+                    </div>
+                `;
+                break;
+            case 'MACD_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-4">
+                            <label for="edit_fast_period" class="form-label">快速EMA周期</label>
+                            <input type="number" class="form-control" id="edit_fast_period" 
+                                   value="${config?.fast_period || 12}" min="5" max="30" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="edit_slow_period" class="form-label">慢速EMA周期</label>
+                            <input type="number" class="form-control" id="edit_slow_period" 
+                                   value="${config?.slow_period || 26}" min="15" max="60" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="edit_signal_period" class="form-label">信号线周期</label>
+                            <input type="number" class="form-control" id="edit_signal_period" 
+                                   value="${config?.signal_period || 9}" min="5" max="20" required>
+                        </div>
+                    </div>
+                `;
+                break;
+            default:
+                paramsHtml = '<p class="text-muted">该策略类型使用默认参数</p>';
+        }
+
+        paramsContainer.innerHTML = paramsHtml;
+    }
+
+    // 加载账号列表用于策略关联
+    async loadAccountsForStrategy(mode = 'create') {
+        try {
+            let signalSourcesId, customersId;
+            if (mode === 'edit') {
+                signalSourcesId = 'editSignalSources';
+                customersId = 'editCustomers';
+            } else {
+                signalSourcesId = 'signalSources';
+                customersId = 'customers';
+            }
+            
+            const signalSourcesSelect = document.getElementById(signalSourcesId);
+            const customersSelect = document.getElementById(customersId);
+
+            if (!signalSourcesSelect || !customersSelect) return;
+
+            // 加载信号源
+            const signalSourcesResponse = await fetch(`${this.apiBaseUrl}/signal_sources`);
+            if (signalSourcesResponse.ok) {
+                const signalSourcesData = await signalSourcesResponse.json();
+                if (signalSourcesData.success && Array.isArray(signalSourcesData.data)) {
+                    signalSourcesSelect.innerHTML = signalSourcesData.data.map(source => 
+                        `<option value="${source.source_uid}">${source.name} (${source.source_uid})</option>`
+                    ).join('');
+                }
+            }
+
+            // 加载客户
+            const customersResponse = await fetch(`${this.apiBaseUrl}/customers`);
+            if (customersResponse.ok) {
+                const customersData = await customersResponse.json();
+                if (customersData.success && Array.isArray(customersData.data)) {
+                    customersSelect.innerHTML = customersData.data.map(customer => 
+                        `<option value="${customer.customer_uid}">${customer.name} (${customer.customer_uid})</option>`
+                    ).join('');
+                }
+            }
+
+        } catch (error) {
+            console.error('加载账号列表失败:', error);
+        }
+    }
+
+    // 保存策略编辑
+    async saveStrategyEdit() {
+        try {
+            const form = document.getElementById('editStrategyForm');
+            if (!form) {
+                this.showToast('错误', '编辑表单不存在', 'danger');
+                return;
+            }
+
+            const strategyId = document.getElementById('editStrategyId').value;
+            const strategyName = document.getElementById('editStrategyName').value;
+            const tradingSymbol = document.getElementById('editTradingSymbol').value;
+            const timeframe = document.getElementById('editTimeframe').value;
+            const riskPerTrade = document.getElementById('editRiskPerTrade').value;
+            const maxPositions = document.getElementById('editMaxPositions').value;
+            const stopLossPct = document.getElementById('editStopLossPct').value;
+            const takeProfitPct = document.getElementById('editTakeProfitPct').value;
+
+            if (!strategyName || !tradingSymbol || !timeframe) {
+                this.showToast('错误', '请填写所有必需字段', 'danger');
+                return;
+            }
+
+            // 构建配置对象
+            const config = {
+                symbol: tradingSymbol,
+                timeframe: timeframe,
+                risk_per_trade: parseFloat(riskPerTrade),
+                max_positions: parseInt(maxPositions),
+                stop_loss_pct: parseFloat(stopLossPct),
+                take_profit_pct: parseFloat(takeProfitPct)
+            };
+
+            // 获取策略特定参数
+            const strategyType = document.getElementById('editStrategyType').value;
+            this.collectEditStrategyParams(strategyType, config);
+
+            // 获取选中的客户和信号源
+            const selectedSignalSources = Array.from(document.getElementById('editSignalSources').selectedOptions)
+                .map(option => option.value);
+            const selectedCustomers = Array.from(document.getElementById('editCustomers').selectedOptions)
+                .map(option => option.value);
+
+            const requestData = {
+                name: strategyName,
+                config: config,
+                signal_sources: selectedSignalSources,
+                customers: selectedCustomers
+            };
+
+            this.showToast('信息', '正在保存策略...', 'info');
+
+            const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData)
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '策略更新成功', 'success');
+
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editStrategyModal'));
+                    if (modal) modal.hide();
+
+                    // 刷新策略列表
+                    this.loadStrategyTradeList();
+                } else {
+                    this.showToast('错误', data.message || '策略更新失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '策略更新请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('保存策略编辑失败:', error);
+            this.showToast('错误', '保存策略失败', 'danger');
+        }
+    }
+
+    // 收集编辑策略的特定参数
+    collectEditStrategyParams(strategyType, config) {
+        switch (strategyType) {
+            case 'MA_Cross_Strategy':
+                const shortPeriod = document.getElementById('edit_short_period')?.value;
+                const longPeriod = document.getElementById('edit_long_period')?.value;
+                if (shortPeriod) config.short_period = parseInt(shortPeriod);
+                if (longPeriod) config.long_period = parseInt(longPeriod);
+                break;
+            case 'RSI_Strategy':
+                const rsiPeriod = document.getElementById('edit_rsi_period')?.value;
+                const oversold = document.getElementById('edit_oversold')?.value;
+                const overbought = document.getElementById('edit_overbought')?.value;
+                if (rsiPeriod) config.rsi_period = parseInt(rsiPeriod);
+                if (oversold) config.rsi_oversold = parseInt(oversold);
+                if (overbought) config.rsi_overbought = parseInt(overbought);
+                break;
+            case 'MACD_Strategy':
+                const fastPeriod = document.getElementById('edit_fast_period')?.value;
+                const slowPeriod = document.getElementById('edit_slow_period')?.value;
+                const signalPeriod = document.getElementById('edit_signal_period')?.value;
+                if (fastPeriod) config.fast_period = parseInt(fastPeriod);
+                if (slowPeriod) config.slow_period = parseInt(slowPeriod);
+                if (signalPeriod) config.signal_period = parseInt(signalPeriod);
+                break;
+        }
+    }
+    
+    // 策略类型变化处理
+    async onStrategyTypeChange(strategyType) {
+        console.log('🔄 策略类型变化:', strategyType);
+        await this.showStrategyParams(strategyType);
+    }
+
+    // 根据策略类型显示参数表单
+    async showStrategyParams(strategyType) {
+        console.log('📋 开始生成策略参数表单:', strategyType);
+        const paramsContainer = document.getElementById('strategySpecificParams');
+        if (!paramsContainer) {
+            console.error('❌ 找不到参数容器 strategySpecificParams');
+            return;
+        }
+
+        paramsContainer.innerHTML = '';
+
+        if (!strategyType) {
+            console.log('⚠️ 策略类型为空，清空参数区域');
+            return;
+        }
+
+        try {
+            console.log('🌐 正在获取策略模板:', `${this.apiBaseUrl}/strategy/templates/${strategyType}`);
+            // 获取策略模板
+            const response = await fetch(`${this.apiBaseUrl}/strategy/templates/${strategyType}`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            console.log('📥 API响应数据:', data);
+            
+            if (!data.success) {
+                throw new Error(data.message || '获取策略模板失败');
+            }
+
+            const template = data.data;
+            const config = template.default_config;
+            const validation = template.validation_rules || {};
+
+            console.log('⚙️ 策略模板数据:', {
+                name: template.display_name,
+                config: Object.keys(config),
+                validation: Object.keys(validation)
+            });
+
+            // 创建参数表单
+            const formHtml = this.generateStrategyParamsForm(strategyType, config, validation);
+            console.log('🎨 生成的表单HTML长度:', formHtml.length);
+            
+            if (formHtml) {
+                paramsContainer.innerHTML = `
+                    <hr>
+                    <h6>策略参数 - ${template.display_name}</h6>
+                    <p class="text-muted small">${template.description}</p>
+                    ${formHtml}
+                `;
+                console.log('✅ 策略参数表单已渲染');
+            } else {
+                console.log('⚠️ 生成的表单HTML为空');
+                paramsContainer.innerHTML = `
+                    <hr>
+                    <h6>策略参数 - ${template.display_name}</h6>
+                    <p class="text-muted">该策略使用默认参数配置</p>
+                `;
+            }
+
+        } catch (error) {
+            console.error('❌ 显示策略参数失败:', error);
+            paramsContainer.innerHTML = `
+                <hr>
+                <h6>策略参数</h6>
+                <div class="alert alert-warning">无法加载策略参数: ${error.message}</div>
+            `;
+        }
+    }
+
+    // 生成策略参数表单
+    generateStrategyParamsForm(strategyType, config, validation) {
+        console.log('🔧 开始生成参数表单:', strategyType);
+        console.log('📝 配置参数:', config);
+        console.log('✅ 验证规则:', validation);
+        
+        let formHtml = '<div class="row">';
+
+        // 策略特定参数
+        switch (strategyType) {
+            case 'MA_Cross_Strategy':
+                ['short_period', 'long_period'].forEach(param => {
+                    if (config.hasOwnProperty(param)) {
+                        formHtml += this.generateParamInput(param, config[param], validation[param]);
+                    }
+                });
+                break;
+                
+            case 'RSI_Strategy':
+                ['rsi_period', 'rsi_oversold', 'rsi_overbought'].forEach(param => {
+                    if (config.hasOwnProperty(param)) {
+                        formHtml += this.generateParamInput(param, config[param], validation[param]);
+                    }
+                });
+                break;
+                
+            case 'Bollinger_Strategy':
+                ['bb_period', 'bb_std'].forEach(param => {
+                    if (config.hasOwnProperty(param)) {
+                        formHtml += this.generateParamInput(param, config[param], validation[param]);
+                    }
+                });
+                break;
+                
+            case 'MACD_Strategy':
+                ['fast_period', 'slow_period', 'signal_period'].forEach(param => {
+                    if (config.hasOwnProperty(param)) {
+                        formHtml += this.generateParamInput(param, config[param], validation[param]);
+                    }
+                });
+                break;
+                
+            case 'Grid_Strategy':
+                ['grid_levels', 'grid_spacing', 'base_price'].forEach(param => {
+                    if (config.hasOwnProperty(param)) {
+                        formHtml += this.generateParamInput(param, config[param], validation[param]);
+                    }
+                });
+                break;
+        }
+
+        formHtml += '</div>';
+        console.log('🎯 最终表单HTML:', formHtml);
+        return formHtml;
+    }
+
+    // 生成单个参数输入框
+    generateParamInput(paramName, defaultValue, validation) {
+        const label = this.getParamLabel(paramName);
+        const type = this.getParamInputType(paramName, validation);
+        const min = validation?.min || '';
+        const max = validation?.max || '';
+        const step = type === 'number' && paramName.includes('pct') ? '0.001' : 
+                    type === 'number' && paramName.includes('std') ? '0.1' : '1';
+
+        return `
+            <div class="col-md-6 mb-3">
+                <label for="${paramName}" class="form-label">${label}</label>
+                <input type="${type}" 
+                       class="form-control" 
+                       id="${paramName}" 
+                       name="${paramName}"
+                       value="${defaultValue}"
+                       ${min ? `min="${min}"` : ''}
+                       ${max ? `max="${max}"` : ''}
+                       ${type === 'number' ? `step="${step}"` : ''}
+                       required>
+                <div class="form-text">${this.getParamDescription(paramName)}</div>
+            </div>
+        `;
+    }
+
+    // 获取参数标签
+    getParamLabel(paramName) {
+        const labels = {
+            'short_period': '短期均线周期',
+            'long_period': '长期均线周期',
+            'rsi_period': 'RSI周期',
+            'rsi_oversold': 'RSI超卖线',
+            'rsi_overbought': 'RSI超买线',
+            'bb_period': '布林带周期',
+            'bb_std': '布林带标准差',
+            'fast_period': 'MACD快线周期',
+            'slow_period': 'MACD慢线周期',
+            'signal_period': 'MACD信号线周期',
+            'grid_levels': '网格层数',
+            'grid_spacing': '网格间距',
+            'base_price': '基准价格'
+        };
+        return labels[paramName] || paramName;
+    }
+
+    // 获取参数输入类型
+    getParamInputType(paramName, validation) {
+        if (validation?.type === 'int') return 'number';
+        if (validation?.type === 'float') return 'number';
+        return 'number';
+    }
+
+    // 获取参数描述
+    getParamDescription(paramName) {
+        const descriptions = {
+            'short_period': '短期移动平均线周期',
+            'long_period': '长期移动平均线周期',
+            'rsi_period': 'RSI计算周期',
+            'rsi_oversold': '超卖阈值 (通常20-40)',
+            'rsi_overbought': '超买阈值 (通常60-80)',
+            'bb_period': '布林带计算周期',
+            'bb_std': '标准差倍数',
+            'fast_period': 'MACD快线周期',
+            'slow_period': 'MACD慢线周期',
+            'signal_period': 'MACD信号线周期',
+            'grid_levels': '网格总层数',
+            'grid_spacing': '网格间距百分比',
+            'base_price': '网格中心价格'
+        };
+        return descriptions[paramName] || '';
+    }
+
+    // 动态收集策略参数
+    collectDynamicStrategyParams(config) {
+        const paramsContainer = document.getElementById('strategySpecificParams');
+        if (!paramsContainer) return;
+
+        // 获取所有参数输入框
+        const inputs = paramsContainer.querySelectorAll('input[name]');
+        inputs.forEach(input => {
+            const paramName = input.name;
+            let value = input.value;
+
+            // 根据输入类型转换值
+            if (input.type === 'number') {
+                if (paramName.includes('period') || paramName.includes('levels') || paramName.includes('oversold') || paramName.includes('overbought')) {
+                    value = parseInt(value);
+                } else {
+                    value = parseFloat(value);
+                }
+            }
+
+            // 添加到配置中
+            config[paramName] = value;
+        });
+    }
+    
+    // 收集回测策略参数
+    collectBacktestStrategyParams(strategyType, symbol) {
+        const config = {
+            symbol: symbol,
+            timeframe: '1h'
+        };
+        
+        try {
+            console.log(`🔍 动态收集策略 ${strategyType} 的参数...`);
+            
+            // 使用动态参数收集而不是硬编码
+            const paramsContainer = document.getElementById('backtestStrategyParams');
+            if (paramsContainer) {
+                const inputs = paramsContainer.querySelectorAll('input[name], select[name]');
+                console.log(`📋 找到 ${inputs.length} 个动态参数输入框`);
+                
+                inputs.forEach(input => {
+                    const paramName = input.name;
+                    let value = input.value;
+                    
+                    if (input.type === 'number') {
+                        // 根据参数名判断是整数还是浮点数
+                        if (paramName.includes('period') || paramName.includes('levels') || 
+                            paramName.includes('oversold') || paramName.includes('overbought') ||
+                            paramName.includes('threshold') && !paramName.includes('adjustment')) {
+                            value = parseInt(value);
+                        } else {
+                            value = parseFloat(value);
+                        }
+                    } else if (input.type === 'checkbox') {
+                        value = input.checked;
+                    }
+                    
+                    config[paramName] = value;
+                    console.log(`📝 动态参数: ${paramName} = ${value} (${typeof value})`);
+                });
+            } else {
+                console.warn('⚠️ 未找到动态参数容器，使用默认值');
+            }
+            
+            // 验证必需参数
+            this.validateStrategyParams(strategyType, config);
+            
+            console.log(`✅ 收集到策略参数:`, config);
+            return config;
+            
+        } catch (error) {
+            console.error('策略参数收集失败:', error);
+            this.showToast('错误', error.message, 'danger');
+            return null;
+        }
+    }
+    
+    // 验证策略参数
+    validateStrategyParams(strategyType, config) {
+        switch (strategyType) {
+            case 'MA_Cross_Strategy':
+                if (!config.short_period || !config.long_period) {
+                    throw new Error('移动平均线周期参数无效');
+                }
+                if (config.short_period >= config.long_period) {
+                    throw new Error('短期均线周期必须小于长期均线周期');
+                }
+                break;
+                
+            case 'RSI_Strategy':
+                if (!config.rsi_period) {
+                    throw new Error('RSI周期参数无效');
+                }
+                // 使用动态发现的参数名
+                const oversold = config.oversold_level || config.rsi_oversold;
+                const overbought = config.overbought_level || config.rsi_overbought;
+                if (oversold && overbought && oversold >= overbought) {
+                    throw new Error('超卖线必须小于超买线');
+                }
+                break;
+                
+            case 'Grid_Strategy':
+                if (!config.grid_levels || !config.grid_spacing || !config.base_price) {
+                    throw new Error('网格策略参数无效：需要网格层数、网格间距和基准价格');
+                }
+                if (config.grid_levels < 3) {
+                    throw new Error('网格层数不能少于3层');
+                }
+                if (config.grid_spacing <= 0 || config.grid_spacing > 0.5) {
+                    throw new Error('网格间距必须在0到50%之间');
+                }
+                break;
+                
+            case 'Bollinger_Strategy':
+                if (!config.period || !config.std_dev) {
+                    throw new Error('布林带参数无效');
+                }
+                break;
+                
+            default:
+                console.log(`✅ 策略 ${strategyType} 使用默认参数验证`);
+                break;
+        }
+    }
+    
+    // 运行回测
+    async runBacktest() {
+        try {
+            const form = document.getElementById('backtestForm');
+            if (!form) {
+                this.showToast('错误', '回测表单不存在', 'danger');
+                return;
+            }
+            
+            // 获取表单数据
+            const strategySelectValue = document.getElementById('backtestStrategy')?.value;
+            const backtestName = document.getElementById('backtestName')?.value;
+            const startDate = document.getElementById('backtestStartDate')?.value;
+            const endDate = document.getElementById('backtestEndDate')?.value;
+            const capital = document.getElementById('backtestCapital')?.value;
+            const symbol = document.getElementById('backtestSymbol')?.value;
+            
+            if (!strategySelectValue || !backtestName || !startDate || !endDate || !capital) {
+                this.showToast('错误', '请填写所有必需字段', 'danger');
+                return;
+            }
+            
+            // 解析策略选择值（可能是模板或实例）
+            let strategyName;
+            let isTemplate = false;
+            
+            if (strategySelectValue.startsWith('template:')) {
+                strategyName = strategySelectValue.replace('template:', '');
+                isTemplate = true;
+            } else if (strategySelectValue.startsWith('instance:')) {
+                strategyName = strategySelectValue.replace('instance:', '');
+                isTemplate = false;
+            } else {
+                // 兼容旧格式
+                strategyName = strategySelectValue;
+                isTemplate = false;
+            }
+            
+            this.showToast('信息', `正在运行回测 (${isTemplate ? '策略模板' : '策略实例'})，请稍候...`, 'info');
+            
+            // 收集策略参数
+            let strategyConfig = {
+                symbol: symbol,
+                timeframe: '1h'
+            };
+            
+            // 如果是策略模板，需要收集用户输入的参数
+            if (isTemplate) {
+                strategyConfig = this.collectBacktestStrategyParams(strategyName, symbol);
+                if (!strategyConfig) {
+                    this.showToast('错误', '策略参数配置无效', 'danger');
+                    return;
+                }
+            }
+            
+            // 调用回测API
+            const requestData = {
+                strategy_name: strategyName,
+                backtest_name: backtestName,
+                start_date: startDate,
+                end_date: endDate,
+                initial_capital: parseFloat(capital),
+                symbol: symbol,
+                is_template: isTemplate,  // 新增字段，告诉后端这是模板还是实例
+                strategy_config: strategyConfig  // 策略配置参数
+            };
+            
+            console.log('开始回测，参数:', requestData);
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategy/backtests`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData)
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '回测运行完成！', 'success');
+                    console.log('回测结果:', data.data);
+                    
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('backtestModal'));
+                    if (modal) modal.hide();
+                    
+                    // 重置表单
+                    form.reset();
+                    
+                    // 刷新回测历史
+                    this.loadBacktestHistory();
+                    
+                    // 显示回测结果摘要
+                    if (data.data && data.data.performance_stats) {
+                        const stats = data.data.performance_stats;
+                        this.showToast('信息', 
+                            `回测完成！总收益率: ${(stats.total_return * 100).toFixed(2)}%, ` +
+                            `胜率: ${(stats.win_rate * 100).toFixed(1)}%, ` +
+                            `最大回撤: ${(stats.max_drawdown * 100).toFixed(2)}%`, 
+                            'info');
+                    }
+                } else {
+                    this.showToast('错误', data.message || '回测运行失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || `回测请求失败 (${response.status})`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('运行回测失败:', error);
+            this.showToast('错误', `回测运行失败: ${error.message}`, 'danger');
+        }
+    }
 }
 
 // 页面加载完成后初始化应用
@@ -6579,6 +8811,71 @@ window.addEventListener('error', (event) => {
     console.error('全局错误:', event.error);
     if (window.app) {
         window.app.showToast('错误', '系统发生错误，请查看控制台', 'danger');
+    }
+});
+
+// ==================== 策略交易事件处理 ====================
+
+// 等待DOM加载完成后绑定事件
+document.addEventListener('DOMContentLoaded', function() {
+    // 初始化数据库按钮
+    const initDbBtn = document.getElementById('initDatabaseBtn');
+    if (initDbBtn) {
+        initDbBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.initDatabase();
+            }
+        });
+    }
+    
+    // 创建策略按钮
+    const createStrategyBtn = document.getElementById('createStrategyBtn');
+    if (createStrategyBtn) {
+        createStrategyBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.createStrategyTrade();
+            }
+        });
+    }
+    
+    // 运行回测按钮
+    const runBacktestBtn = document.getElementById('runBacktestBtn');
+    if (runBacktestBtn) {
+        runBacktestBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.runBacktest();
+            }
+        });
+    }
+    
+    // 策略类型变化事件
+    const strategyTypeSelect = document.getElementById('strategyType');
+    if (strategyTypeSelect) {
+        strategyTypeSelect.addEventListener('change', (e) => {
+            if (window.app) {
+                window.app.onStrategyTypeChange(e.target.value);
+            }
+        });
+    }
+    
+    // 创建策略模态框显示事件
+    const createStrategyModal = document.getElementById('createStrategyTradeModal');
+    if (createStrategyModal) {
+        createStrategyModal.addEventListener('show.bs.modal', () => {
+            if (window.app) {
+                window.app.loadAccountsForStrategy('create');
+            }
+        });
+    }
+    
+    // 编辑策略保存按钮事件
+    const saveStrategyBtn = document.getElementById('saveStrategyBtn');
+    if (saveStrategyBtn) {
+        saveStrategyBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.saveStrategyEdit();
+            }
+        });
     }
 });
 

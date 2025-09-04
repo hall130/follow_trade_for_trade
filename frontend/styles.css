@@ -2266,3 +2266,69 @@ body {
         height: 400px !important;
     }
 }
+
+/* 回测详情模态框样式优化 */
+#backtestDetailModal .table {
+    margin-bottom: 0;
+    table-layout: fixed;
+    width: 100%;
+}
+
+#backtestDetailModal .table td {
+    padding: 0.2rem 0.5rem;
+    vertical-align: middle;
+    border: none;
+    line-height: 1.2;
+}
+
+#backtestDetailModal .table td:first-child {
+    font-weight: 500;
+    color: #495057;
+    width: 45%;
+    padding-right: 0.25rem;
+}
+
+#backtestDetailModal .table td:last-child {
+    font-weight: 600;
+    width: 55%;
+    padding-left: 0.25rem;
+}
+
+/* 确保表格在小屏幕上不会溢出 */
+#backtestDetailModal .table-responsive {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* 性能指标数值右对齐并添加样式 */
+#backtestDetailModal .text-end {
+    text-align: right !important;
+}
+
+/* 收益率颜色 */
+#detailTotalReturn.positive {
+    color: #198754 !important;
+    font-weight: bold;
+}
+
+#detailTotalReturn.negative {
+    color: #dc3545 !important;
+    font-weight: bold;
+}
+
+/* 模态框内容优化 */
+#backtestDetailModal .modal-body {
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+/* 表格列宽控制 */
+#backtestDetailModal .table td:first-child {
+    width: 40%;
+    white-space: nowrap;
+}
+
+#backtestDetailModal .table td:last-child {
+    width: 60%;
+    word-wrap: break-word;
+}
