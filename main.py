@@ -20,7 +20,6 @@ def optimize_system_resources():
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
             
             # 设置更高的并发限制
-            import threading
             threading.stack_size(2**20)  # 1MB栈大小
             
             logger.info("Windows系统资源优化完成")
@@ -41,7 +40,6 @@ def optimize_system_resources():
                     logger.warning(f"无法提高文件描述符限制: {e}")
             
             # 设置更高的并发限制
-            import threading
             threading.stack_size(2**20)  # 1MB栈大小
             
             logger.info("Unix/Linux系统资源优化完成")
@@ -53,8 +51,7 @@ def start_frontend():
     """启动前端Web服务器"""
     try:
         import subprocess
-        import os
-        import sys
+        import socket
         
         # 检查frontend目录是否存在
         frontend_dir = os.path.join(os.path.dirname(__file__), 'frontend')
@@ -66,8 +63,6 @@ def start_frontend():
         port = 8080
         while port < 8090:
             try:
-                # 检查端口是否可用
-                import socket
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 result = sock.connect_ex(('localhost', port))
                 sock.close()
@@ -83,21 +78,15 @@ def start_frontend():
             return
         
         logger.info(f"🌐 准备启动前端服务器: http://localhost:{port}")
-        logger.info(f"📁 前端目录: {os.path.abspath(frontend_dir)}")
+        logger.info(f"�� 前端目录: {os.path.abspath(frontend_dir)}")
         
-        # 使用subprocess启动前端服务器
         def run_frontend_server():
             try:
                 # 切换到前端目录
                 os.chdir(frontend_dir)
                 
                 # 启动HTTP服务器
-                if sys.platform.startswith('win'):
-                    # Windows系统
-                    cmd = [sys.executable, '-m', 'http.server', str(port)]
-                else:
-                    # Unix/Linux系统
-                    cmd = [sys.executable, '-m', 'http.server', str(port)]
+                cmd = [sys.executable, '-m', 'http.server', str(port)]
                 
                 # 启动服务器进程
                 process = subprocess.Popen(
@@ -160,7 +149,6 @@ def start_frontend_fallback(port, frontend_dir):
     try:
         logger.info("尝试使用备用方式启动前端服务器...")
         
-        # 使用更简单的方式启动
         def run_simple_server():
             try:
                 import http.server
@@ -230,9 +218,50 @@ def start_flask():
     )
 
 def start_trade():
-    """启动交易服务"""
-    from core.market_trade.trade_server import start_trade as trade_start
-    trade_start()
+    """启动交易服务（包含限价跟单监控）"""
+    try:
+        logger.info("🚀 启动交易服务和限价跟单监控...")
+        
+        # 在后台线程启动限价跟单监控
+        limit_follow_thread = threading.Thread(target=start_limit_follow_background, daemon=True)
+        limit_follow_thread.start()
+        logger.info("✅ 限价跟单监控已在后台启动")
+        
+        # 等待一下确保监控启动
+        time.sleep(2)
+        
+        # 启动主要交易服务
+        from core.market_trade.trade_server import start_trade as trade_start
+        trade_start()
+        
+    except Exception as e:
+        logger.error(f"启动交易服务失败: {e}")
+
+def start_limit_follow_background():
+    """后台启动限价跟单监控"""
+    try:
+        logger.info("🔄 初始化限价跟单监控服务...")
+        time.sleep(5)  # 等待主服务启动
+        
+        from core.limit_trade.limit_follow_service import get_limit_follow_service
+        service = get_limit_follow_service()
+        
+        # 启动监控
+        import asyncio
+        asyncio.run(service.start_monitoring())
+        
+    except Exception as e:
+        logger.error(f"限价跟单监控启动失败: {e}")
+        # 如果监控启动失败，尝试重新启动
+        try:
+            logger.info("🔄 尝试重新启动限价跟单监控...")
+            time.sleep(15)  # 增加等待时间
+            from core.limit_trade.limit_follow_service import get_limit_follow_service
+            service = get_limit_follow_service()
+            import asyncio
+            asyncio.run(service.start_monitoring())
+        except Exception as retry_error:
+            logger.error(f"重新启动限价跟单监控失败: {retry_error}")
 
 def start_strategy_trade():
     """启动策略交易模块"""
@@ -240,13 +269,12 @@ def start_strategy_trade():
     try:
         import asyncio
         from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
-        from database.db import MySQLPool, get_db_pool
-        from config import get_mysql_config
+        from database.db import get_db_pool
         
         async def run_strategy_trade():
             try:
-                # 获取数据库连接池 (同步方式，但在异步环境中正确使用)
-                db_pool = get_db_pool()  # 不使用await，因为这是同步函数
+                # 获取数据库连接池
+                db_pool = get_db_pool()
                 
                 # 创建异步策略管理器
                 strategy_manager = AsyncStrategyManager(db_pool)
@@ -288,10 +316,10 @@ def start_unified_api_server():
         # 等待API服务器启动
         time.sleep(2)
         
-        # 启动跟单监控器
-        monitor_thread = threading.Thread(target=start_follow_monitor, daemon=True)
-        monitor_thread.start()
-        logger.info("跟单监控器启动成功")
+        # 启动限价跟单监控器
+        limit_follow_thread = threading.Thread(target=start_limit_follow_background, daemon=True)
+        limit_follow_thread.start()
+        logger.info("✅ 限价跟单监控已在后台启动")
         
         # 保持服务运行
         while True:
@@ -325,12 +353,11 @@ def start_follow_monitor():
     """启动跟单监控器"""
     try:
         from core.limit_trade.limit_follow_executor import LimitFollowExecutor
-        from database.db import MySQLPool
-        from config import get_mysql_config
-        # 初始化数据库连接
-        db_pool = MySQLPool(
-            **get_mysql_config()
-        )
+        from database.global_db_manager import get_global_db_pool
+        
+        # 使用全局数据库连接池
+        db_pool = get_global_db_pool()
+        logger.info("🎯 跟单监控器使用全局数据库连接池")
         
         # 创建跟单执行器
         executor = LimitFollowExecutor(db_pool)
@@ -348,11 +375,11 @@ def start_limit_follow_monitor_only():
         logger.info("启动限价跟单监控器...")
         
         from core.limit_trade.limit_follow_executor import LimitFollowExecutor
-        from config import get_mysql_config
-        # 初始化数据库连接
-        db_pool = MySQLPool(
-            **get_mysql_config()
-        )
+        from database.global_db_manager import get_global_db_pool
+        
+        # 使用全局数据库连接池
+        db_pool = get_global_db_pool()
+        logger.info("🎯 限价跟单监控器使用全局数据库连接池")
         
         # 创建跟单执行器
         executor = LimitFollowExecutor(db_pool)
@@ -375,11 +402,11 @@ OKX交易所自动跟单系统启动器
     python main.py [模式] [选项]
 
 模式:
-    trade                    - 仅启动交易模块
+    trade                    - 仅启动交易模块（包含限价跟单监控）
     strategy                 - 仅启动策略交易模块
-    api                      - 启动统一API服务器（包含所有功能）
+    api                      - 启动统一API服务器（包含限价跟单监控）
     limit-follow             - 仅启动限价跟单监控器
-    all                      - 同时启动交易模块、策略交易模块、统一API服务器和前端界面 (默认)
+    all                      - 同时启动所有模块和前端界面 (默认)
     frontend                 - 仅启动前端界面
     help                     - 显示此帮助信息
 
@@ -452,7 +479,7 @@ def main():
     
     # 根据模式启动相应服务
     if mode == 'trade':
-        logger.info("🚀 启动交易模块...")
+        logger.info("�� 启动交易模块...")
         start_trade()
     elif mode == 'strategy':
         logger.info("🚀 启动策略交易模块...")
@@ -461,7 +488,7 @@ def main():
         logger.info("🚀 启动统一API服务器...")
         start_unified_api_server()
     elif mode == 'limit-follow':
-        logger.info("🚀 启动限价跟单监控器...")
+        logger.info("�� 启动限价跟单监控器...")
         start_limit_follow()
     elif mode == 'frontend':
         logger.info("🚀 启动前端界面...")
@@ -473,16 +500,16 @@ def main():
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
     elif mode == 'all':
-        logger.info("🚀 同时启动交易模块、策略交易模块、统一API服务器和前端界面...")
+        logger.info("🚀 同时启动所有模块和前端界面...")
         
         # 启动前端（如果启用）
         if start_frontend_flag:
-            logger.info("🌐 启动前端界面...")
+            logger.info("�� 启动前端界面...")
             start_frontend()
         
         # 启动三个后端进程
-        p1 = Process(target=start_flask)  # 统一API服务器
-        p2 = Process(target=start_trade)  # 交易模块
+        p1 = Process(target=start_flask)  # API服务器
+        p2 = Process(target=start_trade)  # 交易模块（包含限价跟单监控）
         p3 = Process(target=start_strategy_trade)  # 策略交易模块
         
         p1.start()
