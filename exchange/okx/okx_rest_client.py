@@ -12,7 +12,7 @@ import hashlib
 import base64
 import json
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from utils.logger import logger
 
 
@@ -82,18 +82,23 @@ class OKXRESTClient:
         logger.debug(f"请求头: {headers}")
         return headers
     
-    async def _request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
+    async def _request(self, method: str, endpoint: str, data: Optional[Dict] = None, params: Optional[Dict] = None) -> Dict[str, Any]:
         """发送HTTP请求"""
         url = f"{self.api_url}{endpoint}"
         
+        # 处理查询参数
+        if params and method == 'GET':
+            query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+            url += f"?{query_string}"
+            request_path = f"/api/v5{endpoint}?{query_string}"
+        else:
+            request_path = f"/api/v5{endpoint}"
+        
         # 确保body格式正确
-        if data:
-            body = json.dumps(data, separators=(',', ':'))  # 使用紧凑格式，避免空格
+        if data and method != 'GET':
+            body = json.dumps(data, separators=(',', ':'))
         else:
             body = ''
-        
-        # 构建完整的请求路径（包含/api/v5前缀）
-        request_path = f"/api/v5{endpoint}"
         
         headers = self._get_headers(method, request_path, body)
         
@@ -107,9 +112,7 @@ class OKXRESTClient:
                     async with session.get(url, headers=headers) as response:
                         result = await response.json()
                 elif method == 'POST':
-                    # 确保POST请求使用正确的数据格式
                     if data:
-                        # 使用data=body确保与签名一致
                         async with session.post(url, headers=headers, data=body) as response:
                             result = await response.json()
                     else:
@@ -117,8 +120,6 @@ class OKXRESTClient:
                             result = await response.json()
                 else:
                     raise ValueError(f"不支持的HTTP方法: {method}")
-                
-                logger.info(f"REST API请求: {method} {endpoint}, 响应: {result}")
                 
                 # 检查API响应中的错误
                 if result.get('code') != '0':
@@ -200,5 +201,32 @@ class OKXRESTClient:
         data = {"posMode": posMode}
         return await self._request('POST', endpoint, data)
 
-
+    async def get_historical_klines(self, symbol: str, interval: str, 
+                                start_time: int = None, end_time: int = None, 
+                                limit: int = 100) -> List:
+        """获取历史K线数据"""
+        try:
+            endpoint = "/market/history-candles"
+            params = {
+                'instId': symbol,
+                'bar': interval,
+                'limit': str(limit)
+            }
+            
+            if start_time:
+                params['before'] = str(start_time)
+            if end_time:
+                params['after'] = str(end_time)
+            
+            response = await self._request('GET', endpoint, params=params)
+            
+            if response.get('code') == '0':
+                return response.get('data', [])
+            else:
+                logger.error(f"获取历史K线失败: {response}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"获取历史K线异常: {e}")
+            return []
  

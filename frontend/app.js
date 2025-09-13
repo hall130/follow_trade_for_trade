@@ -284,6 +284,14 @@ class OKXTradingApp {
             });
         }
 
+        // 策略管理模态框事件
+        const saveStrategyManagementBtn = document.getElementById('saveStrategyManagementBtn');
+        if (saveStrategyManagementBtn) {
+            saveStrategyManagementBtn.addEventListener('click', () => {
+                this.saveStrategyManagement();
+            });
+        }
+
         // 策略模态框事件
         const saveStrategyBtn = document.getElementById('saveStrategyBtn');
         if (saveStrategyBtn) {
@@ -424,7 +432,7 @@ class OKXTradingApp {
             });
             // 添加显示事件，加载信号源和客户选项
             addStrategyModal.addEventListener('show.bs.modal', () => {
-                this.loadAccountsForStrategy('create');
+                this.loadSignalSourcesOptions('create');
             });
         }
 
@@ -707,7 +715,7 @@ class OKXTradingApp {
                 },
                 {
                     title: '交易完成',
-                    description: 'BTC-USDT 买入订单执行成功',
+                    description: 'BTC-USDT-SWAP 买入订单执行成功',
                     timestamp: new Date(Date.now() - 300000).toISOString()
                 }
             ]);
@@ -3447,7 +3455,7 @@ class OKXTradingApp {
     }
 
     // 保存策略
-    saveStrategy() {
+    saveStrategyManagement() {
         const form = document.getElementById('addStrategyForm');
         if (form && form.checkValidity()) {
             const strategyData = {
@@ -3516,7 +3524,7 @@ class OKXTradingApp {
             if (response.ok) {
                 this.showToast('成功', '策略更新成功', 'success');
                 // 关闭模态框
-                const modal = bootstrap.Modal.getInstance(document.getElementById('addStrategyModal'));
+                const modal = bootstrap.Modal.getInstance(document.getElementById('addStrategyTradeModal'));
                 if (modal) {
                     modal.hide();
                 }
@@ -6713,24 +6721,24 @@ class OKXTradingApp {
                 <td class="text-danger">${strategy.max_drawdown ? (strategy.max_drawdown * 100).toFixed(2) + '%' : '-'}</td>
                 <td>
                     <div class="btn-group btn-group-sm">
-                        <button class="btn btn-outline-primary btn-sm" onclick="app.viewStrategyDetail('${strategy.name || strategy.instance_name}')" title="查看详情">
+                        <button class="btn btn-outline-primary btn-sm" onclick="app.viewStrategyTradeDetail('${strategy.name || strategy.instance_name}')" title="查看详情">
                             <i class="bi bi-eye"></i>
                         </button>
-                        <button class="btn btn-outline-secondary btn-sm" onclick="app.editStrategy('${strategy.name || strategy.instance_name}')" title="编辑策略">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="app.editStrategyTrade('${strategy.name || strategy.instance_name}')" title="编辑策略">
                             <i class="bi bi-pencil"></i>
                         </button>
                         ${strategy.status === 'STOPPED' ? 
-                            `<button class="btn btn-outline-success btn-sm" onclick="app.startStrategy('${strategy.name || strategy.instance_name}')" title="启动策略">
+                            `<button class="btn btn-outline-success btn-sm" onclick="app.startStrategyTrade('${strategy.name || strategy.instance_name}')" title="启动策略">
                                 <i class="bi bi-play"></i>
                             </button>` :
-                            `<button class="btn btn-outline-warning btn-sm" onclick="app.stopStrategy('${strategy.name || strategy.instance_name}')" title="停止策略">
+                            `<button class="btn btn-outline-warning btn-sm" onclick="app.stopStrategyTrade('${strategy.name || strategy.instance_name}')" title="停止策略">
                                 <i class="bi bi-pause"></i>
                             </button>`
                         }
                         <button class="btn btn-outline-info btn-sm" onclick="app.showBacktestModal('${strategy.name || strategy.instance_name}')" title="运行回测">
                             <i class="bi bi-graph-up"></i>
                         </button>
-                        <button class="btn btn-outline-danger btn-sm" onclick="app.deleteStrategy('${strategy.name || strategy.instance_name}')" title="删除策略">
+                        <button class="btn btn-outline-danger btn-sm" onclick="app.deleteStrategyTrade('${strategy.name || strategy.instance_name}')" title="删除策略">
                             <i class="bi bi-trash"></i>
                         </button>
                     </div>
@@ -6850,13 +6858,13 @@ class OKXTradingApp {
     }
     
     // 查看策略详情
-    async viewStrategyDetail(strategyName) {
+    async viewStrategyTradeDetail(strategyName) {
         try {
             const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}`);
             if (response.ok) {
                 const data = await response.json();
                 if (data.success && data.data) {
-                    this.showStrategyDetailModal(data.data);
+                    this.showStrategyTradeDetailModal(data.data);
                 } else {
                     this.showToast('错误', '获取策略详情失败', 'danger');
                 }
@@ -6870,7 +6878,7 @@ class OKXTradingApp {
     }
     
     // 显示策略详情模态框
-    showStrategyDetailModal(strategy) {
+    showStrategyTradeDetailModal(strategy) {
         // 填充基本信息
         const elements = {
             'strategyDetailName': strategy.name || '-',
@@ -6903,7 +6911,7 @@ class OKXTradingApp {
     }
     
     // 启动策略
-    async startStrategy(strategyName) {
+    async startStrategyTrade(strategyName) {
         try {
             const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}/start`, {
                 method: 'POST',
@@ -6930,7 +6938,7 @@ class OKXTradingApp {
     }
     
     // 停止策略
-    async stopStrategy(strategyName) {
+    async stopStrategyTrade(strategyName) {
         try {
             const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}/stop`, {
                 method: 'POST',
@@ -6957,7 +6965,7 @@ class OKXTradingApp {
     }
     
     // 删除策略
-    async deleteStrategy(strategyName) {
+    async deleteStrategyTrade(strategyName) {
         console.log(`🗑️ 尝试删除策略: ${strategyName}`);
         
         if (!confirm(`确定要删除策略 "${strategyName}" 吗？此操作不可撤销。`)) {
@@ -7374,7 +7382,7 @@ class OKXTradingApp {
     // 查看回测详情
     async viewBacktestDetail(backtestId) {
         try {
-            console.log('查看回测详情:', backtestId);
+            //console.log('查看回测详情:', backtestId);
             
             // 获取回测详情数据
             const response = await fetch(`${this.apiBaseUrl}/strategy/backtests/${backtestId}`);
@@ -7397,7 +7405,7 @@ class OKXTradingApp {
 
     // 显示回测详情模态框
     showBacktestDetailModal(backtestData) {
-        console.log('显示回测详情:', backtestData);
+        //console.log('显示回测详情:', backtestData);
 
         // 填充基本信息
         document.getElementById('detailBacktestName').textContent = backtestData.backtest_name || '-';
@@ -7441,7 +7449,7 @@ class OKXTradingApp {
 
     // 初始化回测图表
     initBacktestCharts(backtestData) {
-        console.log('初始化回测图表:', backtestData);
+        //console.log('初始化回测图表:', backtestData);
 
         // 解析结果数据
         let results = {};
@@ -7525,7 +7533,7 @@ class OKXTradingApp {
 
     // 初始化收益曲线图表
     initEquityChart(results) {
-        console.log('🎯 初始化收益曲线图表', results);
+        //console.log('🎯 初始化收益曲线图表', results);
         const chartContainer = document.getElementById('equityChart');
         if (!chartContainer) {
             console.error('❌ 找不到equityChart容器');
@@ -7739,14 +7747,14 @@ class OKXTradingApp {
         const equityData = [];
         
         if (results.equity_curve && Array.isArray(results.equity_curve)) {
-            console.log('📈 处理equity_curve数据:', results.equity_curve.length, '个点');
+            // console.log('📈 处理equity_curve数据:', results.equity_curve.length, '个点');
             results.equity_curve.forEach(point => {
                 equityData.push({
                     time: this.parseTradeTimestamp(point.timestamp || point.time),
                     value: point.total_value || point.equity || point.value || 0
                 });
             });
-            console.log('📊 生成equity数据:', equityData.length, '个点');
+            //console.log('📊 生成equity数据:', equityData.length, '个点');
         } else {
             // 如果没有资金曲线数据，从交易历史生成
             let equity = results.initial_capital || 100000;
@@ -8070,7 +8078,7 @@ class OKXTradingApp {
     }
     
     // 编辑策略
-    async editStrategy(strategyName) {
+    async editStrategyTrade(strategyName) {
         try {
             console.log('编辑策略:', strategyName);
             
@@ -8080,7 +8088,7 @@ class OKXTradingApp {
             if (response.ok) {
                 const data = await response.json();
                 if (data.success && data.data) {
-                    this.showEditStrategyModal(data.data);
+                    this.showEditStrategyTradeModal(data.data);
                 } else {
                     this.showToast('错误', data.message || '获取策略详情失败', 'danger');
                 }
@@ -8094,118 +8102,129 @@ class OKXTradingApp {
     }
 
     // 显示策略编辑模态框
-    async showEditStrategyModal(strategyData) {
+    async showEditStrategyTradeModal(strategyData) {
         console.log('显示策略编辑模态框:', strategyData);
 
         // 填充基本信息
-        document.getElementById('editStrategyId').value = strategyData.name || strategyData.instance_name;
-        document.getElementById('editStrategyName').value = strategyData.name || strategyData.instance_name;
-        document.getElementById('editStrategyType').value = strategyData.strategy_type || strategyData.type;
-        document.getElementById('editTradingSymbol').value = strategyData.symbol || 'BTC-USDT';
-        document.getElementById('editTimeframe').value = strategyData.timeframe || '1h';
+        document.getElementById('editStrategyTradeId').value = strategyData.name || strategyData.instance_name;
+        document.getElementById('editStrategyTradeName').value = strategyData.name || strategyData.instance_name;
+        document.getElementById('editStrategyTradeType').value = strategyData.strategy_type || strategyData.type;
+        document.getElementById('editStrategyTradeSymbol').value = strategyData.symbol || 'BTC-USDT-SWAP';
+        document.getElementById('editStrategyTradeTimeframe').value = strategyData.timeframe || '1h';
 
         // 填充风险参数
         if (strategyData.config) {
-            document.getElementById('editRiskPerTrade').value = strategyData.config.risk_per_trade || 0.02;
-            document.getElementById('editMaxPositions').value = strategyData.config.max_positions || 3;
-            document.getElementById('editStopLossPct').value = strategyData.config.stop_loss_pct || 0.02;
-            document.getElementById('editTakeProfitPct').value = strategyData.config.take_profit_pct || 0.06;
+            document.getElementById('editStrategyTradeRiskPerTrade').value = strategyData.config.risk_per_trade || 0.02;
+            document.getElementById('editStrategyTradeMaxPositions').value = strategyData.config.max_positions || 3;
+            document.getElementById('editStrategyTradeStopLossPct').value = strategyData.config.stop_loss_pct || 0.02;
+            document.getElementById('editStrategyTradeTakeProfitPct').value = strategyData.config.take_profit_pct || 0.06;
         }
-
+    
+    
         // 加载客户和信号源列表
-        await this.loadAccountsForStrategy('edit');
+        await this.loadAccountsForStrategyTrade('edit');
 
         // 显示模态框
-        const modal = new bootstrap.Modal(document.getElementById('editStrategyModal'));
+        const modal = new bootstrap.Modal(document.getElementById('editStrategyTradeModal'));
         modal.show();
 
         // 动态显示策略特定参数
-        this.showEditStrategyParams(strategyData.strategy_type || strategyData.type, strategyData.config);
+        this.showEditStrategyTradeParams(strategyData.strategy_type || strategyData.type, strategyData.config);
     }
 
     // 显示编辑策略的特定参数
-    showEditStrategyParams(strategyType, config) {
-        const paramsContainer = document.getElementById('editStrategySpecificParams');
+    showEditStrategyTradeParams(strategyType, config) {
+        const paramsContainer = document.getElementById('editStrategyTradeSpecificParams');
         if (!paramsContainer) return;
-
-        let paramsHtml = '';
-
+    
+        // 清空现有内容
+        paramsContainer.innerHTML = '<h6><i class="bi bi-gear"></i> 策略参数</h6><hr>';
+    
         switch (strategyType) {
+            case 'RSI_Strategy':
+                paramsContainer.innerHTML += `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="edit_rsi_period" class="form-label">RSI周期</label>
+                            <input type="number" class="form-control" id="edit_rsi_period" value="${config.rsi_period || 14}" min="5" max="50">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="edit_rsi_overbought" class="form-label">超买阈值</label>
+                            <input type="number" class="form-control" id="edit_rsi_overbought" value="${config.rsi_overbought || 70}" min="60" max="90">
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="edit_rsi_oversold" class="form-label">超卖阈值</label>
+                            <input type="number" class="form-control" id="edit_rsi_oversold" value="${config.rsi_oversold || 30}" min="10" max="40">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="edit_position_sizing" class="form-label">仓位大小</label>
+                            <select class="form-select" id="edit_position_sizing">
+                                <option value="fixed" ${config.position_sizing === 'fixed' ? 'selected' : ''}>固定</option>
+                                <option value="percentage" ${config.position_sizing === 'percentage' ? 'selected' : ''}>百分比</option>
+                            </select>
+                        </div>
+                    </div>
+                `;
+                break;
+                
             case 'MA_Cross_Strategy':
-                paramsHtml = `
+                paramsContainer.innerHTML += `
                     <div class="row">
                         <div class="col-md-6">
                             <label for="edit_short_period" class="form-label">短期均线周期</label>
-                            <input type="number" class="form-control" id="edit_short_period" 
-                                   value="${config?.short_period || 10}" min="5" max="50" required>
+                            <input type="number" class="form-control" id="edit_short_period" value="${config.short_period || 10}" min="5" max="50">
                         </div>
                         <div class="col-md-6">
                             <label for="edit_long_period" class="form-label">长期均线周期</label>
-                            <input type="number" class="form-control" id="edit_long_period" 
-                                   value="${config?.long_period || 20}" min="10" max="100" required>
+                            <input type="number" class="form-control" id="edit_long_period" value="${config.long_period || 20}" min="10" max="100">
                         </div>
                     </div>
                 `;
                 break;
-            case 'RSI_Strategy':
-                paramsHtml = `
-                    <div class="row">
-                        <div class="col-md-4">
-                            <label for="edit_rsi_period" class="form-label">RSI周期</label>
-                            <input type="number" class="form-control" id="edit_rsi_period" 
-                                   value="${config?.rsi_period || 14}" min="5" max="50" required>
-                        </div>
-                        <div class="col-md-4">
-                            <label for="edit_oversold" class="form-label">超卖线</label>
-                            <input type="number" class="form-control" id="edit_oversold" 
-                                   value="${config?.rsi_oversold || config?.oversold || 30}" min="10" max="40" required>
-                        </div>
-                        <div class="col-md-4">
-                            <label for="edit_overbought" class="form-label">超买线</label>
-                            <input type="number" class="form-control" id="edit_overbought" 
-                                   value="${config?.rsi_overbought || config?.overbought || 70}" min="60" max="90" required>
-                        </div>
-                    </div>
-                `;
-                break;
-            case 'MACD_Strategy':
-                paramsHtml = `
-                    <div class="row">
-                        <div class="col-md-4">
-                            <label for="edit_fast_period" class="form-label">快速EMA周期</label>
-                            <input type="number" class="form-control" id="edit_fast_period" 
-                                   value="${config?.fast_period || 12}" min="5" max="30" required>
-                        </div>
-                        <div class="col-md-4">
-                            <label for="edit_slow_period" class="form-label">慢速EMA周期</label>
-                            <input type="number" class="form-control" id="edit_slow_period" 
-                                   value="${config?.slow_period || 26}" min="15" max="60" required>
-                        </div>
-                        <div class="col-md-4">
-                            <label for="edit_signal_period" class="form-label">信号线周期</label>
-                            <input type="number" class="form-control" id="edit_signal_period" 
-                                   value="${config?.signal_period || 9}" min="5" max="20" required>
-                        </div>
-                    </div>
-                `;
-                break;
+                
+            // 可以添加更多策略类型
             default:
-                paramsHtml = '<p class="text-muted">该策略类型使用默认参数</p>';
+                paramsContainer.innerHTML += '<p class="text-muted">该策略类型暂无特定参数</p>';
         }
-
-        paramsContainer.innerHTML = paramsHtml;
     }
 
+    // 填充策略交易表单
+    async fillStrategyTradeForm(strategy, isEdit = false) {
+        // 先加载信号源和客户选项
+        await this.loadAccountsForStrategyTrade('edit');
+        
+        document.getElementById('editStrategyTradeId').value = strategy.strategy_uid || '';
+        document.getElementById('editStrategyTradeName').value = strategy.name || '';
+        document.getElementById('editStrategyTradeType').value = strategy.strategy_type || '';
+        document.getElementById('editStrategyTradeSymbol').value = strategy.config?.symbol || 'BTC-USDT-SWAP';
+        document.getElementById('editStrategyTradeTimeframe').value = strategy.config?.timeframe || '1h';
+        document.getElementById('editStrategyTradeRiskPerTrade').value = strategy.config?.risk_per_trade || 0.02;
+        document.getElementById('editStrategyTradeMaxPositions').value = strategy.config?.max_positions || 3;
+        document.getElementById('editStrategyTradeStopLossPct').value = strategy.config?.stop_loss_pct || 0.05;
+        document.getElementById('editStrategyTradeTakeProfitPct').value = strategy.config?.take_profit_pct || 0.1;
+        
+        // 如果是编辑模式，禁用某些字段
+        if (isEdit) {
+            document.getElementById('editStrategyTradeName').disabled = true;
+        } else {
+            document.getElementById('editStrategyTradeName').disabled = false;
+        }
+        
+        // 加载策略特定参数
+        this.showEditStrategyTradeParams(strategy.strategy_type || strategy.type, strategy.config);
+    }
     // 加载账号列表用于策略关联
-    async loadAccountsForStrategy(mode = 'create') {
+    async loadAccountsForStrategyTrade(mode = 'create') {
         try {
             let signalSourcesId, customersId;
             if (mode === 'edit') {
-                signalSourcesId = 'editSignalSources';
-                customersId = 'editCustomers';
+                signalSourcesId = 'editStrategyTradeSignalSources';
+                customersId = 'editStrategyTradeCustomers';
             } else {
-                signalSourcesId = 'signalSources';
-                customersId = 'customers';
+                signalSourcesId = 'createStrategyTradeSignalSources';
+                customersId = 'createStrategyTradeCustomers';
             }
             
             const signalSourcesSelect = document.getElementById(signalSourcesId);
@@ -8217,46 +8236,74 @@ class OKXTradingApp {
             const signalSourcesResponse = await fetch(`${this.apiBaseUrl}/signal_sources`);
             if (signalSourcesResponse.ok) {
                 const signalSourcesData = await signalSourcesResponse.json();
+                console.log('信号源API响应:', signalSourcesData); // 调试日志
+                
                 if (signalSourcesData.success && Array.isArray(signalSourcesData.data)) {
                     signalSourcesSelect.innerHTML = signalSourcesData.data.map(source => 
                         `<option value="${source.source_uid}">${source.name} (${source.source_uid})</option>`
                     ).join('');
+                    console.log('信号源选项已加载:', signalSourcesData.data.length, '个信号源');
+                } else {
+                    signalSourcesSelect.innerHTML = '<option value="">暂无信号源数据</option>';
+                    console.log('没有信号源数据');
                 }
+            } else {
+                console.error('信号源API调用失败:', signalSourcesResponse.status, signalSourcesResponse.statusText);
             }
 
             // 加载客户
             const customersResponse = await fetch(`${this.apiBaseUrl}/customers`);
             if (customersResponse.ok) {
                 const customersData = await customersResponse.json();
-                if (customersData.success && Array.isArray(customersData.data)) {
-                    customersSelect.innerHTML = customersData.data.map(customer => 
+                console.log('客户API响应:', customersData); // 调试日志
+                
+                let customers = [];
+                if (customersData.success) {
+                    // 处理不同的数据结构
+                    if (Array.isArray(customersData.data)) {
+                        // 直接是数组
+                        customers = customersData.data;
+                    } else if (customersData.data && Array.isArray(customersData.data.customers)) {
+                        // 嵌套结构
+                        customers = customersData.data.customers;
+                    }
+                }
+                
+                if (customers.length > 0) {
+                    customersSelect.innerHTML = customers.map(customer => 
                         `<option value="${customer.customer_uid}">${customer.name} (${customer.customer_uid})</option>`
                     ).join('');
+                    // console.log('客户选项已加载:', customers.length, '个客户');
+                } else {
+                    customersSelect.innerHTML = '<option value="">暂无客户数据</option>';
+                    console.log('没有客户数据');
                 }
+            } else {
+                console.error('客户API调用失败:', customersResponse.status, customersResponse.statusText);
             }
-
         } catch (error) {
-            console.error('加载账号列表失败:', error);
+            console.error('加载客户失败:', error);
+            this.showToast('错误', '加载客户失败', 'danger');
         }
     }
 
-    // 保存策略编辑
-    async saveStrategyEdit() {
+    // 保存策略交易编辑
+    async saveStrategyTradeEdit() {
         try {
-            const form = document.getElementById('editStrategyForm');
+            const form = document.getElementById('editStrategyTradeForm');
             if (!form) {
                 this.showToast('错误', '编辑表单不存在', 'danger');
                 return;
             }
 
-            const strategyId = document.getElementById('editStrategyId').value;
-            const strategyName = document.getElementById('editStrategyName').value;
-            const tradingSymbol = document.getElementById('editTradingSymbol').value;
-            const timeframe = document.getElementById('editTimeframe').value;
-            const riskPerTrade = document.getElementById('editRiskPerTrade').value;
-            const maxPositions = document.getElementById('editMaxPositions').value;
-            const stopLossPct = document.getElementById('editStopLossPct').value;
-            const takeProfitPct = document.getElementById('editTakeProfitPct').value;
+            const strategyId = document.getElementById('editStrategyTradeId').value;
+            const strategyName = document.getElementById('editStrategyTradeName').value;
+            const tradingSymbol = document.getElementById('editStrategyTradeSymbol').value;
+            const timeframe = document.getElementById('editStrategyTradeTimeframe').value;
+            const riskPerTrade = document.getElementById('editStrategyTradeRiskPerTrade').value;
+            const maxPositions = document.getElementById('editStrategyTradeMaxPositions').value;
+            const stopLossPct = document.getElementById('editStrategyTradeStopLossPct').value;
+            const takeProfitPct = document.getElementById('editStrategyTradeTakeProfitPct').value;
 
             if (!strategyName || !tradingSymbol || !timeframe) {
                 this.showToast('错误', '请填写所有必需字段', 'danger');
@@ -8274,13 +8321,13 @@ class OKXTradingApp {
             };
 
             // 获取策略特定参数
-            const strategyType = document.getElementById('editStrategyType').value;
+            const strategyType = document.getElementById('editStrategyTradeType').value;
             this.collectEditStrategyParams(strategyType, config);
 
             // 获取选中的客户和信号源
-            const selectedSignalSources = Array.from(document.getElementById('editSignalSources').selectedOptions)
+            const selectedSignalSources = Array.from(document.getElementById('editStrategyTradeSignalSources').selectedOptions)
                 .map(option => option.value);
-            const selectedCustomers = Array.from(document.getElementById('editCustomers').selectedOptions)
+            const selectedCustomers = Array.from(document.getElementById('editStrategyTradeCustomers').selectedOptions)
                 .map(option => option.value);
 
             const requestData = {
@@ -8290,7 +8337,7 @@ class OKXTradingApp {
                 customers: selectedCustomers
             };
 
-            this.showToast('信息', '正在保存策略...', 'info');
+            this.showToast('信息', '正在保存策略交易...', 'info');
 
             const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyId}`, {
                 method: 'PUT',
@@ -8303,23 +8350,23 @@ class OKXTradingApp {
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
-                    this.showToast('成功', '策略更新成功', 'success');
+                    this.showToast('成功', '策略交易更新成功', 'success');
 
                     // 关闭模态框
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('editStrategyModal'));
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editStrategyTradeModal'));
                     if (modal) modal.hide();
 
                     // 刷新策略列表
                     this.loadStrategyTradeList();
                 } else {
-                    this.showToast('错误', data.message || '策略更新失败', 'danger');
+                    this.showToast('错误', data.message || '策略交易更新失败', 'danger');
                 }
             } else {
-                this.showToast('错误', '策略更新请求失败', 'danger');
+                this.showToast('错误', '策略交易更新请求失败', 'danger');
             }
         } catch (error) {
-            console.error('保存策略编辑失败:', error);
-            this.showToast('错误', '保存策略失败', 'danger');
+            console.error('保存策略交易编辑失败:', error);
+            this.showToast('错误', '保存策略交易失败', 'danger');
         }
     }
 
@@ -8327,23 +8374,23 @@ class OKXTradingApp {
     collectEditStrategyParams(strategyType, config) {
         switch (strategyType) {
             case 'MA_Cross_Strategy':
-                const shortPeriod = document.getElementById('edit_short_period')?.value;
-                const longPeriod = document.getElementById('edit_long_period')?.value;
+                const shortPeriod = document.getElementById('editStrategyTradeShortPeriod')?.value;
+                const longPeriod = document.getElementById('editStrategyTradeLongPeriod')?.value;
                 if (shortPeriod) config.short_period = parseInt(shortPeriod);
                 if (longPeriod) config.long_period = parseInt(longPeriod);
                 break;
             case 'RSI_Strategy':
-                const rsiPeriod = document.getElementById('edit_rsi_period')?.value;
-                const oversold = document.getElementById('edit_oversold')?.value;
-                const overbought = document.getElementById('edit_overbought')?.value;
+                const rsiPeriod = document.getElementById('editStrategyTradeRsiPeriod')?.value;
+                const oversold = document.getElementById('editStrategyTradeOversold')?.value;
+                const overbought = document.getElementById('editStrategyTradeOverbought')?.value;
                 if (rsiPeriod) config.rsi_period = parseInt(rsiPeriod);
                 if (oversold) config.rsi_oversold = parseInt(oversold);
                 if (overbought) config.rsi_overbought = parseInt(overbought);
                 break;
             case 'MACD_Strategy':
-                const fastPeriod = document.getElementById('edit_fast_period')?.value;
-                const slowPeriod = document.getElementById('edit_slow_period')?.value;
-                const signalPeriod = document.getElementById('edit_signal_period')?.value;
+                const fastPeriod = document.getElementById('editStrategyTradeFastPeriod')?.value;
+                const slowPeriod = document.getElementById('editStrategyTradeSlowPeriod')?.value;
+                const signalPeriod = document.getElementById('editStrategyTradeSignalPeriod')?.value;
                 if (fastPeriod) config.fast_period = parseInt(fastPeriod);
                 if (slowPeriod) config.slow_period = parseInt(slowPeriod);
                 if (signalPeriod) config.signal_period = parseInt(signalPeriod);
@@ -8352,13 +8399,13 @@ class OKXTradingApp {
     }
     
     // 策略类型变化处理
-    async onStrategyTypeChange(strategyType) {
+    async onStrategyTypeChangeTrade(strategyType) {
         console.log('🔄 策略类型变化:', strategyType);
         await this.showStrategyParams(strategyType);
     }
 
     // 根据策略类型显示参数表单
-    async showStrategyParams(strategyType) {
+    async showStrategyTradeParams(strategyType) {
         console.log('📋 开始生成策略参数表单:', strategyType);
         const paramsContainer = document.getElementById('strategySpecificParams');
         if (!paramsContainer) {
@@ -8624,7 +8671,7 @@ class OKXTradingApp {
             }
             
             // 验证必需参数
-            this.validateStrategyParams(strategyType, config);
+            this.validateStrategyParamsTrade(strategyType, config);
             
             console.log(`✅ 收集到策略参数:`, config);
             return config;
@@ -8637,7 +8684,7 @@ class OKXTradingApp {
     }
     
     // 验证策略参数
-    validateStrategyParams(strategyType, config) {
+    validateStrategyParamsTrade(strategyType, config) {
         switch (strategyType) {
             case 'MA_Cross_Strategy':
                 if (!config.short_period || !config.long_period) {
@@ -8863,7 +8910,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (createStrategyModal) {
         createStrategyModal.addEventListener('show.bs.modal', () => {
             if (window.app) {
-                window.app.loadAccountsForStrategy('create');
+                window.app.loadAccountsForStrategyTrade('create');
             }
         });
     }
@@ -8874,6 +8921,15 @@ document.addEventListener('DOMContentLoaded', function() {
         saveStrategyBtn.addEventListener('click', () => {
             if (window.app) {
                 window.app.saveStrategyEdit();
+            }
+        });
+    }
+    // 策略交易编辑保存按钮事件
+    const saveStrategyTradeBtn = document.getElementById('saveStrategyTradeBtn');
+    if (saveStrategyTradeBtn) {
+        saveStrategyTradeBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.saveStrategyTradeEdit();
             }
         });
     }

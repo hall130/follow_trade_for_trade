@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, date
 from dataclasses import dataclass, asdict
 from enum import Enum
 import smtplib
-from email.mime.text import MimeText
-from email.mime.multipart import MimeMultipart
+from email.mime import text
+from email.mime import multipart
 
 from .strategy_db import StrategyDB
 from .base_strategy import BaseStrategy
@@ -793,7 +793,7 @@ class AlertNotifier:
                 return
             
             # 创建邮件内容
-            msg = MimeMultipart()
+            msg = multipart.MIMEMultipart()
             msg['From'] = username
             msg['To'] = ', '.join(to_emails)
             msg['Subject'] = f"[{alert.level.value}] {alert.title}"
@@ -811,7 +811,7 @@ class AlertNotifier:
             策略交易监控系统
             """
             
-            msg.attach(MimeText(body, 'plain', 'utf-8'))
+            msg.attach(text.MIMEText(body, 'plain', 'utf-8'))
             
             # 发送邮件
             server = smtplib.SMTP(smtp_server, smtp_port)

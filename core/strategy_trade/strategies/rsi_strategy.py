@@ -4,6 +4,8 @@ from typing import Dict, List
 from datetime import datetime
 from ..base_strategy import BaseStrategy, TradingSignal
 
+pd.options.mode.chained_assignment = None  # 忽略链式赋值警告
+
 class RSIStrategy(BaseStrategy):
     """RSI策略"""
     

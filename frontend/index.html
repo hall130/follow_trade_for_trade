@@ -685,7 +685,7 @@
                                     </div>
                                     <div class="col-md-2">
                                         <label for="searchSymbol" class="form-label">交易对</label>
-                                        <input type="text" class="form-control form-control-sm" id="searchSymbol" placeholder="如: BTC-USDT">
+                                        <input type="text" class="form-control form-control-sm" id="searchSymbol" placeholder="如: BTC-USDT-SWAP">
                                     </div>
                                     <div class="col-md-2">
                                         <label for="searchDirection" class="form-label">交易方向</label>
@@ -1730,7 +1730,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button type="button" class="btn btn-primary" id="saveStrategyBtn">保存</button>
+                    <button type="button" class="btn btn-primary" id="saveStrategyManagementBtn">保存</button>
                 </div>
             </div>
         </div>
@@ -2645,11 +2645,12 @@
                                 <label for="tradingSymbol" class="form-label">交易对</label>
                                 <select class="form-select" id="tradingSymbol" required>
                                     <option value="">请选择交易对</option>
-                                    <option value="BTC-USDT">BTC-USDT</option>
-                                    <option value="ETH-USDT">ETH-USDT</option>
-                                    <option value="BNB-USDT">BNB-USDT</option>
-                                    <option value="ADA-USDT">ADA-USDT</option>
-                                    <option value="SOL-USDT">SOL-USDT</option>
+                                    <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                                    <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                                    <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
+                                    <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
+                                    <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
+
                                 </select>
                             </div>
                             <div class="col-md-6">
@@ -2696,14 +2697,14 @@
                         <div class="row">
                             <div class="col-md-6">
                                 <label for="signalSources" class="form-label">关联信号源</label>
-                                <select class="form-select" id="signalSources" multiple size="4">
+                                <select class="form-select" id="createStrategyTradeSignalSources" multiple size="4">
                                     <!-- 动态加载信号源列表 -->
                                 </select>
                                 <div class="form-text">按住Ctrl可多选</div>
                             </div>
                             <div class="col-md-6">
                                 <label for="customers" class="form-label">关联客户</label>
-                                <select class="form-select" id="customers" multiple size="4">
+                                <select class="form-select" id="createStrategyTradeCustomers" multiple size="4">
                                     <!-- 动态加载客户列表 -->
                                 </select>
                                 <div class="form-text">按住Ctrl可多选</div>
@@ -2813,46 +2814,46 @@
         </div>
     </div>
 
-    <!-- 策略编辑模态框 -->
-    <div class="modal fade" id="editStrategyModal" tabindex="-1" aria-labelledby="editStrategyModalLabel" aria-hidden="true">
+    <!-- 策略交易编辑模态框 -->
+    <div class="modal fade" id="editStrategyTradeModal" tabindex="-1" aria-labelledby="editStrategyTradeModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="editStrategyModalLabel">
-                        <i class="bi bi-pencil"></i> 编辑策略
+                    <h5 class="modal-title" id="editStrategyTradeModalLabel">
+                        <i class="bi bi-pencil"></i> 编辑策略交易
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <form id="editStrategyForm">
-                        <input type="hidden" id="editStrategyId" value="">
+                    <form id="editStrategyTradeForm">
+                        <input type="hidden" id="editStrategyTradeId" value="">
                         
                         <!-- 基本信息 -->
                         <div class="row">
                             <div class="col-md-6">
-                                <label for="editStrategyName" class="form-label">策略名称</label>
-                                <input type="text" class="form-control" id="editStrategyName" required>
+                                <label for="editStrategyTradeName" class="form-label">策略名称</label>
+                                <input type="text" class="form-control" id="editStrategyTradeName" required>
                             </div>
                             <div class="col-md-6">
-                                <label for="editStrategyType" class="form-label">策略类型</label>
-                                <input type="text" class="form-control" id="editStrategyType" readonly>
+                                <label for="editStrategyTradeType" class="form-label">策略类型</label>
+                                <input type="text" class="form-control" id="editStrategyTradeType" readonly>
                             </div>
                         </div>
                         
                         <div class="row mt-3">
                             <div class="col-md-6">
-                                <label for="editTradingSymbol" class="form-label">交易对</label>
-                                <select class="form-select" id="editTradingSymbol" required>
-                                    <option value="BTC-USDT">BTC-USDT</option>
-                                    <option value="ETH-USDT">ETH-USDT</option>
-                                    <option value="BNB-USDT">BNB-USDT</option>
-                                    <option value="ADA-USDT">ADA-USDT</option>
-                                    <option value="SOL-USDT">SOL-USDT</option>
+                                <label for="editStrategyTradeSymbol" class="form-label">交易对</label>
+                                <select class="form-select" id="editStrategyTradeSymbol" required>
+                                    <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                                    <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                                    <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
+                                    <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
+                                    <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
                                 </select>
                             </div>
                             <div class="col-md-6">
-                                <label for="editTimeframe" class="form-label">时间框架</label>
-                                <select class="form-select" id="editTimeframe" required>
+                                <label for="editStrategyTradeTimeframe" class="form-label">时间框架</label>
+                                <select class="form-select" id="editStrategyTradeTimeframe" required>
                                     <option value="1m">1分钟</option>
                                     <option value="5m">5分钟</option>
                                     <option value="15m">15分钟</option>
@@ -2866,23 +2867,23 @@
                         <!-- 风险参数 -->
                         <div class="row mt-3">
                             <div class="col-md-6">
-                                <label for="editRiskPerTrade" class="form-label">每次交易风险比例</label>
-                                <input type="number" class="form-control" id="editRiskPerTrade" min="0.01" max="0.1" step="0.01" required>
+                                <label for="editStrategyTradeRiskPerTrade" class="form-label">每次交易风险比例</label>
+                                <input type="number" class="form-control" id="editStrategyTradeRiskPerTrade" min="0.01" max="0.1" step="0.01" required>
                             </div>
                             <div class="col-md-6">
-                                <label for="editMaxPositions" class="form-label">最大持仓数量</label>
-                                <input type="number" class="form-control" id="editMaxPositions" min="1" max="10" required>
+                                <label for="editStrategyTradeMaxPositions" class="form-label">最大持仓数量</label>
+                                <input type="number" class="form-control" id="editStrategyTradeMaxPositions" min="1" max="10" required>
                             </div>
                         </div>
                         
                         <div class="row mt-3">
                             <div class="col-md-6">
-                                <label for="editStopLossPct" class="form-label">止损百分比</label>
-                                <input type="number" class="form-control" id="editStopLossPct" min="0.005" max="0.1" step="0.005" required>
+                                <label for="editStrategyTradeStopLossPct" class="form-label">止损百分比</label>
+                                <input type="number" class="form-control" id="editStrategyTradeStopLossPct" min="0.005" max="0.1" step="0.005" required>
                             </div>
                             <div class="col-md-6">
-                                <label for="editTakeProfitPct" class="form-label">止盈百分比</label>
-                                <input type="number" class="form-control" id="editTakeProfitPct" min="0.01" max="0.5" step="0.01" required>
+                                <label for="editStrategyTradeTakeProfitPct" class="form-label">止盈百分比</label>
+                                <input type="number" class="form-control" id="editStrategyTradeTakeProfitPct" min="0.01" max="0.5" step="0.01" required>
                             </div>
                         </div>
                         
@@ -2895,15 +2896,15 @@
                         </div>
                         <div class="row">
                             <div class="col-md-6">
-                                <label for="editSignalSources" class="form-label">关联信号源</label>
-                                <select class="form-select" id="editSignalSources" multiple size="4">
+                                <label for="editStrategyTradeSignalSources" class="form-label">关联信号源</label>
+                                <select class="form-select" id="editStrategyTradeSignalSources" multiple size="4">
                                     <!-- 动态加载信号源列表 -->
                                 </select>
                                 <div class="form-text">按住Ctrl可多选</div>
                             </div>
                             <div class="col-md-6">
-                                <label for="editCustomers" class="form-label">关联客户</label>
-                                <select class="form-select" id="editCustomers" multiple size="4">
+                                <label for="editStrategyTradeCustomers" class="form-label">关联客户</label>
+                                <select class="form-select" id="editStrategyTradeCustomers" multiple size="4">
                                     <!-- 动态加载客户列表 -->
                                 </select>
                                 <div class="form-text">按住Ctrl可多选</div>
@@ -2911,7 +2912,7 @@
                         </div>
                         
                         <!-- 策略特定参数区域 -->
-                        <div id="editStrategySpecificParams" class="mt-4">
+                        <div id="editStrategyTradeSpecificParams" class="mt-4">
                             <h6><i class="bi bi-gear"></i> 策略参数</h6>
                             <hr>
                             <!-- 这里会根据策略类型动态显示参数 -->
@@ -2920,7 +2921,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button type="button" class="btn btn-primary" id="saveStrategyBtn">
+                    <button type="button" class="btn btn-primary" id="saveStrategyTradeBtn">
                         <i class="bi bi-check"></i> 保存更改
                     </button>
                 </div>
@@ -2968,9 +2969,11 @@
                             <div class="col-md-6">
                                 <label for="backtestSymbol" class="form-label">交易对</label>
                                 <select class="form-select" id="backtestSymbol" required>
-                                    <option value="BTC-USDT">BTC-USDT</option>
-                                    <option value="ETH-USDT">ETH-USDT</option>
-                                    <option value="BNB-USDT">BNB-USDT</option>
+                                    <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
+                                    <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
+                                    <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
+                                    <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
+                                    <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
                                 </select>
                             </div>
                         </div>

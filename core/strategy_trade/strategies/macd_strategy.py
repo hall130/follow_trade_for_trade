@@ -4,6 +4,7 @@ from typing import Dict, List
 from datetime import datetime
 from ..base_strategy import BaseStrategy, TradingSignal
 from ..utils.indicators import TechnicalIndicators
+pd.options.mode.chained_assignment = None  # 忽略链式赋值警告
 
 class MACDStrategy(BaseStrategy):
     """MACD策略"""

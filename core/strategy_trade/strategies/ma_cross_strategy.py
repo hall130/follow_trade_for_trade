@@ -5,7 +5,7 @@ from datetime import datetime
 from ..base_strategy import BaseStrategy, TradingSignal, Position
 from ..utils.indicators import TechnicalIndicators
 from utils.logger import get_logger
-
+pd.options.mode.chained_assignment = None  # 忽略链式赋值警告
 logger = get_logger(__name__)
 
 class MACrossStrategy(BaseStrategy):

@@ -2,7 +2,7 @@
 window.APP_CONFIG = {
     // API配置
     api: {
-        baseUrl: 'http://localhost:5000/api/v1', // 默认端口，根据您的main.py实际端口调整
+        baseUrl: '/api/v1', // 默认端口，根据您的main.py实际端口调整
         timeout: 30000, // 30秒超时
         retryCount: 3,  // 重试次数
         retryDelay: 1000 // 重试延迟（毫秒）

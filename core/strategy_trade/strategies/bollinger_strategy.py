@@ -3,7 +3,7 @@ import numpy as np
 from typing import Dict, List, Any
 from datetime import datetime
 from ..base_strategy import BaseStrategy, TradingSignal
-
+pd.options.mode.chained_assignment = None  # 忽略链式赋值警告
 class BollingerStrategy(BaseStrategy):
     """布林带策略"""
     
