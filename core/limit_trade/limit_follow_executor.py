@@ -60,7 +60,7 @@ class LimitFollowExecutor:
                 if ord_id:
                     self.last_ord_ids[trader_unique_name] = ord_id
             
-            logger.info(f"从数据库加载了 {len(self.last_ord_ids)} 个跟单员的最新订单ID")
+            # logger.info(f"从数据库加载了 {len(self.last_ord_ids)} 个跟单员的最新订单ID")
             
         except Exception as e:
             logger.error(f"加载最新订单ID失败: {e}")
@@ -644,7 +644,8 @@ class LimitFollowExecutor:
             query = """
                 SELECT DISTINCT trader_unique_name 
                 FROM limit_follow_strategies 
-                WHERE enabled = 1
+                WHERE enabled = 1 
+                AND follow_mode = 'follow_trader'
             """
             # 修复：传递空元组作为参数，因为查询没有占位符
             records = self.db_pool.query(query, ())

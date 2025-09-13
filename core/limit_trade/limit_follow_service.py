@@ -2,380 +2,726 @@
 # -*- coding: utf-8 -*-
 """
 限价跟单核心服务模块
-提供限价跟单的核心业务逻辑
+增强版本 - 包含WebSocket监听、定时同步、健康检查等功能
 """
 
-import logging
+import asyncio
 import time
+import json
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+from concurrent.futures import ThreadPoolExecutor
 import threading
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
-from exchange.okx.okx_rest_client import OKXRESTClient
-from config.limit_follow_config import get_limit_follow_config, get_customer_limit_follow_config
-from .limit_follow_db import LimitFollowDB
-from .limit_follow_models import (
-    LimitFollowStrategy, LimitFollowOrder, LimitFollowExecution,
-    FollowOrderRequest, FollowOrderResponse, CancelFollowOrdersRequest,
-    CancelFollowOrdersResponse, PriceCalculationResult, OrderPlacementResult,
-    SignalEvent, create_order_uid, create_execution_uid,
-    calculate_follow_price, calculate_order_size, validate_price, validate_volume
+
+from utils.logger import logger
+from core.limit_trade.limit_follow_db import LimitFollowDB
+from core.limit_trade.limit_follow_models import LimitFollowOrder, LimitFollowStrategy, FollowOrderRequest, FollowOrderResponse
+from core.limit_trade.limit_follow_monitor_config import (
+    get_monitor_config, MonitorStatus, MonitorMetrics, OrderSyncResult
 )
+from database.global_db_manager import get_global_db_pool
 
-logger = logging.getLogger(__name__)
-
-class LimitFollowService:
-    """限价跟单服务配置"""
+class EnhancedLimitFollowService:
+    """增强的限价跟单服务"""
     
     def __init__(self, db_pool=None):
-        # 初始化数据库连接
+        """初始化服务"""
+        # 基础配置
+        self.config = get_monitor_config()
+        
+        # 初始化数据库连接 - 使用全局连接池
         if db_pool is None:
-            from config import get_mysql_config
-            from database.db import MySQLPool
-            db_pool = MySQLPool(**get_mysql_config())
+            
+            db_pool = get_global_db_pool()
+            logger.info("🎯 限价跟单服务使用全局数据库连接池")
         
         self.db = LimitFollowDB(db_pool)
-        self.config = get_limit_follow_config()
+        self.db_pool = db_pool
+        
+        # 运行状态
         self.running = False
-        self.monitor_thread = None
-        self.okx_clients: Dict[str, OKXRESTClient] = {}
+        self.monitor_task = None
+        self.health_check_task = None
         
-        # 初始化日志
-        self._setup_logging()
+        # 监控指标
+        self.metrics = MonitorMetrics()
+        self.metrics.uptime_start = datetime.now()
         
-        # 启动监控线程
-        # self._start_monitor_thread()  # 暂时注释掉，避免初始化时启动
+        # WebSocket更新通过信号服务处理
+        self.websocket_enabled = self.config['enable_websocket_updates']
+        
+        # 线程池用于并发处理
+        self.executor = ThreadPoolExecutor(max_workers=self.config['max_concurrent_checks'])
+        
+        # 状态锁
+        self.status_lock = threading.Lock()
+        self.current_status = MonitorStatus.STOPPED
+        
+        logger.info("✅ 增强限价跟单服务初始化完成")
+
+    # ==================== 主要监控方法 ====================
     
-    def _setup_logging(self):
-        """设置日志"""
-        if self.config.get('enable_logging', True):
-            log_level = getattr(logging, self.config.get('log_level', 'INFO').upper())
-            logging.basicConfig(level=log_level)
-    
-    def _start_monitor_thread(self):
-        """启动监控任务"""
-        if not self.running:
+    async def start_monitoring(self):
+        """启动监控服务"""
+        try:
+            if self.running:
+                logger.warning("监控服务已在运行中")
+                return
+            
+            logger.info("🚀 启动增强限价跟单监控服务...")
+            
             self.running = True
-            # 使用asyncio.create_task而不是threading.Thread
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                self.monitor_task = loop.create_task(self._monitor_loop())
-                logger.info("限价跟单监控任务已启动")
-            except RuntimeError:
-                # 如果没有事件循环，创建一个新的
-                self.monitor_task = asyncio.create_task(self._monitor_loop())
-                logger.info("限价跟单监控任务已启动")
-    
-    def start_monitoring(self):
-        """启动监控"""
-        if not self.running:
-            self._start_monitor_thread()
+            self._set_status(MonitorStatus.HEALTHY)
+            
+            # 启动主监控循环
+            self.monitor_task = asyncio.create_task(self._enhanced_monitor_loop())
+            
+            # 启动健康检查
+            self.health_check_task = asyncio.create_task(self._health_check_loop())
+            
+            # WebSocket监听通过现有的信号服务处理，不需要单独启动
+            
+            logger.info("✅ 增强限价跟单监控服务启动成功")
+            
+            # 等待所有任务完成
+            await asyncio.gather(
+                self.monitor_task,
+                self.health_check_task
+            )
+                
+        except Exception as e:
+            logger.error(f"启动监控服务失败: {e}")
+            self._set_status(MonitorStatus.ERROR)
+            raise
     
     def stop_monitoring(self):
-        """停止监控"""
-        self._stop_monitor_thread()
-    
-    def _stop_monitor_thread(self):
-        """停止监控任务"""
-        self.running = False
-        if hasattr(self, 'monitor_task') and self.monitor_task:
-            self.monitor_task.cancel()
-            logger.info("限价跟单监控任务已停止")
-    
-    async def _monitor_loop(self):
-        """监控循环"""
-        check_interval = self.config.get('check_interval', 1)
+        """停止监控服务"""
+        try:
+            logger.info("🛑 停止限价跟单监控服务...")
+            
+            self.running = False
+            self._set_status(MonitorStatus.STOPPED)
+            
+            # 取消所有任务
+            for task in [self.monitor_task, self.health_check_task]:
+                if task and not task.done():
+                    task.cancel()
+            
+            # 关闭线程池
+            if self.executor:
+                self.executor.shutdown(wait=True)
+            
+            logger.info("✅ 限价跟单监控服务已停止")
+                
+        except Exception as e:
+            logger.error(f"停止监控服务失败: {e}")
+
+    async def _enhanced_monitor_loop(self):
+        """增强的监控循环"""
+        check_interval = self.config['check_interval']
+        status_sync_interval = self.config['status_sync_interval']
+        last_full_sync = 0
+        
+        logger.info(f"📊 监控循环启动 - 检查间隔: {check_interval}秒, 同步间隔: {status_sync_interval}秒")
         
         while self.running:
             try:
-                            # 检查待处理订单
-                await self._check_pending_orders()
+                loop_start_time = time.time()
+                current_time = time.time()
                 
-                # 检查活跃订单状态
-                await self._check_live_orders()
-                    
+                # 1. 检查待处理订单
+                await self._check_pending_orders_enhanced()
+                
+                # 2. 检查活跃订单状态
+                await self._check_live_orders_enhanced()
+                
+                # 3. 定期执行完整状态同步
+                if current_time - last_full_sync > status_sync_interval:
+                    await self._full_status_sync()
+                    last_full_sync = current_time
+                    self.metrics.record_sync_cycle()
+                
+                # 4. 自动修复异常订单（如果启用）
+                if self.config['enable_auto_repair']:
+                    await self._auto_repair_orders()
+                
+                # 5. 检查并修复订单与持仓状态不一致的问题
+                await self._check_position_status_consistency()
+                
+                # 5. 记录性能指标
+                loop_duration = time.time() - loop_start_time
+                if self.config['log_performance_metrics']:
+                    logger.debug(f"📈 监控循环耗时: {loop_duration:.2f}秒")
+                
                 # 等待下次检查
                 await asyncio.sleep(check_interval)
                 
+            except asyncio.CancelledError:
+                logger.info("监控循环被取消")
+                break
             except Exception as e:
                 logger.error(f"监控循环异常: {e}")
+                self.metrics.record_error()
+                
+                # 检查连续失败次数
+                if self.metrics.consecutive_failures >= self.config['max_consecutive_failures']:
+                    logger.error(f"连续失败次数过多({self.metrics.consecutive_failures})，设置为警告状态")
+                    self._set_status(MonitorStatus.WARNING)
+                
                 await asyncio.sleep(check_interval)
-    
-    async def _check_pending_orders(self):
-        """检查待处理订单"""
+
+    async def _check_pending_orders_enhanced(self):
+        """增强的待处理订单检查"""
         try:
             pending_orders = self.db.get_pending_orders()
             
-            for order in pending_orders:
+            if not pending_orders:
+                return
+            
+            logger.debug(f"🔍 检查 {len(pending_orders)} 个待处理订单")
+            
+            # 并发处理订单
+            tasks = []
+            for order in pending_orders[:self.config['batch_sync_size']]:  # 限制批量大小
                 if order.status == 'pending':
-                    # 提交订单到交易所
-                    await self._submit_order_to_exchange(order)
+                    tasks.append(self._submit_order_to_exchange_enhanced(order))
                 elif order.status == 'live':
-                    # 检查订单状态
-                    await self._check_order_status(order)
-                    
+                    tasks.append(self._check_order_status_enhanced(order))
+            
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
         except Exception as e:
             logger.error(f"检查待处理订单失败: {e}")
-    
-    async def _check_live_orders(self):
-        """检查活跃订单状态"""
+            self.metrics.record_error()
+
+    async def _check_live_orders_enhanced(self):
+        """增强的活跃订单检查"""
         try:
             live_orders = self.db.get_orders({'status': 'live'})
             
-            for order in live_orders:
-                await self._check_order_status(order)
+            if not live_orders:
+                return
+            
+            logger.debug(f"🔍 检查 {len(live_orders)} 个活跃订单")
+            
+            # 分批处理，避免API限制
+            batch_size = self.config['batch_sync_size']
+            for i in range(0, len(live_orders), batch_size):
+                batch = live_orders[i:i + batch_size]
+                
+                tasks = [self._check_order_status_enhanced(order) for order in batch]
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # API调用间隔
+                if i + batch_size < len(live_orders):
+                    await asyncio.sleep(self.config['api_rate_limit_delay'])
                 
         except Exception as e:
             logger.error(f"检查活跃订单失败: {e}")
-    
-    async def _submit_order_to_exchange(self, order: LimitFollowOrder) -> bool:
-        """提交订单到交易所"""
+            self.metrics.record_error()
+
+    async def _check_order_status_enhanced(self, order: LimitFollowOrder):
+        """增强的订单状态检查"""
         try:
-            # 获取客户配置
-            customer_config = get_customer_limit_follow_config(order.customer_uid)
-            if not customer_config or 'customer_info' not in customer_config:
-                logger.error(f"客户配置不存在: {order.customer_uid}")
-                return False
+            self.metrics.record_api_call()
             
-            customer_info = customer_config['customer_info']
+            # 获取客户API信息
+            customer = await self._get_customer_info(order.customer_uid)
+            if not customer:
+                logger.error(f"获取客户信息失败: {order.customer_uid}")
+                self.metrics.record_api_call(success=False)
+                return
             
-            # 获取或创建OKX客户端
-            okx_client = self._get_okx_client(customer_info)
-            if not okx_client:
-                return False
-            
-            # 构建订单参数
-            order_params = {
-                'instId': order.symbol,
-                'tdMode': 'cross',
-                'side': 'buy' if order.pos_side == 'long' else 'sell',
-                'ordType': 'limit',
-                'sz': str(order.order_size),
-                'px': str(order.target_price)
-            }
-            
-            # 提交订单（异步调用）
-            response = await okx_client.place_order(**order_params)
-            
-            if response and response.get('code') == '0':
-                # 订单提交成功
-                exchange_order_id = response['data'][0]['ordId']
-                
-                # 更新订单状态
-                self.db.update_order_status(
-                    order.order_uid, 'live', 
-                    exchange_order_id=exchange_order_id
-                )
-                
-                # 记录执行日志
-                self._log_execution(
-                    order, 'order_placement', 'completed',
-                    {'exchange_order_id': exchange_order_id}
-                )
-                
-                logger.info(f"订单提交成功: {order.order_uid} -> {exchange_order_id}")
-                return True
-            else:
-                # 订单提交失败
-                error_msg = response.get('msg', '未知错误') if response else '请求失败'
-                
-                # 更新订单状态
-                self.db.update_order_status(order.order_uid, 'rejected')
-                
-                # 记录执行日志
-                self._log_execution(
-                    order, 'order_placement', 'failed',
-                    {'error': error_msg}
-                )
-                
-                logger.error(f"订单提交失败: {order.order_uid} - {error_msg}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"提交订单到交易所失败: {e}")
-            
-            # 记录执行日志
-            self._log_execution(
-                order, 'order_placement', 'failed',
-                {'error': str(e)}
+            # 创建OKX客户端
+            from okx_rest_client import OKXRESTClient
+            okx_client = OKXRESTClient(
+                customer['api_key'],
+                customer.get('secret_key') or customer.get('api_secret'),
+                customer['passphrase']
             )
-            
-            return False
-    
-    async def _check_order_status(self, order: LimitFollowOrder):
-        """检查订单状态"""
-        try:
-            if not order.exchange_order_id:
-                return
-            
-            # 获取客户配置
-            customer_config = get_customer_limit_follow_config(order.customer_uid)
-            if not customer_config or 'customer_info' not in customer_config:
-                return
-            
-            customer_info = customer_config['customer_info']
-            
-            # 获取OKX客户端
-            okx_client = self._get_okx_client(customer_info)
-            if not okx_client:
-                return
             
             # 查询订单状态
             response = await okx_client.get_order(order.symbol, order.exchange_order_id)
             
-            if response and response.get('code') == '0':
+            if response and response.get('code') == '0' and response.get('data'):
                 order_data = response['data'][0]
-                order_status = order_data['state']
+                exchange_status = order_data['state']
                 
-                if order_status == 'filled':
-                    # 订单已成交
-                    filled_price = float(order_data['avgPx'])
-                    filled_size = float(order_data['accFillSz'])
+                # 如果状态有变化，更新数据库
+                if exchange_status != order.status:
+                    await self._update_order_status_from_exchange(order, order_data)
+                    self.metrics.record_order_check(success=True)
                     
-                    # 更新订单状态
-                    self.db.update_order_status(
+                    if self.config['log_order_updates']:
+                        logger.info(f"🔄 订单状态更新: {order.order_uid} {order.status} -> {exchange_status}")
+                else:
+                    self.metrics.record_order_check(success=True)
+            else:
+                logger.warning(f"查询订单状态失败: {order.order_uid}")
+                self.metrics.record_api_call(success=False)
+                self.metrics.record_order_check(success=False)
+                
+        except Exception as e:
+            logger.error(f"检查订单状态失败 {order.order_uid}: {e}")
+            self.metrics.record_api_call(success=False)
+            self.metrics.record_order_check(success=False)
+
+    async def _update_order_status_from_exchange(self, order: LimitFollowOrder, order_data: dict):
+        """从交易所数据更新订单状态"""
+        try:
+            exchange_status = order_data['state']
+            
+            if exchange_status == 'filled':
+                # 订单已成交
+                filled_price = float(order_data['avgPx'])
+                filled_size = float(order_data['accFillSz'])
+                
+                success = self.db.update_order_status(
                         order.order_uid, 'filled',
                         filled_price=filled_price,
                         filled_size=filled_size
                     )
                     
-                    # 记录执行日志
-                    self._log_execution(
-                        order, 'order_filled', 'completed',
-                        {'filled_price': filled_price, 'filled_size': filled_size}
-                    )
+                if success:
+                    logger.info(f"✅ 订单成交: {order.order_uid} - 价格: {filled_price}, 数量: {filled_size}")
                     
-                    logger.info(f"订单已成交: {order.order_uid} - 价格: {filled_price}, 数量: {filled_size}")
+                    # 发送通知（如果启用）
+                    if self.config['enable_notifications']:
+                        await self._send_order_notification(order, 'filled', {
+                            'filled_price': filled_price,
+                            'filled_size': filled_size
+                        })
+                
+            elif exchange_status in ['canceled', 'expired', 'rejected']:
+                # 订单被取消/过期/拒绝
+                success = self.db.update_order_status(order.order_uid, exchange_status)
+                
+                if success:
+                    logger.info(f"🚫 订单状态更新: {order.order_uid} -> {exchange_status}")
                     
-                    # 处理成交后的逻辑（如平仓等）
-                    self._handle_order_filled(order, filled_price, filled_size)
+                    if self.config['enable_notifications']:
+                        await self._send_order_notification(order, exchange_status, {})
                     
-                elif order_status in ['canceled', 'expired']:
-                    # 订单已撤销或过期
-                    new_status = 'canceled' if order_status == 'canceled' else 'expired'
+        except Exception as e:
+            logger.error(f"更新订单状态失败: {e}")
+
+    async def _full_status_sync(self):
+        """完整的状态同步"""
+        try:
+            logger.info("🔄 开始完整订单状态同步...")
+            start_time = datetime.now()
+            
+            # 获取所有可能有问题的订单
+            problematic_orders = await self._get_problematic_orders()
+            
+            if not problematic_orders:
+                logger.info("✅ 未发现异常订单")
+                return
+            
+            sync_result = OrderSyncResult(success=True)
+            sync_result.start_time = start_time
+            sync_result.total_checked = len(problematic_orders)
+            
+            # 分批同步
+            batch_size = self.config['batch_sync_size']
+            for i in range(0, len(problematic_orders), batch_size):
+                batch = problematic_orders[i:i + batch_size]
+                
+                for order in batch:
+                    try:
+                        await self._sync_single_order_status(order)
+                        sync_result.updated_count += 1
+                    except Exception as e:
+                        sync_result.error_count += 1
+                        sync_result.errors.append(f"订单 {order.get('order_uid', 'unknown')}: {str(e)}")
+                
+                # API调用间隔
+                if i + batch_size < len(problematic_orders):
+                    await asyncio.sleep(self.config['api_rate_limit_delay'])
+            
+            sync_result.end_time = datetime.now()
+            
+            logger.info(f"✅ 完整状态同步完成 - 耗时: {sync_result.duration:.2f}秒, "
+                       f"检查: {sync_result.total_checked}, 更新: {sync_result.updated_count}, "
+                       f"错误: {sync_result.error_count}")
+            
+            # 如果有很多错误，设置警告状态
+            if sync_result.error_count > self.config['notification_threshold']:
+                self._set_status(MonitorStatus.WARNING)
+            
+        except Exception as e:
+            logger.error(f"完整状态同步失败: {e}")
+            self.metrics.record_error()
+
+    async def _get_problematic_orders(self):
+        """获取可能有问题的订单"""
+        try:
+            # 查找长时间未更新的live订单
+            stale_timeout_minutes = self.config['stale_order_timeout'] // 60
+            
+            query = f"""
+                SELECT * FROM limit_follow_orders 
+                WHERE status = 'live' 
+                AND exchange_order_id IS NOT NULL
+                AND updated_at < DATE_SUB(NOW(), INTERVAL {stale_timeout_minutes} MINUTE)
+                ORDER BY updated_at ASC
+                LIMIT {self.config['auto_repair_max_orders']}
+            """
+            
+            return self.db.db_pool.query(query)
+            
+        except Exception as e:
+            logger.error(f"获取异常订单失败: {e}")
+            return []
+
+    async def _auto_repair_orders(self):
+        """自动修复异常订单"""
+        try:
+            if not self.config['enable_auto_repair']:
+                return
+            
+            problematic_orders = await self._get_problematic_orders()
+            
+            if len(problematic_orders) > self.config['notification_threshold']:
+                logger.warning(f"⚠️ 发现 {len(problematic_orders)} 个异常订单，开始自动修复...")
+                
+                repaired_count = 0
+                for order in problematic_orders[:self.config['auto_repair_max_orders']]:
+                    try:
+                        await self._sync_single_order_status(order)
+                        repaired_count += 1
+                    except Exception as e:
+                        logger.error(f"自动修复订单失败 {order.get('order_uid', 'unknown')}: {e}")
+                
+                logger.info(f"🔧 自动修复完成，成功修复 {repaired_count} 个订单")
+            
+        except Exception as e:
+            logger.error(f"自动修复订单失败: {e}")
+    
+    async def _check_position_status_consistency(self):
+        """检查并修复订单与持仓状态的一致性"""
+        try:
+            # 查找所有已成交但相关持仓已完全平仓的限价跟单订单
+            inconsistent_orders = self.db_pool.query("""
+                SELECT lfo.order_uid, lfo.customer_uid, lfo.symbol, lfo.pos_side, lfo.trader_unique_name
+                FROM limit_follow_orders lfo
+                WHERE lfo.status = 'filled'
+                AND NOT EXISTS (
+                    SELECT 1 FROM customer_trades ct 
+                    WHERE ct.customer_uid = lfo.customer_uid 
+                    AND ct.symbol = lfo.symbol 
+                    AND ct.pos_side = lfo.pos_side
+                    AND ct.status = 'open'
+                    AND (ct.volume_contract - IFNULL(ct.close_volume_contract, 0)) > 0
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM signal_account_trades sat
+                    WHERE sat.signal_source_uid = lfo.trader_unique_name
+                    AND sat.symbol = lfo.symbol
+                    AND sat.pos_side = lfo.pos_side
+                    AND sat.status = 'open'
+                    AND (sat.volume_contract - IFNULL(sat.close_volume_contract, 0)) > 0
+                )
+            """)
+            
+            if inconsistent_orders:
+                logger.debug(f"🔧 发现 {len(inconsistent_orders)} 个状态不一致的订单，正在修复...")
+                
+                fixed_count = 0
+                for order in inconsistent_orders:
+                    # 更新订单状态为closed
+                    success = self.db_pool.execute("""
+                        UPDATE limit_follow_orders 
+                        SET status='closed', updated_at=NOW() 
+                        WHERE order_uid=%s
+                    """, (order['order_uid'],))
                     
+                    if success:
+                        fixed_count += 1
+                        logger.debug(f"✅ 自动修复订单状态: {order['order_uid']} -> closed")
+                
+                if fixed_count > 0:
+                    logger.info(f"🔧 自动修复了 {fixed_count} 个订单状态")
+                    
+        except Exception as e:
+            logger.error(f"检查持仓状态一致性失败: {e}")
+            self.metrics.record_error()
+
+    # ==================== 订单状态更新接口 ====================
+    
+    def on_order_status_update(self, exchange_order_id: str, order_data: dict):
+        """接收来自信号服务的订单状态更新（同步方法）"""
+        try:
+            # 创建异步任务处理更新
+            asyncio.create_task(self._handle_order_status_update(exchange_order_id, order_data))
+        except Exception as e:
+            logger.error(f"处理订单状态更新失败: {e}")
+    
+    async def _handle_order_status_update(self, exchange_order_id: str, order_data: dict):
+        """处理订单状态更新（异步方法）"""
+        try:
+            # 查找对应的限价跟单订单
+            orders = self.db.db_pool.query(
+                "SELECT * FROM limit_follow_orders WHERE exchange_order_id = %s",
+                (exchange_order_id,)
+            )
+            
+            if not orders:
+                return  # 不是限价跟单订单，忽略
+            
+            for order_row in orders:
+                order_status = order_data.get('state')
+                
+                if order_row['status'] != order_status:
                     # 更新订单状态
-                    self.db.update_order_status(order.order_uid, new_status)
+                    if order_status == 'filled':
+                        # 订单已成交
+                        filled_price = float(order_data.get('avgPx', 0))
+                        filled_size = float(order_data.get('accFillSz', 0))
+                        
+                        success = self.db.db_pool.execute("""
+                            UPDATE limit_follow_orders 
+                            SET status='filled', filled_price=%s, filled_size=%s, updated_at=NOW()
+                            WHERE order_uid=%s
+                        """, (filled_price, filled_size, order_row['order_uid']))
+                        
+                        if success:
+                            logger.info(f"🔄 [实时] 限价跟单订单成交: {order_row['order_uid']} - 价格: {filled_price}")
+                            self.metrics.record_order_check(success=True)
                     
-                    # 记录执行日志
-                    self._log_execution(
-                        order, 'order_status_update', 'completed',
-                        {'new_status': new_status}
-                    )
+                    elif order_status in ['canceled', 'expired', 'rejected']:
+                        # 订单取消/过期/拒绝
+                        success = self.db.db_pool.execute("""
+                            UPDATE limit_follow_orders 
+                            SET status=%s, updated_at=NOW()
+                            WHERE order_uid=%s
+                        """, (order_status, order_row['order_uid']))
+                        
+                        if success:
+                            logger.info(f"🔄 [实时] 限价跟单订单状态更新: {order_row['order_uid']} -> {order_status}")
+                            self.metrics.record_order_check(success=True)
                     
-                    logger.info(f"订单状态更新: {order.order_uid} -> {new_status}")
+                    # 记录WebSocket消息（虽然实际上是通过信号服务）
+                    self.metrics.record_websocket_message()
                     
         except Exception as e:
-            logger.error(f"检查订单状态失败: {e}")
+            logger.error(f"处理限价跟单订单状态更新失败: {e}")
+            self.metrics.record_order_check(success=False)
+
+    # ==================== 健康检查 ====================
     
-    def _handle_order_filled(self, order: LimitFollowOrder, filled_price: float, filled_size: float):
-        """处理订单成交后的逻辑"""
+    async def _health_check_loop(self):
+        """健康检查循环"""
+        check_interval = self.config['health_check_interval']
+        
+        while self.running:
+            try:
+                await self._perform_health_check()
+                await asyncio.sleep(check_interval)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"健康检查异常: {e}")
+                await asyncio.sleep(check_interval)
+
+    async def _perform_health_check(self):
+        """执行健康检查"""
         try:
-            # 这里可以添加成交后的处理逻辑
-            # 例如：自动平仓、风险控制等
+            # 检查数据库连接
+            db_healthy = await self._check_database_health()
             
-            logger.info(f"处理订单成交: {order.order_uid}")
+            # 检查API连接
+            api_healthy = await self._check_api_health()
             
-            # 记录成交信息
-            self._log_execution(
-                order, 'order_filled_handling', 'completed',
-                {'filled_price': filled_price, 'filled_size': filled_size}
-            )
+            # 检查WebSocket连接
+            ws_healthy = await self._check_websocket_health()
+            
+            # 检查异常订单数量
+            problematic_count = len(await self._get_problematic_orders())
+            
+            # 确定整体健康状态
+            if db_healthy and api_healthy and problematic_count < self.config['problematic_order_threshold']:
+                self._set_status(MonitorStatus.HEALTHY)
+            elif problematic_count < self.config['problematic_order_threshold'] * 2:
+                self._set_status(MonitorStatus.WARNING)
+            else:
+                self._set_status(MonitorStatus.ERROR)
+            
+            logger.debug(f"🏥 健康检查完成 - DB: {db_healthy}, API: {api_healthy}, WS: {ws_healthy}, 异常订单: {problematic_count}")
             
         except Exception as e:
-            logger.error(f"处理订单成交失败: {e}")
+            logger.error(f"健康检查失败: {e}")
+            self._set_status(MonitorStatus.ERROR)
+            
+            # 尝试重新初始化数据库连接
+            try:
+                if 'database' in str(e).lower() or 'none' in str(e).lower():
+                    logger.info("尝试重新获取全局数据库连接...")
+                    
+                    self.db_pool = get_global_db_pool()
+                    self.db = LimitFollowDB(self.db_pool)
+                    logger.info("全局数据库连接重新获取成功")
+            except Exception as reconnect_error:
+                logger.error(f"数据库重连失败: {reconnect_error}")
+
+    # ==================== 辅助方法 ====================
     
-    def _get_okx_client(self, customer_info: Dict[str, Any]) -> Optional[OKXRESTClient]:
-        """获取或创建OKX客户端"""
-        try:
-            customer_uid = customer_info['customer_uid']
-            
-            if customer_uid in self.okx_clients:
-                return self.okx_clients[customer_uid]
-            
-            # 创建新的OKX客户端
-            api_key = customer_info.get('api_key')
-            api_secret = customer_info.get('api_secret')
-            passphrase = customer_info.get('passphrase')
-            is_sandbox = bool(customer_info.get('is_demo', False))
-            
-            if not all([api_key, api_secret, passphrase]):
-                logger.error(f"客户API配置不完整: {customer_uid}")
-                return None
-            
-            okx_client = OKXRESTClient(
-                api_key=api_key,
-                api_secret=api_secret,
-                passphrase=passphrase,
-                is_demo=is_sandbox
-            )
-            
-            self.okx_clients[customer_uid] = okx_client
-            return okx_client
-            
-        except Exception as e:
-            logger.error(f"创建OKX客户端失败: {e}")
-            return None
-    
-    async def _get_customer_account_info(self, customer_uid: str) -> Optional[Dict]:
-        """获取客户账户信息（余额、保证金等）"""
-        try:
-            # 获取客户配置
-            customer_info = self.config.get('customers', {}).get(customer_uid, {})
-            if not customer_info:
-                logger.error(f"客户配置不存在: {customer_uid}")
-                return None
-            
-            # 获取OKX客户端
-            okx_client = self._get_okx_client(customer_info)
-            if not okx_client:
-                return None
-            
-            # 获取账户余额
-            account_info = await okx_client.get_account_balance()
-            
-            if not account_info or 'data' not in account_info:
-                logger.warning(f"获取账户余额失败: {customer_uid}")
-                return None
-            
-            # 解析账户信息
-            balance_data = account_info['data']
-            total_balance = 0.0
-            available_balance = 0.0
-            
-            for balance in balance_data:
-                if balance.get('ccy') == 'USDT':
-                    total_balance = float(balance.get('bal', 0))
-                    available_balance = float(balance.get('availBal', 0))
-                    break
-            
+    def _set_status(self, status: str):
+        """设置监控状态"""
+        with self.status_lock:
+            if self.current_status != status:
+                old_status = self.current_status
+                self.current_status = status
+                logger.info(f"📊 监控状态变更: {old_status} -> {status}")
+
+    def get_status(self):
+        """获取当前状态"""
+        with self.status_lock:
             return {
-                'total_balance': total_balance,
-                'available_balance': available_balance,
-                'currency': 'USDT',
-                'customer_uid': customer_uid
+                'status': self.current_status.value if self.current_status else 'unknown',
+                'running': self.running,
+                'metrics': {
+                    'orders_checked': self.metrics.orders_checked,
+                    'orders_updated': self.metrics.orders_updated,
+                    'orders_failed': self.metrics.orders_failed,
+                    'success_rate': self.metrics.success_rate,
+                    'api_success_rate': self.metrics.api_success_rate,
+                    'websocket_messages': self.metrics.websocket_messages,
+                    'sync_cycles': self.metrics.sync_cycles_completed,
+                    'last_sync_time': str(self.metrics.last_sync_time) if self.metrics.last_sync_time else None,
+                    'consecutive_failures': self.metrics.consecutive_failures,
+                    'uptime_seconds': (datetime.now() - self.metrics.uptime_start).total_seconds() if self.metrics.uptime_start else 0
+                },
+                'config': {
+                    'check_interval': self.config['check_interval'],
+                    'websocket_enabled': self.websocket_enabled,
+                    'auto_repair_enabled': self.config['enable_auto_repair']
+                }
             }
+
+    # 保持原有的方法签名以兼容现有代码
+    async def _get_customer_info(self, customer_uid):
+        """获取客户或信号源信息"""
+        try:
+            # 获取当前盘口模式
+            from trade_service import get_global_is_demo
+            is_demo = get_global_is_demo()
+            
+            # 先尝试从客户表查询（根据当前盘口模式）
+            customers = self.db.db_pool.query(
+                "SELECT customer_uid, api_key, api_secret as secret_key, passphrase, enabled, is_demo FROM customers WHERE customer_uid = %s AND enabled = 1 AND is_demo = %s",
+                (customer_uid, is_demo)
+            )
+            if customers:
+                return customers[0]
+            
+            # 如果客户表没有，尝试从信号源表查询（兼容旧数据，根据当前盘口模式）
+            signal_sources = self.db.db_pool.query(
+                "SELECT source_uid as customer_uid, api_key, api_secret as secret_key, passphrase, enabled, is_demo FROM signal_sources WHERE source_uid = %s AND enabled = 1 AND is_demo = %s",
+                (customer_uid, is_demo)
+            )
+            if signal_sources:
+                logger.info(f"使用信号源账户作为客户: {customer_uid}（{'模拟盘' if is_demo else '实盘'}）")
+                return signal_sources[0]
+            
+            logger.warning(f"未找到账户 {customer_uid} 在当前盘口模式（{'模拟盘' if is_demo else '实盘'}）的配置")
+            return None
+        except Exception as e:
+            logger.error(f"获取客户信息失败: {e}")
+            return None
+
+    async def _get_active_customers(self):
+        """获取活跃客户列表"""
+        try:
+            # 获取当前盘口模式
+            from trade_service import get_global_is_demo
+            is_demo = get_global_is_demo()
+            
+            return self.db.db_pool.query(
+                "SELECT * FROM customers WHERE enabled = 1 AND is_demo = %s",
+                (is_demo,)
+            )
+        except Exception as e:
+            logger.error(f"获取活跃客户列表失败: {e}")
+            return []
+
+    async def _check_database_health(self):
+        """检查数据库健康状态"""
+        try:
+            # 检查数据库连接池是否可用
+            if self.db_pool is None:
+                logger.warning("数据库连接池为空")
+                return False
+            
+            result = self.db.db_pool.query("SELECT 1 as test")
+            return result is not None and len(result) > 0
+        except Exception as e:
+            logger.warning(f"数据库健康检查失败: {e}")
+            return False
+
+    async def _check_api_health(self):
+        """检查API健康状态"""
+        # 简单返回True，实际可以做一个轻量级API调用测试
+        return True
+
+    async def _check_websocket_health(self):
+        """检查WebSocket健康状态"""
+        if not self.websocket_enabled:
+            return True
+        
+        # WebSocket连接通过信号服务管理，这里总是返回True
+        # 实际的WebSocket健康状态可以通过信号服务的健康检查来确认
+        return True
+
+    async def _sync_single_order_status(self, order_dict):
+        """同步单个订单状态"""
+        # 这里复用现有的检查逻辑
+        order = LimitFollowOrder()
+        order.order_uid = order_dict['order_uid']
+        order.customer_uid = order_dict['customer_uid']
+        order.symbol = order_dict['symbol']
+        order.exchange_order_id = order_dict['exchange_order_id']
+        order.status = order_dict['status']
+        
+        await self._check_order_status_enhanced(order)
+
+    async def _send_order_notification(self, order, status, data):
+        """发送订单通知"""
+        try:
+            if not self.config['enable_notifications']:
+                return
+                
+            # 这里可以集成钉钉通知或其他通知方式
+            logger.info(f"📢 订单通知: {order.order_uid} 状态变更为 {status}")
             
         except Exception as e:
-            logger.error(f"获取客户账户信息失败: {e}")
-            return None
+            logger.error(f"发送订单通知失败: {e}")
+
+    # ==================== 向后兼容的方法 ====================
     
     async def _get_customer_positions(self, customer_uid: str, symbol: str) -> List[Dict]:
         """获取客户在指定交易对上的持仓"""
         try:
             # 获取客户配置
-            customer_info = self.config.get('customers', {}).get(customer_uid, {})
-            if not customer_info:
+            customer = await self._get_customer_info(customer_uid)
+            if not customer:
                 logger.error(f"客户配置不存在: {customer_uid}")
                 return []
             
             # 获取OKX客户端
-            okx_client = self._get_okx_client(customer_info)
-            if not okx_client:
-                return []
+            from okx_rest_client import OKXRESTClient
+            from trade_service import get_global_is_demo
+            okx_client = OKXRESTClient(
+                customer['api_key'],
+                customer.get('secret_key') or customer.get('api_secret'),
+                customer['passphrase'],
+                is_demo=get_global_is_demo()
+            )
             
-            # 获取持仓信息
-            positions_response = await okx_client.get_positions(instType='SWAP', instId=symbol)
+            # 获取持仓信息（OKX REST API不支持instType参数）
+            positions_response = await okx_client.get_positions(instId=symbol)
             
             if not positions_response or 'data' not in positions_response:
                 logger.warning(f"获取持仓信息失败: {customer_uid} {symbol}")
@@ -402,398 +748,199 @@ class LimitFollowService:
         except Exception as e:
             logger.error(f"获取客户持仓失败: {e}")
             return []
-    
-    def _log_execution(self, order: LimitFollowOrder, execution_type: str, 
-                       execution_status: str, execution_data: Dict[str, Any]):
-        """记录执行日志"""
+
+    async def _get_customer_account_info(self, customer_uid: str) -> Optional[Dict]:
+        """获取客户账户信息（余额、保证金等）"""
         try:
-            execution = LimitFollowExecution(
-                execution_uid=create_execution_uid(),
-                strategy_id=order.strategy_id,  # 使用strategy_id而不是strategy_uid
-                order_uid=order.order_uid,
-                customer_uid=order.customer_uid,
-                symbol=order.symbol,
-                pos_side=order.pos_side,
-                execution_type=execution_type,
-                execution_status=execution_status,
-                execution_data=execution_data
+            # 获取客户配置
+            customer = await self._get_customer_info(customer_uid)
+            if not customer:
+                logger.error(f"客户配置不存在: {customer_uid}")
+                return None
+            
+            # 获取OKX客户端
+            from okx_rest_client import OKXRESTClient
+            from trade_service import get_global_is_demo
+            okx_client = OKXRESTClient(
+                customer['api_key'],
+                customer.get('secret_key') or customer.get('api_secret'),
+                customer['passphrase'],
+                is_demo=get_global_is_demo()
             )
             
-            self.db.create_execution(execution)
+            # 获取账户余额
+            account_info = await okx_client.get_account_info()
             
-        except Exception as e:
-            logger.error(f"记录执行日志失败: {e}")
-    
-    # ==================== 公共接口 ====================
-    
-    def execute_limit_follow(self, request: FollowOrderRequest) -> FollowOrderResponse:
-        """执行限价跟单"""
-        try:
-            # 验证请求参数
-            if not self._validate_follow_request(request):
-                return FollowOrderResponse(
-                    success=False,
-                    message="请求参数验证失败",
-                    orders=[],
-                    error_code="INVALID_PARAMS"
-                )
+            if not account_info or 'data' not in account_info:
+                logger.warning(f"获取账户余额失败: {customer_uid}")
+                return None
             
-            # 获取跟单策略
-            strategies = self.db.get_active_strategies_for_signal(
-                request.signal_source_uid, request.symbol, request.pos_side
-            )
+            # 解析账户信息
+            balance_data = account_info['data']
+            total_balance = 0.0
+            available_balance = 0.0
             
-            if not strategies:
-                return FollowOrderResponse(
-                    success=False,
-                    message="未找到有效的跟单策略",
-                    orders=[],
-                    error_code="NO_STRATEGY"
-                )
-            
-            # 使用指定的策略或第一个可用策略
-            strategy = None
-            if request.strategy_uid:
-                strategy = next((s for s in strategies if s.strategy_uid == request.strategy_uid), None)
-                if not strategy:
-                    return FollowOrderResponse(
-                        success=False,
-                        message="指定的策略不存在或未启用",
-                        orders=[],
-                        error_code="STRATEGY_NOT_FOUND"
-                    )
-            else:
-                strategy = strategies[0]
-            
-            # 计算跟单价格和数量
-            price_result = self._calculate_follow_prices(
-                request.signal_price, request.pos_side, 
-                request.follow_percentages, strategy
-            )
-            
-            # 创建跟单订单
-            orders = []
-            for i, (price, size, percentage) in enumerate(zip(
-                price_result.calculated_prices, 
-                price_result.order_sizes, 
-                request.follow_percentages
-            )):
-                order = LimitFollowOrder(
-                    order_uid=create_order_uid(),
-                    strategy_uid=strategy.strategy_uid,
-                    signal_source_uid=request.signal_source_uid,
-                    customer_uid=request.customer_uid,
-                    symbol=request.symbol,
-                    pos_side=request.pos_side,
-                    follow_value=percentage,
-                    target_price=price,
-                    order_size=size,
-                    order_type='limit',
-                    status='pending'
-                )
-                
-                # 保存订单到数据库
-                if self.db.create_order(order):
-                    orders.append(order)
-                    
-                    # 记录执行日志
-                    self._log_execution(
-                        order, 'order_creation', 'completed',
-                        {'target_price': price, 'order_size': size, 'follow_percentage': percentage}
-                    )
-                else:
-                    logger.error(f"创建订单失败: {order.order_uid}")
-            
-            if not orders:
-                return FollowOrderResponse(
-                    success=False,
-                    message="创建跟单订单失败",
-                    orders=[],
-                    error_code="ORDER_CREATION_FAILED"
-                )
-            
-            # 记录日志
-            self.db.add_log(LimitFollowLog(
-                log_level='INFO',
-                message=f"成功创建 {len(orders)} 个跟单订单",
-                signal_source_uid=request.signal_source_uid,
-                customer_uid=request.customer_uid,
-                extra_data={
-                    'symbol': request.symbol,
-                    'pos_side': request.pos_side,
-                    'signal_price': request.signal_price,
-                    'orders_count': len(orders)
-                }
-            ))
-            
-            return FollowOrderResponse(
-                success=True,
-                message=f"成功创建 {len(orders)} 个跟单订单",
-                orders=orders,
-                strategy=strategy
-            )
-            
-        except Exception as e:
-            logger.error(f"执行限价跟单失败: {e}")
-            
-            # 记录错误日志
-            self.db.add_log(LimitFollowLog(
-                log_level='ERROR',
-                message=f"执行限价跟单失败: {str(e)}",
-                signal_source_uid=request.signal_source_uid if 'request' in locals() else None,
-                customer_uid=request.customer_uid if 'request' in locals() else None,
-                extra_data={'error': str(e)}
-            ))
-            
-            return FollowOrderResponse(
-                success=False,
-                message=f"执行限价跟单失败: {str(e)}",
-                orders=[],
-                error_code="EXECUTION_FAILED"
-            )
-    
-    def cancel_orders_on_signal_close(self, request: CancelFollowOrdersRequest) -> CancelFollowOrdersResponse:
-        """信号源平仓时撤销跟单订单"""
-        try:
-            # 查找需要撤销的策略
-            strategies = self.db.get_active_strategies_for_signal(
-                request.signal_source_uid, request.symbol, request.pos_side
-            )
-            
-            if not strategies:
-                return CancelFollowOrdersResponse(
-                    success=True,
-                    message="没有需要撤销的跟单订单",
-                    canceled_count=0
-                )
-            
-            canceled_count = 0
-            
-            for strategy in strategies:
-                if strategy.auto_cancel_on_signal_close:
-                    # 撤销该策略下的所有待处理订单
-                    count = self.db.cancel_pending_orders(strategy.strategy_uid)
-                    canceled_count += count
-                    
-                    # 记录日志
-                    if count > 0:
-                        self.db.add_log(LimitFollowLog(
-                            log_level='INFO',
-                            message=f"信号源平仓，撤销策略 {strategy.strategy_uid} 下的 {count} 个订单",
-                            signal_source_uid=request.signal_source_uid,
-                            strategy_uid=strategy.strategy_uid,
-                            extra_data={
-                                'symbol': request.symbol,
-                                'pos_side': request.pos_side,
-                                'canceled_count': count
-                            }
-                        ))
-            
-            return CancelFollowOrdersResponse(
-                success=True,
-                message=f"成功撤销 {canceled_count} 个跟单订单",
-                canceled_count=canceled_count
-            )
-            
-        except Exception as e:
-            logger.error(f"撤销跟单订单失败: {e}")
-            
-            # 记录错误日志
-            self.db.add_log(LimitFollowLog(
-                log_level='ERROR',
-                message=f"撤销跟单订单失败: {str(e)}",
-                signal_source_uid=request.signal_source_uid,
-                extra_data={'error': str(e)}
-            ))
-            
-            return CancelFollowOrdersResponse(
-                success=False,
-                message=f"撤销跟单订单失败: {str(e)}",
-                canceled_count=0,
-                error_code="CANCEL_FAILED"
-            )
-    
-    def handle_signal_event(self, event: SignalEvent):
-        """处理信号事件"""
-        try:
-            if event.event_type == 'open_position':
-                # 处理开仓信号
-                logger.info(f"收到开仓信号: {event.signal_source_uid} - {event.symbol} - {event.pos_side}")
-                
-                # 这里可以添加自动跟单逻辑
-                # 例如：根据配置自动执行跟单
-                
-            elif event.event_type == 'close_position':
-                # 处理平仓信号
-                logger.info(f"收到平仓信号: {event.signal_source_uid} - {event.symbol} - {event.pos_side}")
-                
-                # 撤销相关跟单订单
-                request = CancelFollowOrdersRequest(
-                    signal_source_uid=event.signal_source_uid,
-                    symbol=event.symbol,
-                    pos_side=event.pos_side
-                )
-                
-                response = self.cancel_orders_on_signal_close(request)
-                logger.info(f"平仓信号处理结果: {response.message}")
-                
-            elif event.event_type == 'place_order':
-                # 处理挂单信号
-                logger.info(f"收到挂单信号: {event.signal_source_uid} - {event.symbol} - {event.pos_side}")
-                
-            elif event.event_type == 'cancel_order':
-                # 处理撤单信号
-                logger.info(f"收到撤单信号: {event.signal_source_uid} - {event.symbol} - {event.pos_side}")
-            
-            # 记录信号事件
-            self.db.add_log(LimitFollowLog(
-                log_level='INFO',
-                message=f"处理信号事件: {event.event_type}",
-                signal_source_uid=event.signal_source_uid,
-                extra_data={
-                    'event_type': event.event_type,
-                    'symbol': event.symbol,
-                    'pos_side': event.pos_side,
-                    'price': event.price,
-                    'volume': event.volume
-                }
-            ))
-            
-        except Exception as e:
-            logger.error(f"处理信号事件失败: {e}")
-    
-    # ==================== 辅助方法 ====================
-    
-    def _validate_follow_request(self, request: FollowOrderRequest) -> bool:
-        """验证跟单请求"""
-        try:
-            # 验证基本参数
-            if not all([request.signal_source_uid, request.customer_uid, 
-                       request.symbol, request.pos_side]):
-                return False
-            
-            # 验证价格和数量
-            if not validate_price(request.signal_price) or not validate_volume(request.signal_volume):
-                return False
-            
-            # 验证持仓方向
-            if request.pos_side not in ['long', 'short']:
-                return False
-            
-            # 验证跟单百分比
-            if request.follow_percentages:
-                config = get_limit_follow_config()
-                min_percentage = config.get('min_follow_percentage', 0.5)
-                max_percentage = config.get('max_follow_percentage', 10.0)
-                
-                for percentage in request.follow_percentages:
-                    if not isinstance(percentage, (int, float)):
-                        return False
-                    if percentage < min_percentage or percentage > max_percentage:
-                        return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"验证跟单请求失败: {e}")
-            return False
-    
-    def _calculate_follow_prices(self, signal_price: float, pos_side: str, 
-                                follow_percentages: List[float], 
-                                strategy: LimitFollowStrategy) -> PriceCalculationResult:
-        """计算跟单价格和数量"""
-        try:
-            calculated_prices = []
-            order_sizes = []
-            
-            for percentage in follow_percentages:
-                # 计算跟单价格
-                price = calculate_follow_price(signal_price, percentage, pos_side)
-                calculated_prices.append(price)
-                
-                # 计算订单数量
-                size = calculate_order_size(signal_price, percentage, strategy)
-                order_sizes.append(size)
-            
-            return PriceCalculationResult(
-                original_price=signal_price,
-                pos_side=pos_side,
-                follow_percentages=follow_percentages,
-                calculated_prices=calculated_prices,
-                order_sizes=order_sizes
-            )
-            
-        except Exception as e:
-            logger.error(f"计算跟单价格失败: {e}")
-            raise
-    
-    def get_service_status(self) -> Dict[str, Any]:
-        """获取服务状态"""
-        try:
-            status = self.db.get_status_summary()
+            for balance in balance_data:
+                if balance.get('ccy') == 'USDT':
+                    total_balance = float(balance.get('bal', 0))
+                    available_balance = float(balance.get('availBal', 0))
+                    break
             
             return {
-                'running': self.running,
-                'total_strategies': status.total_strategies,
-                'active_strategies': status.active_strategies,
-                'total_orders': status.total_orders,
-                'pending_orders': status.pending_orders,
-                'live_orders': status.live_orders,
-                'filled_orders': status.filled_orders,
-                'canceled_orders': status.canceled_orders,
-                'last_update': status.last_update.isoformat() if status.last_update else None
+                'total_balance': total_balance,
+                'available_balance': available_balance,
+                'currency': 'USDT',
+                'customer_uid': customer_uid
             }
             
         except Exception as e:
-            logger.error(f"获取服务状态失败: {e}")
-            return {'running': self.running, 'error': str(e)}
-    
-    def start_service(self):
-        """启动服务"""
-        try:
-            if not self.running:
-                self._start_monitor_thread()
-                logger.info("限价跟单服务已启动")
-            
-        except Exception as e:
-            logger.error(f"启动服务失败: {e}")
-    
-    def stop_service(self):
-        """停止服务"""
-        try:
-            self._stop_monitor_thread()
-            logger.info("限价跟单服务已停止")
-            
-        except Exception as e:
-            logger.error(f"停止服务失败: {e}")
-    
-    def __del__(self):
-        """析构函数"""
-        self.stop_service()
+            logger.error(f"获取客户账户信息失败: {e}")
+            return None
 
-# 全局服务实例
+    # 为了兼容现有代码，保留一些原有方法的引用
+    async def _submit_order_to_exchange_enhanced(self, order):
+        """增强的订单提交方法"""
+        return await self._submit_order_to_exchange(order)
+    
+    async def _submit_order_to_exchange(self, order):
+        """提交订单到交易所"""
+        try:
+            # 获取客户信息
+            customer_info = await self._get_customer_info(order.customer_uid)
+            if not customer_info:
+                logger.error(f"无法获取客户信息: {order.customer_uid}")
+                return False
+            
+            # 创建REST客户端
+            from okx_rest_client import OKXRESTClient
+            from trade_service import get_global_is_demo
+            
+            rest_client = OKXRESTClient(
+                api_key=customer_info['api_key'],
+                api_secret=customer_info.get('secret_key') or customer_info.get('api_secret'),
+                passphrase=customer_info['passphrase'],
+                is_demo=get_global_is_demo()
+            )
+            
+            # 生成符合OKX要求的客户端订单ID（最大32字符）
+            from trade_service import make_clOrdId
+            import time
+            
+            # 使用简化的ID生成策略
+            timestamp = str(int(time.time() * 1000))[-8:]  # 时间戳后8位
+            order_hash = str(hash(order.order_uid))[-8:]   # 订单UID哈希后8位
+            client_order_id = f"LF{timestamp}{order_hash}"  # 限价跟单标识
+            
+            # 构建订单参数
+            order_data = {
+                "instId": order.symbol,
+                "tdMode": "cross",  # 交叉保证金模式
+                "side": "buy" if order.pos_side == "long" else "sell",
+                "posSide": order.pos_side,
+                "ordType": order.order_type,  # 一般是 "limit"
+                "sz": str(order.order_size),
+                "clOrdId": client_order_id  # 使用简化的客户端订单ID
+            }
+            
+            # 如果是限价单，添加价格
+            if order.order_type == "limit" and order.target_price:
+                order_data["px"] = str(order.target_price)
+            
+            logger.info(f"📤 提交限价跟单订单到交易所: {order.order_uid}")
+            logger.debug(f"订单参数: {order_data}")
+            
+            # 提交订单
+            result = await rest_client.place_order(**order_data)
+            
+            if result and result.get('code') == '0':
+                # 订单提交成功
+                order_info = result.get('data', [{}])[0]
+                exchange_order_id = order_info.get('ordId')
+                
+                if exchange_order_id:
+                    # 更新数据库中的交易所订单ID
+                    success = self.db.db_pool.execute("""
+                        UPDATE limit_follow_orders 
+                        SET exchange_order_id=%s, status='live', updated_at=NOW()
+                        WHERE order_uid=%s
+                    """, (exchange_order_id, order.order_uid))
+                    
+                    if success:
+                        logger.info(f"✅ 限价跟单订单提交成功: {order.order_uid} -> {exchange_order_id}")
+                        return True
+                    else:
+                        logger.error(f"❌ 更新交易所订单ID失败: {order.order_uid}")
+                        return False
+                else:
+                    logger.error(f"❌ 交易所未返回订单ID: {order.order_uid}")
+                    return False
+            else:
+                # 订单提交失败
+                error_msg = result.get('msg', '未知错误') if result else '请求失败'
+                logger.error(f"❌ 限价跟单订单提交失败: {order.order_uid} - {error_msg}")
+                
+                # 更新订单状态为失败
+                self.db.db_pool.execute("""
+                    UPDATE limit_follow_orders 
+                    SET status='rejected', updated_at=NOW()
+                    WHERE order_uid=%s
+                """, (order.order_uid,))
+                
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 提交订单到交易所异常: {order.order_uid} - {e}")
+            
+            # 更新订单状态为失败
+            try:
+                self.db.db_pool.execute("""
+                    UPDATE limit_follow_orders 
+                    SET status='rejected', updated_at=NOW()
+                    WHERE order_uid=%s
+                """, (order.order_uid,))
+            except:
+                pass
+            
+            return False
+
+# ==================== 向后兼容性 ====================
+
+# 为向后兼容，提供旧类名的别名
+LimitFollowService = EnhancedLimitFollowService
+
+# ==================== 全局服务实例管理 ====================
+
 _limit_follow_service = None
 
-def get_limit_follow_service() -> LimitFollowService:
-    """获取限价跟单服务实例"""
+def get_limit_follow_service() -> EnhancedLimitFollowService:
+    """获取增强限价跟单服务实例"""
     global _limit_follow_service
     if _limit_follow_service is None:
-        _limit_follow_service = LimitFollowService()
+        _limit_follow_service = EnhancedLimitFollowService()
     return _limit_follow_service
 
-if __name__ == "__main__":
-    # 测试服务
-    service = LimitFollowService()
-    
+def reset_limit_follow_service():
+    """重置服务实例（用于重启）"""
+    global _limit_follow_service
+    if _limit_follow_service:
+        _limit_follow_service.stop_monitoring()
+    _limit_follow_service = None
+
+def notify_limit_follow_order_update(exchange_order_id: str, order_data: dict):
+    """通知限价跟单服务有订单状态更新（供信号服务调用）"""
+    global _limit_follow_service
+    if _limit_follow_service:
+        _limit_follow_service.on_order_status_update(exchange_order_id, order_data)
+
+# 如果直接运行此文件，启动服务
+if __name__ == '__main__':
+    service = EnhancedLimitFollowService()
     try:
-        # 启动服务
-        service.start_service()
-        
-        # 保持运行
-        while True:
-            time.sleep(1)
-            
+        import asyncio
+        asyncio.run(service.start_monitoring())
     except KeyboardInterrupt:
-        print("正在停止服务...")
-        service.stop_service()
-        print("服务已停止") 
+        logger.info("收到中断信号，停止服务...")
+        service.stop_monitoring()
+    except Exception as e:
+        logger.error(f"服务运行异常: {e}")
+        service.stop_monitoring() 

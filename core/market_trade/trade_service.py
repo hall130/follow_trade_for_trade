@@ -21,14 +21,16 @@ import gc
 import tracemalloc
 import traceback
 
-from config.contract_config import get_contract_min_sz, get_contract_multiplier
+from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
 from database.db import get_enabled_customers, get_enabled_signal_accounts
-from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async
-from config.dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings
+from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async, get_dingtalk_bot, init_dingtalk_bot
+from config.dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings, get_dingtalk_config
 from datetime import datetime
-
+from exchange.okx.okx_rest_client import OKXRESTClient
 import os
-from config import get_websocket_config
+from config.config import get_websocket_config
+from database.global_db_manager import get_global_db_pool
+
 
 TICKER_CACHE = {}
 TICKER_CACHE_TIME = {}  # 记录每个价格的时间戳
@@ -206,7 +208,7 @@ def safe_volume(val, ndigits=3):
 
 
 # 导入合约配置
-        from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
+
 
 
 
@@ -297,7 +299,7 @@ class ConnectionManager:
                 logger.info(f"创建新连接: {client_key}")
                 
                 # 使用全局客户端管理器
-                from exchange.okx.okx_ws_client import get_global_client_manager
+                from okx_ws_client import get_global_client_manager
                 client_manager = get_global_client_manager()
                 
                 client = await client_manager.get_client(
@@ -522,8 +524,7 @@ class TradeService:
     def _ensure_dingtalk_initialized(self):
         """确保钉钉机器人已初始化"""
         try:
-            from utils.dingtalk_bot import get_dingtalk_bot, init_dingtalk_bot
-            from config.dingtalk_config import get_dingtalk_config
+            
             
             # 检查是否已初始化
             bot = get_dingtalk_bot()
@@ -533,14 +534,12 @@ class TradeService:
             
             # 如果未初始化，尝试初始化
             config = get_dingtalk_config()
-            if config and config.get("enabled", False):
+            if config.get("enabled", False):
                 webhook_url = config.get("webhook_url")
                 secret = config.get("secret")
                 if webhook_url and webhook_url != "YOUR_ACCESS_TOKEN" and secret and secret != "YOUR_SECRET_KEY":
-                    if init_dingtalk_bot(webhook_url, secret):
-                        logger.info("✅ 交易服务初始化钉钉机器人成功")
-                    else:
-                        logger.warning("⚠️ 交易服务钉钉机器人初始化失败")
+                    init_dingtalk_bot(webhook_url, secret)
+                    logger.info("✅ 交易服务初始化钉钉机器人成功")
                 else:
                     logger.warning("⚠️ 交易服务钉钉机器人配置不完整")
             else:
@@ -1094,8 +1093,8 @@ class TradeService:
                                                    signal_source_uid: str = None):
         """异步发送客户成交通知到钉钉（仅在异常情况下）"""
         try:
-            from utils.dingtalk_bot import get_dingtalk_bot, send_trade_notification_async
-            from config.dingtalk_config import should_send_trade_notification
+            from dingtalk_bot import get_dingtalk_bot, send_trade_notification_async
+            from dingtalk_config import should_send_trade_notification
             
             # 快速检查是否应该发送通知
             if not should_send_trade_notification():
@@ -1172,8 +1171,8 @@ class TradeService:
                                        success: bool = True, error: str = None):
         """发送客户成交通知到钉钉（同步方式，保持向后兼容）"""
         try:
-            from utils.dingtalk_bot import get_dingtalk_bot, send_trade_notification
-            from config.dingtalk_config import should_send_trade_notification
+            from dingtalk_bot import get_dingtalk_bot, send_trade_notification
+            from dingtalk_config import should_send_trade_notification
             
             # 快速检查是否应该发送通知
             if not should_send_trade_notification():
@@ -1431,7 +1430,7 @@ class TradeService:
                         # 下单成功
                         if res.get('code') == '0' and res.get('data') and res['data'][0].get('ordId'):
                             ordId = res['data'][0]['ordId']
-                            from database.db import update_customer_trade_order_id, update_customer_trade_open_px
+                            from db import update_customer_trade_order_id, update_customer_trade_open_px
                             update_customer_trade_order_id(self.db_pool, trade_uid, ordId)
                             self.db_pool.execute("UPDATE customer_trades SET order_id=%s, clOrdId=%s WHERE trade_uid=%s", (ordId, clOrdId, trade_uid))
                             logger.info(f"[下单补全] 已写入order_id: trade_uid={trade_uid}, ordId={ordId}, clOrdId={clOrdId}")
@@ -1484,7 +1483,7 @@ class TradeService:
                                         
                                         # 如果close_volume_contract为0，设置为volume_contract（全平）
                                         if current_closed == 0:
-                                            from database.db import update_customer_trade_close_volume_contract
+                                            from db import update_customer_trade_close_volume_contract
                                             update_customer_trade_close_volume_contract(self.db_pool, trade_uid, volume_contract)
                                             logger.info(f"[持仓检查] 更新close_volume_contract: trade_uid={trade_uid}, volume_contract={volume_contract}")
                                         
@@ -1637,13 +1636,13 @@ class TradeService:
             trades = self.get_open_trades(customer_uid)
             
             # 使用db.py中的get_customer_by_id函数获取完整的客户信息
-            from database.db import get_customer_by_id
+            from db import get_customer_by_id
             is_demo = get_global_is_demo()
             customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
             
             if customer_data:
                 # 使用新的有效资产获取逻辑，优先使用开仓资产
-                from database.db import get_customer_effective_asset
+                from db import get_customer_effective_asset
                 total_asset = get_customer_effective_asset(self.db_pool, customer_uid, is_demo)
                 if total_asset is None or total_asset <= 0:
                     total_asset = 10000.0  # 默认值
@@ -1683,7 +1682,7 @@ class TradeService:
                         continue
                     
                     # 获取信号源当前快照资产
-                    from database.db import get_signal_source_current_asset
+                    from db import get_signal_source_current_asset
                     signal_current_asset_raw = get_signal_source_current_asset(self.db_pool, signal_source_uid)
                     if signal_current_asset_raw is None:
                         logger.warning(f"[集合下单] 信号源{signal_source_uid}当前快照资产为空，使用默认值10000")
@@ -1904,7 +1903,7 @@ class TradeService:
                         continue
                     
                     # 获取信号源当前快照资产
-                    from database.db import get_signal_source_current_asset
+                    from db import get_signal_source_current_asset
                     signal_current_asset_raw = get_signal_source_current_asset(self.db_pool, signal_source_uid)
                     if signal_current_asset_raw is None:
                         logger.warning(f"[集合平单] 信号源{signal_source_uid}当前快照资产为空，使用默认值10000")
@@ -2011,8 +2010,8 @@ class TradeService:
                     # 使用信号源价格作为初始价格，如果没有则使用缓存价格
                     initial_open_px = avgPx if avgPx > 0 else latest_px
                     
-                    logger.info(f"[插入客户单] split_sz={split_sz}, volume_usdt={volume_usdt}, avgPx={avgPx}, latest_px={latest_px}, initial_open_px={initial_open_px}, order={order}")
-                    logger.info(f"[插入客户单] trade_uid长度: {len(order_trade_uid)}, trade_uid: {order_trade_uid}")
+                    # logger.info(f"[插入客户单] split_sz={split_sz}, volume_usdt={volume_usdt}, avgPx={avgPx}, latest_px={latest_px}, initial_open_px={initial_open_px}, order={order}")
+                    # logger.info(f"[插入客户单] trade_uid长度: {len(order_trade_uid)}, trade_uid: {order_trade_uid}")
                     
                     # 检查trade_uid长度
                     if len(order_trade_uid) > 128:
@@ -2190,7 +2189,7 @@ class TradeService:
         """
         按信号源减仓比例FIFO分配到客户所有open持仓，累加close_volume_contract，只平需要平的单。
         """
-        from database.db import update_customer_trade_close_volume_contract
+        from db import update_customer_trade_close_volume_contract
         
         # 强制过滤trades，只保留status=open的trade，避免处理已closed的trade
         trades = [t for t in trades if get_trade_field(t, 'status') == 'open']
@@ -2236,7 +2235,7 @@ class TradeService:
             logger.info(f"[客户减仓] 信号源持仓{i+1}: signal_source_uid={row.get('signal_source_uid')}, volume_contract={row.get('volume_contract')}, close_volume_contract={row.get('close_volume_contract')}, status={row.get('status')}")
         
         # 计算指定信号源的总原始持仓张数（包括已平仓的）
-        total_signal_original = sum(float(row.get('volume_contract', 0) or 0) for row in signal_rows if row.get('signal_source_uid') == signal_source_uid)
+        # total_signal_original = sum(float(row.get('volume_contract', 0) or 0) for row in signal_rows if row.get('signal_source_uid') == signal_source_uid)
         # 计算指定信号源的open持仓的总张数和累计已减仓张数
         total_signal_contract = sum(float(row.get('volume_contract', 0) or 0) for row in signal_rows if row.get('signal_source_uid') == signal_source_uid and row.get('status') == 'open')
         total_signal_closed = sum(float(row.get('close_volume_contract', 0) or 0) for row in signal_rows if row.get('signal_source_uid') == signal_source_uid and row.get('status') == 'open')
@@ -2406,7 +2405,7 @@ class TradeService:
                 "SELECT DISTINCT ct.* FROM customer_trades ct WHERE ct.rule_uid = %s AND ct.symbol = %s AND ct.pos_side = %s AND ct.is_demo = %s and status='open'",
                 (signal_source_uid, symbol, pos_side, is_demo)
             )
-            logger.info(f"[客户减仓] 查询条件: rule_uid={signal_source_uid}, symbol={symbol}, pos_side={pos_side}, is_demo={is_demo}")
+            # logger.info(f"[客户减仓] 查询条件: rule_uid={signal_source_uid}, symbol={symbol}, pos_side={pos_side}, is_demo={is_demo}")
             logger.info(f"[客户减仓] 所有相关客户持仓（限制状态为open）: {len(all_customer_trades_debug)}条")
             for i, trade in enumerate(all_customer_trades_debug):
                 logger.info(f"[客户减仓] 客户持仓{i+1}: customer_uid={get_trade_field(trade, 'customer_uid')}, trade_uid={get_trade_field(trade, 'trade_uid')}, volume_contract={get_trade_field(trade, 'volume_contract')}, status={get_trade_field(trade, 'status')}, rule_uid={get_trade_field(trade, 'rule_uid')}")
@@ -2647,7 +2646,7 @@ class TradeService:
         await self.batch_close_trades(trades, symbol, pos_side, signal_volume, rule_ratio_map, signal_source_uid)
 
     async def listen_customer_account(self, customer: Customer):
-        from exchange.okx.okx_ws_client import OKXWebSocketClient
+        from okx_ws_client import OKXWebSocketClient
         client = await self.get_client(customer)
         
         async def on_account(data):
@@ -2658,7 +2657,7 @@ class TradeService:
                     is_demo = get_global_is_demo()
                     
                     # 更新客户资产到数据库（优化：只在init_asset为NULL时更新，减少更新频率）
-                    from database.db import get_customer_by_id
+                    from db import get_customer_by_id
                     customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
 
                     if customer_data:
@@ -2941,7 +2940,7 @@ class TradeService:
                         
                         # 发送钉钉通知
                         try:
-                            from utils.dingtalk_bot import get_dingtalk_bot
+                            from dingtalk_bot import get_dingtalk_bot
                             bot = get_dingtalk_bot()
                             if bot:
                                 alert_info = {
@@ -2967,7 +2966,7 @@ class TradeService:
                     await asyncio.sleep(5)  # 等待5秒后重试
 
     async def listen_customer_accounts(self):
-        from database.db import get_enabled_customers
+        from db import get_enabled_customers
         is_demo = get_global_is_demo()
         logger.info(f"[日志] listen_customer_accounts: is_demo={is_demo}")
         customers = get_enabled_customers(self.db_pool, is_demo)
@@ -3237,7 +3236,7 @@ class TradeService:
                     
                     # 如果close_volume_contract为0，设置为volume_contract（全平）
                     if current_closed == 0:
-                        from database.db import update_customer_trade_close_volume_contract
+                        from db import update_customer_trade_close_volume_contract
                         update_customer_trade_close_volume_contract(self.db_pool, trade_uid, volume_contract)
                         logger.info(f"[客户平仓] 更新close_volume_contract: trade_uid={trade_uid}, volume_contract={volume_contract}")
                     
@@ -3311,7 +3310,7 @@ class TradeService:
             is_demo = get_global_is_demo()
             
             # 获取所有启用的客户
-            from database.db import get_enabled_customers
+            from db import get_enabled_customers
             customers = get_enabled_customers(self.db_pool, is_demo)
             
             for customer_data in customers:
@@ -3327,7 +3326,7 @@ class TradeService:
                         
                         # 从交易所获取实际持仓
                         # 获取完整的客户信息
-                        from database.db import get_customer_by_id
+                        from db import get_customer_by_id
                         customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
                         if customer_data:
                             customer = self.safe_customer(customer_data)
@@ -3454,7 +3453,7 @@ class TradeService:
                 return
             
             # 获取完整的客户信息
-            from database.db import get_customer_by_id
+            from db import get_customer_by_id
             customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
             if not customer_data:
                 logger.error(f"[自动修复] 未找到客户{customer_uid}信息")
@@ -3556,7 +3555,7 @@ class TradeService:
                     volume_usdt = abs(difference_sz) * multiplier * latest_px
                     
                     # 插入customer_trades记录
-                    from database.db import insert_customer_trade
+                    from db import insert_customer_trade
                     insert_customer_trade(
                         self.db_pool,
                         customer_uid,
@@ -3616,7 +3615,7 @@ class TradeService:
                     volume_usdt = abs(difference_sz) * multiplier * latest_px
                     
                     # 插入customer_trades记录
-                    from database.db import insert_customer_trade
+                    from db import insert_customer_trade
                     insert_customer_trade(
                         self.db_pool,
                         customer_uid,
@@ -4266,7 +4265,7 @@ class TradeService:
                 return []
             
             # 创建REST API客户端
-            from exchange.okx.okx_rest_client import OKXRESTClient
+            
             rest_client = OKXRESTClient(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -4314,16 +4313,12 @@ class TradeService:
     async def _get_signal_source_local_positions(self, source_uid):
         """从数据库获取本地记录的信号源持仓"""
         try:
-            # 查询本地数据库中的信号源持仓
-            from database.db import MySQLPool
-            from config import get_mysql_config
-            
-            mysql_config = get_mysql_config()
-            db_pool = MySQLPool(**mysql_config)
+            # 查询本地数据库中的信号源持仓 - 使用全局连接池
+            db_pool = get_global_db_pool()
             
             # 查询状态为open的持仓，必须包含trade_uid字段
             positions = db_pool.query(
-                "SELECT trade_uid, symbol, pos_side, volume_contract, open_px FROM signal_account_trades WHERE signal_source_uid=%s AND status='open'",
+                "SELECT trade_uid, symbol, pos_side, (volume_contract - IFNULL(close_volume_contract, 0)) as volume_contract, open_px FROM signal_account_trades WHERE signal_source_uid=%s AND status='open'",
                 (source_uid,)
             )
             
@@ -4425,12 +4420,12 @@ class TradeService:
     async def _create_signal_source_trade_record(self, source_uid, symbol, pos_side, size, avg_px):
         """创建信号源持仓记录 - 补全丢失的信号"""
         try:
-            from database.db import MySQLPool
+            from db import MySQLPool
             from config import get_mysql_config
             import uuid
             
-            mysql_config = get_mysql_config()
-            db_pool = MySQLPool(**mysql_config)
+            from global_db_manager import get_global_db_pool
+            db_pool = get_global_db_pool()
             is_demo = get_global_is_demo()
             # 生成交易UID
             trade_uid = f"SYNC_{uuid.uuid4().hex[:16]}"
@@ -5138,7 +5133,7 @@ class TradeService:
             # 止损线 = 初始资产 * (1 - 止损比例)
             stop_loss_line = init_assets * (1 - stop_loss_percent / 100)
             
-            logger.info(f"[客户止损] 客户 {customer_uid}: 初始资产={init_assets:.2f}, 实际总资产={actual_total_assets:.2f}, 止损线={stop_loss_line:.2f}, 止损比例={stop_loss_percent}%")
+            # logger.info(f"[客户止损] 客户 {customer_uid}: 初始资产={init_assets:.2f}, 实际总资产={actual_total_assets:.2f}, 止损线={stop_loss_line:.2f}, 止损比例={stop_loss_percent}%")
             
             # 检查是否触发止损
             if actual_total_assets < stop_loss_line:
@@ -5230,7 +5225,7 @@ class TradeService:
             # 止损线 = 初始资产 * (1 - 止损比例)
             stop_loss_line = init_assets * (1 - stop_loss_percent / 100)
             
-            logger.info(f"[信号源止损] 信号源 {source_uid}: 初始资产={init_assets:.2f}, 当前资产={current_assets:.2f}, 止损线={stop_loss_line:.2f}, 止损比例={stop_loss_percent}%")
+            # logger.info(f"[信号源止损] 信号源 {source_uid}: 初始资产={init_assets:.2f}, 当前资产={current_assets:.2f}, 止损线={stop_loss_line:.2f}, 止损比例={stop_loss_percent}%")
             
             # 检查是否触发止损
             if current_assets < stop_loss_line:
@@ -6138,7 +6133,7 @@ class TradeService:
                 return None
             
             # 使用全局客户端管理器获取现有客户端
-            from exchange.okx.okx_ws_client import get_global_client_manager
+            from okx_ws_client import get_global_client_manager
             client_manager = get_global_client_manager()
             
             # 构建客户端key
@@ -6166,7 +6161,7 @@ class TradeService:
                 return None
             
             # 使用全局客户端管理器获取现有客户端
-            from exchange.okx.okx_ws_client import get_global_client_manager
+            from okx_ws_client import get_global_client_manager
             client_manager = get_global_client_manager()
             
             # 构建客户端key
@@ -6189,39 +6184,853 @@ class TradeService:
     # ==================== 限价跟单模块 ====================
     
     async def trigger_limit_follow_orders(self, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid):
-        """触发限价跟单订单"""
+        """触发限价跟单订单 - 新逻辑"""
         try:
-            logger.info(f"[限价跟单] 触发限价跟单: {signal_source_uid} {symbol} {pos_side} @ {signal_price}")
+            logger.info(f"[限价跟单] 触发限价跟单: {signal_source_uid} {symbol} {pos_side} @ {signal_price} - 订单号{signal_trade_uid}")
             
-            # 调用API接口执行限价跟单
+            # 查询相关的限价跟单策略
+            strategies = self.db_pool.query(
+                """SELECT * FROM limit_follow_strategies 
+                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
+                AND (pos_side='both' OR pos_side=%s)  AND enabled=1""",
+                (signal_source_uid, symbol, pos_side)
+            )
+            
+            if not strategies:
+                logger.info(f"[限价跟单] 未找到相关策略: {signal_source_uid} {symbol} {pos_side}")
+                return
+            
+            logger.info(f"[限价跟单] 找到 {len(strategies)} 个限价跟单策略")
+            
+            # 为每个策略处理限价跟单
+            for strategy in strategies:
+                try:
+                    await self._process_limit_follow_strategy(
+                        strategy, signal_source_uid, symbol, pos_side, 
+                        signal_price, signal_trade_uid
+                    )
+                except Exception as e:
+                    logger.error(f"[限价跟单] 策略 {strategy.get('id', 'unknown')} 处理失败: {e}")
+                    
+        except Exception as e:
+            logger.error(f"[限价跟单] 触发限价跟单失败: {e}")
+
+    async def _process_limit_follow_strategy(self, strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid):
+        """处理单个限价跟单策略"""
+        try:
+            # 1. 获取信号源当前总仓位
+            signal_position = await self._get_signal_position(signal_source_uid, symbol, pos_side, signal_trade_uid)
+            if not signal_position:
+                logger.warning(f"[限价跟单] 无法获取信号源仓位: {signal_source_uid} {symbol} {pos_side}")
+                return
+            
+            # 2. 获取动态比例（从策略配置中获取）
+            follow_ratio = await self._get_follow_ratio(strategy, signal_source_uid)
+            
+            logger.info(f"[限价跟单] 信号源订单号: {signal_trade_uid}")
+            # 3. 计算客户目标总仓位 = 信号源总仓位 × 动态比例
+            target_total_position = signal_position * follow_ratio
+            
+            # 4. 获取客户当前仓位
+            customer_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side, signal_trade_uid)
+            
+            # 5. 计算需要补充的仓位
+            need_position = target_total_position - customer_position
+            
+            if need_position <= 0:
+                logger.info(f"[限价跟单] 客户仓位已足够，无需补充: {strategy['customer_uid']}")
+                return
+            
+            # 6. 检查最大净杠杆限制
+            if not await self._check_leverage_limit(strategy, need_position):
+                logger.warning(f"[限价跟单] 超过最大净杠杆限制，尝试FIFO撤单: {strategy['customer_uid']}")
+                # 调用杠杆超限处理函数
+                await self._handle_leverage_limit_exceeded(
+                    strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid
+                )
+                return
+            
+            # 7. 计算每个限价单的数量
+            orders_per_signal = strategy['max_orders_per_signal']  # 动态配置，可能是4、5、6等
+            # 每个限价单的数量 = 客户总仓位 / 限价单数量
+            order_size = target_total_position / orders_per_signal
+            
+            # 8. 修正订单数量精度
+            order_size = await self._adjust_order_size_precision(symbol, order_size)
+            
+            logger.info(f"[限价跟单] 信号仓位={signal_position}, 跟单比例={follow_ratio}, 目标仓位={target_total_position}, 客户仓位={customer_position}, 需要补充={need_position}, 限价单数={orders_per_signal}, 每单数量={order_size}")
+            
+            # 9. 创建限价单
+            await self._create_limit_orders(
+                strategy, signal_source_uid, symbol, pos_side, 
+                signal_price, order_size, orders_per_signal, signal_trade_uid
+            )
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 处理策略失败: {e}")
+
+    async def _adjust_order_size_precision(self, symbol, order_size):
+        """调整订单数量精度"""
+        try:
+            # 获取合约信息
+            from contract_config import get_contract_info
+            contract_info = get_contract_info(symbol)
+            
+            if not contract_info:
+                # 默认精度调整
+                return round(order_size, 2)
+            
+            # 获取最小单位
+            min_size = contract_info.get('min_size', 0.01)
+            
+            # 计算精度
+            if min_size >= 1:
+                # 整数精度
+                precision = 0
+            elif min_size >= 0.1:
+                # 1位小数
+                precision = 1
+            elif min_size >= 0.01:
+                # 2位小数
+                precision = 2
+            elif min_size >= 0.001:
+                # 3位小数
+                precision = 3
+            else:
+                # 4位小数
+                precision = 4
+            
+            # 调整精度
+            adjusted_size = round(order_size, precision)
+            
+            # 确保是最小单位的倍数
+            if min_size > 0:
+                adjusted_size = round(adjusted_size / min_size) * min_size
+            
+            logger.info(f"[限价跟单] 订单数量精度调整: 原始={order_size}, 调整后={adjusted_size}, 最小单位={min_size}")
+            
+            return adjusted_size
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 调整订单数量精度失败: {e}")
+            return round(order_size, 2)  # 默认2位小数
+
+    async def _calculate_target_position(self, strategy, signal_source_uid, signal_position):
+        """计算客户目标仓位"""
+        logger.info(f"目标策略: {strategy}")
+        try:
+            follow_mode = strategy['follow_mode']
+            
+            if follow_mode == 'follow_trader':
+                # 跟单员模式：使用固定比例
+                follow_ratio = float(strategy.get('trader_follow_ratio', 0.05))  # 默认5%
+                target_position = signal_position * follow_ratio
+                logger.info(f"[限价跟单] 跟单员模式: 信号仓位={signal_position}, 跟单比例={follow_ratio}, 目标仓位={target_position}")
+                
+            elif follow_mode == 'follow_signal_source':
+                # 信号源模式：动态计算资金比例
+                customer_funds = await self._get_customer_funds(strategy['customer_uid'])
+                signal_funds = await self._get_signal_funds(signal_source_uid)
+                
+                if signal_funds <= 0:
+                    logger.warning(f"[限价跟单] 信号源资金为0，跳过: {signal_source_uid}")
+                    return 0
+                
+                # 计算资金比例
+                fund_ratio = customer_funds / signal_funds
+                
+                # 获取跟单比例
+                follow_ratio = float(strategy.get('follow_value', 2.0)) / 100  # 跟单比例
+                
+                # 计算目标仓位
+                target_position = signal_position * fund_ratio * follow_ratio
+                
+                logger.info(f"[限价跟单] 信号源模式: 信号仓位={signal_position}, 客户资金={customer_funds}, 信号资金={signal_funds}, 资金比例={fund_ratio:.4f}, 跟单比例={follow_ratio:.4f}, 目标仓位={target_position}")
+                
+            else:
+                logger.error(f"[限价跟单] 未知的跟单模式: {follow_mode}")
+                return 0
+            
+            return target_position
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 计算目标仓位失败: {e}")
+            return 0
+
+    async def _get_follow_ratio(self, strategy, signal_source_uid):
+        """获取跟单比例"""
+        try:
+            logger.info(strategy)
+            follow_mode = strategy['follow_mode']
+            
+            if follow_mode == 'follow_trader':
+                # 跟单员模式：使用固定比例
+                follow_ratio = float(strategy.get('trader_follow_ratio', 0.05))  # 默认5%
+                logger.info(f"[限价跟单] 跟单员模式，跟单比例: {follow_ratio}")
+                
+            elif follow_mode == 'follow_signal_source':
+                # 信号源模式：动态计算资金比例
+                customer_funds = await self._get_customer_funds(strategy['customer_uid'])
+                signal_funds = await self._get_signal_funds(signal_source_uid)
+                
+                if signal_funds <= 0:
+                    logger.warning(f"[限价跟单] 信号源资金为0，使用默认比例: {signal_source_uid}")
+                    return 1.0  # 默认1:1比例
+                
+                # 计算资金比例
+                fund_ratio = customer_funds / signal_funds
+                
+                # 获取跟单比例
+                follow_ratio = float(strategy.get('follow_value', 2.0)) / 100  # 跟单比例
+                
+                # 最终比例 = 资金比例 × 跟单比例
+                final_ratio = fund_ratio * follow_ratio
+                
+                logger.info(f"[限价跟单] 信号源模式: 客户资金={customer_funds}, 信号资金={signal_funds}, 资金比例={fund_ratio:.4f}, 跟单比例={follow_ratio:.4f}, 最终比例={final_ratio:.4f}")
+                
+            else:
+                logger.error(f"[限价跟单] 未知的跟单模式: {follow_mode}")
+                return 1.0  # 默认1:1比例
+            
+            return final_ratio
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 获取跟单比例失败: {e}")
+            return 1.0  # 默认1:1比例
+
+    async def _get_signal_funds(self, signal_source_uid):
+        """获取信号源当前资金"""
+        try:
+            signal_source = self.db_pool.query(
+                "SELECT asset FROM signal_account_assets WHERE signal_source_uid=%s",
+                (signal_source_uid,)
+            )
+            
+            if signal_source and signal_source[0]['asset']:
+                return float(signal_source[0]['asset'])
+            return 0.0
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 获取信号源资金失败: {e}")
+            return 0.0
+
+    async def _get_customer_funds(self, customer_uid):
+        """获取客户当前资金"""
+        try:
+            customer = self.db_pool.query(
+                "SELECT total_asset FROM customers WHERE customer_uid=%s",
+                (customer_uid,)
+            )
+            
+            if customer and customer[0]['total_asset']:
+                return float(customer[0]['total_asset'])
+            return 0.0
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 获取客户资金失败: {e}")
+            return 0.0
+
+    async def _get_signal_position(self, signal_source_uid, symbol, pos_side, signal_trade_uid=None):
+        """获取信号源当前仓位"""
+        try:
+            if signal_trade_uid:
+                position = self.db_pool.query(
+                    """SELECT SUM(volume_contract - IFNULL(close_volume_contract, 0)) as total_volume 
+                    FROM signal_account_trades 
+                    WHERE order_id=%s""",
+                    (signal_trade_uid, )
+                )
+            else:
+                # 查询信号源当前仓位
+                position = self.db_pool.query(
+                    """SELECT SUM(volume_contract) as total_volume 
+                    FROM signal_account_trades 
+                    WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s AND status='open'""",
+                    (signal_source_uid, symbol, pos_side)
+                )
+            
+            if position and position[0]['total_volume']:
+                return float(position[0]['total_volume'])
+            return 0.0
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 获取信号源仓位失败: {e}")
+            return 0.0
+
+    async def _get_customer_position(self, customer_uid, symbol, pos_side, signal_trade_uid=None):
+        """获取客户当前仓位"""
+        try:
+            # 查询客户当前仓位（包括已成交和挂单）
+            if signal_trade_uid:
+                position = self.db_pool.query(
+                    """SELECT SUM(order_size) as total_volume 
+                    FROM limit_follow_orders 
+                    WHERE signal_order_id=%s 
+                    AND status='filled'""",
+                    (signal_trade_uid, )
+                )
+            else:
+                # 查询客户当前仓位（包括已成交和挂单）
+                position = self.db_pool.query(
+                    """SELECT SUM(order_size) as total_volume 
+                    FROM limit_follow_orders 
+                    WHERE customer_uid=%s AND symbol=%s AND pos_side=%s 
+                    AND status='filled'""",
+                    (customer_uid, symbol, pos_side)
+                )
+            
+            if position and position[0]['total_volume']:
+                return float(position[0]['total_volume'])
+            return 0.0
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 获取客户仓位失败: {e}")
+            return 0.0
+
+    async def _check_leverage_limit(self, strategy, need_position):
+        """检查最大净杠杆限制"""
+        try:
+            # 获取客户当前资金
+            customer = self.db_pool.query(
+                "SELECT total_asset FROM customers WHERE customer_uid=%s",
+                (strategy['customer_uid'],)
+            )
+            
+            if not customer:
+                return False
+            
+            current_asset = float(customer[0]['total_asset'])
+            max_leverage = float(strategy['max_net_leverage'])
+            
+            # 计算需要的保证金（简化计算）
+            required_margin = need_position * 0.1  # 假设10%保证金
+            
+            # 检查是否超过杠杆限制
+            if required_margin / current_asset > max_leverage:
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 检查杠杆限制失败: {e}")
+            return False
+
+    async def _handle_leverage_limit_exceeded(self, strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid):
+        """处理净杠杆超限 - FIFO撤单"""
+        try:
+            logger.info(f"[限价跟单] 开始处理杠杆超限: 客户={strategy['customer_uid']}, 信号源={signal_source_uid}")
+            
+            # 1. 撤销最老的未成交限价单（按创建时间排序）
+            pending_orders = self.db_pool.query(
+                """SELECT * FROM limit_follow_orders 
+                WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
+                AND status IN ('pending', 'live')
+                ORDER BY created_at ASC""",  # 按创建时间升序
+                (strategy['id'], symbol, pos_side)
+            )
+            
+            if not pending_orders:
+                logger.warning(f"[限价跟单] 没有可撤销的限价单: 客户={strategy['customer_uid']}")
+                return
+            
+            # 2. 撤销足够的限价单以满足杠杆要求
+            for order in pending_orders:
+                # 撤单
+                self.db_pool.execute(
+                    "UPDATE limit_follow_orders SET status='canceled' WHERE order_uid=%s",
+                    (order['order_uid'],)
+                )
+                
+                logger.info(f"[限价跟单] 杠杆超限撤单: {order['order_uid']}, 创建时间: {order['created_at']}")
+                
+                # 重新检查杠杆限制
+                if await self._check_leverage_limit(strategy, 0):
+                    logger.info(f"[限价跟单] 杠杆限制已满足，停止撤单")
+                    break
+                    
+            # 3. 重新尝试创建限价单
+            logger.info(f"[限价跟单] 重新尝试创建限价单")
+            await self._process_limit_follow_strategy(
+                strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid
+            )
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 处理杠杆超限失败: {e}")
+
+    async def _create_limit_orders(self, strategy, signal_source_uid, symbol, pos_side, signal_price, order_size, orders_count, signal_trade_uid):
+        """创建限价单"""
+        try:
+            # 获取基础偏移值
+            base_offset = float(strategy['min_follow_value'])  # 基础偏移百分比
+            logger.info(f"[限价跟单] 信号源订单号: {signal_trade_uid}")
+            # 创建限价单
+            for i in range(orders_count):
+                # 计算累积偏移：第i个订单的偏移 = base_offset * (i + 1)
+                cumulative_offset = base_offset * (i + 1)
+                
+                # 计算目标价格
+                if pos_side == 'long':
+                    target_price = float(signal_price) * (1 - cumulative_offset / 100)
+                else:
+                    target_price = float(signal_price) * (1 + cumulative_offset / 100)
+                
+                # 创建订单记录
+                order_uid = str(uuid.uuid4())
+                self.db_pool.execute(
+                    """INSERT INTO limit_follow_orders 
+                    (order_uid, strategy_id, exchange_order_id, trader_unique_name, customer_uid, 
+                        symbol, pos_side, follow_value, target_price, order_size,
+                        order_type, status, signal_order_id) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (order_uid, strategy['id'], None, signal_source_uid, 
+                strategy['customer_uid'], symbol, pos_side, cumulative_offset, target_price, 
+                order_size, 'limit', 'pending', signal_trade_uid)
+            )
+                
+                logger.info(f"[限价跟单] 创建订单: {order_uid} {symbol} {pos_side} @ {target_price} (偏移{cumulative_offset}%)")
+            
+            logger.info(f"[限价跟单] 完成，共创建 {orders_count} 个限价跟单订单")
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 创建限价单失败: {e}")
+
+    async def handle_signal_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
+        """处理信号源平仓"""
+        try:
+            logger.info(f"[限价跟单] 信号源平仓: {signal_source_uid} {symbol} {pos_side}")
+            
+            # 1. 检查是否完全平仓
+            remaining_position = await self._get_signal_position(signal_source_uid, symbol, pos_side)
+            
+            if remaining_position <= 0:
+                # 完全平仓 - 撤销所有限价单
+                logger.info(f"[限价跟单] 信号源完全平仓，撤销所有限价单")
+                await self.cancel_limit_follow_orders_on_signal_close(
+                    signal_source_uid, symbol, pos_side, None
+                )
+                # 平仓已成交的限价单
+                logger.info(f"[限价跟单] 开始平仓已成交的限价单")
+                await self._close_all_filled_orders(signal_source_uid, symbol, pos_side)
+            else:
+                # 部分平仓 - 按减仓比例调整
+                logger.info(f"[限价跟单] 信号源部分平仓，剩余仓位: {remaining_position}")
+                reduce_ratio = await self._get_signal_reduce_ratio(signal_source_uid, symbol, pos_side, signal_trade_uid)
+                if reduce_ratio > 0:
+                    logger.info(f"[限价跟单] 减仓比例: {reduce_ratio:.2%}")
+                    await self._adjust_customer_position_by_ratio(
+                        signal_source_uid, symbol, pos_side, reduce_ratio, signal_trade_uid
+                    )
+                else:
+                    logger.warning(f"[限价跟单] 无法计算减仓比例，跳过调整")
+                    
+        except Exception as e:
+            logger.error(f"[限价跟单] 处理信号源平仓失败: {e}")
+
+    async def _adjust_customer_position(self, signal_source_uid, symbol, pos_side, target_position, signal_trade_uid):
+        """调整客户仓位到目标仓位"""
+        try:
+            logger.info(f"[限价跟单] 调整客户仓位: 目标仓位={target_position}")
+            
+            # 查询相关策略（支持ALL和具体symbol）
+            strategies = self.db_pool.query(
+                """SELECT * FROM limit_follow_strategies 
+                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
+                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
+                (signal_source_uid, symbol, pos_side)
+            )
+            
+            for strategy in strategies:
+                # 获取客户当前仓位
+                current_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side)
+                
+                if current_position <= 0:
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 无仓位，跳过调整")
+                    continue
+                
+                # 计算需要调整的量
+                if current_position > target_position:
+                    # 需要减仓
+                    need_reduce = current_position - target_position
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 需要减仓: {need_reduce} (当前: {current_position}, 目标: {target_position})")
+                    await self._reduce_customer_position(strategy, symbol, pos_side, need_reduce)
+                elif current_position < target_position:
+                    # 需要加仓
+                    need_increase = target_position - current_position
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 需要加仓: {need_increase} (当前: {current_position}, 目标: {target_position})")
+                    await self._increase_customer_position(strategy, signal_source_uid, symbol, pos_side, need_increase, signal_trade_uid)
+                else:
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 仓位已匹配目标: {current_position}")
+                    
+        except Exception as e:
+            logger.error(f"[限价跟单] 调整客户仓位失败: {e}")
+    
+    async def _adjust_customer_position_by_ratio(self, signal_source_uid, symbol, pos_side, reduce_ratio, signal_trade_uid):
+        """按减仓比例调整客户仓位"""
+        try:
+            logger.info(f"[限价跟单] 按减仓比例调整客户仓位: 减仓比例={reduce_ratio:.2%}")
+            
+            # 查询相关策略（支持ALL和具体symbol）
+            strategies = self.db_pool.query(
+                """SELECT * FROM limit_follow_strategies 
+                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
+                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
+                (signal_source_uid, symbol, pos_side)
+            )
+            
+            for strategy in strategies:
+                # 1. 先处理限价挂单 - 传递signal_trade_uid参数
+                await self._reduce_limit_orders_by_ratio(strategy, symbol, pos_side, reduce_ratio, signal_trade_uid)
+                
+                # 2. 再处理已成交仓位
+                current_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side)
+                
+                if current_position <= 0:
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 无已成交仓位，跳过调整")
+                    continue
+                
+                # 计算需要减仓的量
+                need_reduce = current_position * reduce_ratio
+                
+                if need_reduce > 0:
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 减仓比例: {reduce_ratio:.2%}, 需要减仓: {need_reduce}")
+                    await self._reduce_customer_position(strategy, symbol, pos_side, need_reduce)
+                else:
+                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 无需减仓")
+                    
+        except Exception as e:
+            logger.error(f"[限价跟单] 调整客户仓位失败: {e}")
+
+    async def _reduce_limit_orders_by_ratio(self, strategy, symbol, pos_side, reduce_ratio, signal_order_id=None):
+        """按比例减少限价挂单"""
+        try:
+            logger.info(f"[限价跟单] 开始按比例减少限价挂单: 策略ID={strategy['id']}, 减仓比例={reduce_ratio:.2%}")
+            
+            # 查询限价单
+            if signal_order_id:
+                # 只处理该订单相关的限价单
+                pending_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders 
+                    WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
+                    AND signal_order_id=%s AND status IN ('pending', 'live')
+                    ORDER BY created_at ASC""",
+                    (strategy['id'], symbol, pos_side, signal_order_id)
+                )
+            else:
+                # 处理所有限价单
+                pending_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders 
+                    WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
+                    AND status IN ('pending', 'live')
+                    ORDER BY created_at ASC""",
+                    (strategy['id'], symbol, pos_side)
+                )
+            
+            if not pending_orders:
+                logger.info(f"[限价跟单] 没有限价挂单需要撤销")
+                return
+            
+            # 计算总限价单价值
+            total_limit_value = sum(float(order['order_size']) for order in pending_orders)
+            need_cancel_value = total_limit_value * reduce_ratio
+            
+            logger.info(f"[限价跟单] 总限价单价值: {total_limit_value}, 需要撤销: {need_cancel_value}")
+            
+            # 按FIFO顺序选择需要撤销的订单
+            orders_to_cancel = []
+            total_canceled = 0.0
+            
+            for order in pending_orders:
+                if total_canceled >= need_cancel_value:
+                    break
+                orders_to_cancel.append(order)
+                total_canceled += float(order['order_size'])
+            
+            logger.info(f"[限价跟单] 需要撤销 {len(orders_to_cancel)} 个限价单，总价值: {total_canceled}")
+            
+            # 撤销限价单
+            for order in orders_to_cancel:
+                try:
+                    await self.cancel_limit_follow_orders_on_signal_close(
+                        order['trader_unique_name'], order['symbol'], order['pos_side'], order['order_uid']
+                    )
+                except Exception as e:
+                    logger.error(f"[限价跟单] 撤销限价单失败: {order['order_uid']}, 错误: {e}")
+            
+            logger.info(f"[限价跟单] 限价单撤销完成，已撤销价值: {total_canceled}")
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 按比例减少限价挂单失败: {e}")
+
+    async def _get_signal_reduce_ratio(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
+        """获取信号源减仓比例"""
+        try:
+            # 获取当前信号源的总持仓量（所有open状态的持仓）
+            current_position = await self._get_signal_position(signal_source_uid, symbol, pos_side)
+            
+            if current_position <= 0:
+                logger.warning(f"[限价跟单] 信号源当前无持仓: {current_position}")
+                return 0.0
+            
+            # 从信号源减仓信息中获取本次减仓量
+            reduce_trade = self.db_pool.query(
+                """SELECT volume_contract, close_volume_contract 
+                FROM signal_account_trades 
+                WHERE trade_uid=%s AND signal_source_uid=%s AND symbol=%s AND pos_side=%s""",
+                (signal_trade_uid, signal_source_uid, symbol, pos_side)
+            )
+            
+            if not reduce_trade:
+                logger.warning(f"[限价跟单] 未找到减仓记录: {signal_trade_uid}")
+                return 0.0
+            
+            # 计算本次减仓量
+            original_volume = float(reduce_trade[0]['volume_contract'])
+            total_closed = float(reduce_trade[0]['close_volume_contract'])
+            
+            # 计算本次减仓量：总减仓量 - 之前已减仓量
+            # 查询减仓前的状态
+            previous_closed = self.db_pool.query(
+                """SELECT close_volume_contract 
+                FROM signal_account_trades 
+                WHERE trade_uid=%s AND signal_source_uid=%s AND symbol=%s AND pos_side=%s
+                AND close_order_id IS NOT NULL
+                ORDER BY created_at DESC LIMIT 1 OFFSET 1""",
+                (signal_trade_uid, signal_source_uid, symbol, pos_side)
+            )
+            
+            if previous_closed:
+                previous_closed_volume = float(previous_closed[0]['close_volume_contract'] or 0)
+            else:
+                # 如果没有之前的减仓记录，说明这是第一次减仓
+                previous_closed_volume = 0
+            
+            this_reduce_volume = total_closed - previous_closed_volume
+            
+            if this_reduce_volume <= 0:
+                logger.warning(f"[限价跟单] 本次减仓量为0: {this_reduce_volume}")
+                return 0.0
+            
+            # 计算减仓比例：本次减仓量 / 当前总持仓量
+            reduce_ratio = this_reduce_volume / current_position
+            logger.info(f"[限价跟单] 信号源减仓比例: {reduce_ratio:.2%} (本次减仓量: {this_reduce_volume}, 当前总持仓: {current_position})")
+            
+            return reduce_ratio
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 获取信号源减仓比例失败: {e}")
+            return 0.0
+
+    async def _close_all_filled_orders(self, signal_source_uid, symbol, pos_side, signal_trade_uid=None):
+        """平仓所有已成交的限价单"""
+        try:
+            logger.info(f"[限价跟单] 开始平仓所有已成交订单: {signal_source_uid} {symbol} {pos_side}")
+            
+            # 查询相关策略
+            strategies = self.db_pool.query(
+                """SELECT * FROM limit_follow_strategies
+                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL')
+                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
+                (signal_source_uid, symbol, pos_side)
+            )
+            
+            total_closed = 0.0
+            for strategy in strategies:
+                # 查询该策略下已成交的限价单
+                filled_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders
+                    WHERE strategy_id=%s AND symbol=%s AND pos_side=%s
+                    AND status='filled'
+                    ORDER BY created_at ASC""",
+                    (strategy['id'], symbol, pos_side)
+                )
+                
+                if filled_orders:
+                    logger.info(f"[限价跟单] 策略 {strategy['id']} 有 {len(filled_orders)} 个已成交订单需要平仓")
+                    
+                    # 计算总需要平仓的数量
+                    total_need_close = sum(float(order['order_size']) for order in filled_orders)
+                    
+                    # 调用平仓方法
+                    closed = await self._close_filled_orders(strategy, symbol, pos_side, total_need_close)
+                    total_closed += closed
+                    
+                    logger.info(f"[限价跟单] 策略 {strategy['id']} 平仓完成，平仓数量: {closed}")
+                else:
+                    logger.info(f"[限价跟单] 策略 {strategy['id']} 没有已成交订单")
+            
+            logger.info(f"[限价跟单] 所有已成交订单平仓完成，总平仓数量: {total_closed}")
+            return total_closed
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 平仓所有已成交订单失败: {e}")
+            return 0
+
+    async def _reduce_customer_position(self, strategy, symbol, pos_side, need_reduce):
+        """减少客户仓位 - FIFO优先撤单"""
+        try:
+            logger.info(f"[限价跟单] 开始减少客户仓位: 策略ID={strategy['id']}, 需要减少={need_reduce}")
+            
+            # 1. 获取待撤销的订单（按FIFO顺序）
+            pending_orders = self.db_pool.query(
+                """SELECT * FROM limit_follow_orders 
+                WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
+                AND status IN ('pending', 'live')
+                ORDER BY created_at ASC""",
+                (strategy['id'], symbol, pos_side)
+            )
+            
+            logger.info(f"[限价跟单] 找到 {len(pending_orders)} 个待成交订单")
+            
+            if not pending_orders:
+                logger.info(f"[限价跟单] 没有待撤销的订单")
+                
+            
+            # 2. 按FIFO顺序选择需要撤销的订单
+            orders_to_cancel = []
+            total_canceled = 0.0
+            
+            for order in pending_orders:
+                if total_canceled >= need_reduce:
+                    break
+                orders_to_cancel.append(order)
+                total_canceled += float(order['order_size'])
+            
+            logger.info(f"[限价跟单] 需要撤销 {len(orders_to_cancel)} 个订单，总仓位: {total_canceled}")
+            if orders_to_cancel:
+                # 3. 逐个撤销订单
+                for order in orders_to_cancel:
+                    try:
+                        
+                        canceled_count = await self.cancel_limit_follow_orders_on_signal_close(
+                            strategy['trader_unique_name'], 
+                            symbol, 
+                            pos_side, 
+                            order['order_uid']  # 传递具体订单ID
+                        )
+                        
+                        if canceled_count > 0:
+                            logger.info(f"[限价跟单] 撤单成功: {order['order_uid']}, 仓位: {order['order_size']}")
+                        else:
+                            logger.warning(f"[限价跟单] 撤单失败: {order['order_uid']}")
+                            
+                    except Exception as e:
+                        logger.error(f"[限价跟单] 撤单异常: {order['order_uid']}, 错误: {e}")
+            
+            # 4. 如果撤单后仍不满足，平已成交单
+            remaining = need_reduce - total_canceled
+            if remaining > 0:
+                logger.info(f"[限价跟单] 撤单后仍需减少: {remaining}")
+                await self._close_filled_orders(strategy, symbol, pos_side, remaining)
+            else:
+                logger.info(f"[限价跟单] 撤单完成，已减少仓位: {total_canceled}")
+                    
+        except Exception as e:
+            logger.error(f"[限价跟单] 减少客户仓位失败: {e}")
+
+    async def _close_filled_orders(self, strategy, symbol, pos_side, need_close, signal_trade_uid=None):
+        """平已成交订单 - FIFO"""
+        try:
+            logger.info(f"[限价跟单] 开始平已成交订单: 策略ID={strategy['id']}, 需要平仓={need_close}")
+            
+            if signal_trade_uid:
+                filled_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders 
+                    WHERE status='filled' AND signal_order_id=%s
+                    ORDER BY created_at ASC""",
+                    (signal_trade_uid,)
+                )
+            else:
+                filled_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders 
+                    WHERE status='filled' AND strategy_id=%s AND symbol=%s AND pos_side=%s
+                    ORDER BY created_at ASC""",
+                    (strategy['id'], symbol, pos_side)
+                )
+            
+            if not filled_orders:
+                logger.info(f"[限价跟单] 没有已成交的限价单需要平仓")
+                return 0
+            
+            closed = 0.0
+            # 调用API接口平仓限价跟单订单
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5000/api/v1/limit-follow/execute"
-            payload = {
-                'signal_trade_uid': signal_trade_uid,
-                'signal_source_uid': signal_source_uid,
-                'symbol': symbol,
-                'pos_side': pos_side,
-                'signal_price': signal_price
-            }
+            api_url = f"http://localhost:5000/api/v1/limit-follow/limit-follow-closed-by-order-id"
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(api_url, json=payload) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        if result.get('success') == 200:
-                            logger.info(f"[限价跟单] 执行成功: {result.get('message')}")
-                        else:
-                            logger.warning(f"[限价跟单] 执行失败: {result.get('message')}")
-                    else:
-                        logger.error(f"[限价跟单] API请求失败: {response.status}")
-                        
+            for order in filled_orders:
+                if closed >= need_close:
+                    break
+                    
+                try:
+                    payload = {
+                        'order_uid': order['order_uid'],  # 修正参数名
+                    }
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(api_url, json=payload) as response:
+                            if response.status == 200:
+                                result = await response.json()
+                                if result.get('success') == 200:
+                                    closed += float(order['order_size'])
+                                    logger.info(f"[限价跟单] 平仓成功: {order['order_uid']}, 数量: {order['order_size']}")
+                                else:
+                                    logger.warning(f"[限价跟单] 平仓失败: {order['order_uid']}, 原因: {result.get('message')}")
+                            else:
+                                logger.error(f"[限价跟单] API请求失败: {response.status}")
+                                
+                except Exception as e:
+                    logger.error(f"[限价跟单] 平仓订单异常: {order['order_uid']}, 错误: {e}")
+                    continue
+            
+            logger.info(f"[限价跟单] 平仓完成，共平仓: {closed}")
+            return closed
+            
         except Exception as e:
-            logger.error(f"[限价跟单] 触发限价跟单失败: {e}")
-    
-    async def cancel_limit_follow_orders_on_signal_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
-        """信号源平仓时取消相关限价跟单订单"""
+            logger.error(f"[限价跟单] 平已成交订单失败: {e}")
+            return 0
+
+    async def _increase_customer_position(self, strategy, signal_source_uid, symbol, pos_side, need_increase, signal_trade_uid):
+        """增加客户仓位"""
+        try:
+            # 获取当前信号价格
+            latest_trade = self.db_pool.query(
+                """SELECT close_px FROM signal_account_trades 
+                WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s 
+                ORDER BY created_at DESC LIMIT 1""",
+                (signal_source_uid, symbol, pos_side)
+            )
+            
+            if not latest_trade:
+                logger.warning(f"[限价跟单] 无法获取信号价格: {signal_source_uid} {symbol} {pos_side}")
+                return
+            
+            signal_price = float(latest_trade[0]['close_px'])
+            
+            # 计算每个限价单的数量
+            orders_per_signal = strategy['max_orders_per_signal']
+            order_size = need_increase / orders_per_signal
+            
+            # 创建新的限价单
+            await self._create_limit_orders(
+                strategy, signal_source_uid, symbol, pos_side, 
+                signal_price, order_size, orders_per_signal, signal_trade_uid
+            )
+            
+        except Exception as e:
+            logger.error(f"[限价跟单] 增加客户仓位失败: {e}")
+
+
+    # 保留原有的撤单函数
+    async def cancel_limit_follow_orders_on_signal_close(self, signal_source_uid, symbol, pos_side, order_uid=None):
+        """信号源平仓时取消相关限价跟单订单
+        
+        Args:
+            signal_source_uid: 信号源ID
+            symbol: 交易对
+            pos_side: 持仓方向
+            order_uid: 指定订单ID（可选），如果为None则批量撤销
+        """
         try:
             logger.info(f"[限价跟单撤单] 信号源平仓，取消限价跟单: {signal_source_uid} {symbol} {pos_side}")
             
@@ -6231,11 +7040,14 @@ class TradeService:
             
             api_url = f"http://localhost:5000/api/v1/limit-follow/cancel-on-signal-close"
             payload = {
-                'signal_trade_uid': signal_trade_uid,
-                'signal_source_uid': signal_source_uid,
+                'trader_unique_name': signal_source_uid,
                 'symbol': symbol,
                 'pos_side': pos_side
             }
+            
+            # 如果指定了订单ID，添加到payload中
+            if order_uid:
+                payload['order_uid'] = order_uid
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(api_url, json=payload) as response:
@@ -6243,13 +7055,17 @@ class TradeService:
                         result = await response.json()
                         if result.get('success') == 200:
                             logger.info(f"[限价跟单撤单] 撤单成功: {result.get('message')}")
+                            return result.get('data', {}).get('canceled_count', 0)
                         else:
                             logger.warning(f"[限价跟单撤单] 撤单失败: {result.get('message')}")
+                            return 0
                     else:
                         logger.error(f"[限价跟单撤单] API请求失败: {response.status}")
-                        
+                        return 0
+                            
         except Exception as e:
             logger.error(f"[限价跟单撤单] 取消限价跟单失败: {e}")
+            return 0
 
     # ==================== 信号丢失检测和补全模块 ====================
     
@@ -6617,8 +7433,6 @@ class TradeService:
             logger.error(f"[资产查询] 获取信号源 {source_uid} 资产信息失败: {e}")
             return None
 
-
-
     async def get_following_customers(self, source_uid):
         """获取跟随指定信号源的客户"""
         try:
@@ -6856,11 +7670,10 @@ class TradeService:
                 return {'success': False, 'error': '没有对应的持仓'}
             
             # 检查客户在交易所的实际持仓
-            from database.db import MySQLPool
-            from config import get_mysql_config
+            from db import MySQLPool
+            from global_db_manager import get_global_db_pool
             
-            mysql_config = get_mysql_config()
-            db_pool = MySQLPool(**mysql_config)
+            db_pool = get_global_db_pool()
             
             try:
                 # 获取客户的API配置
@@ -6873,7 +7686,7 @@ class TradeService:
                     logger.warning(f"[客户平仓补全] 客户 {customer_uid} API配置不完整，跳过持仓检查")
                 else:
                     # 创建REST API客户端查询客户实际持仓
-                    from exchange.okx.okx_rest_client import OKXRESTClient
+                    
                     rest_client = OKXRESTClient(
                         api_key=api_key,
                         api_secret=api_secret,
@@ -6945,7 +7758,7 @@ class TradeService:
                 return {'success': False, 'error': '计算的下单量为0'}
             
             # 先保存客户开仓记录到数据库
-            from database.db import insert_customer_trade
+            from db import insert_customer_trade
             
             # 获取客户策略信息
             strategy_uid = None
@@ -7685,7 +8498,7 @@ class TradeService:
             logger.info(f"[补偿计算] 开始计算客户 {customer_uid} 补偿下单量")
             
             # 1. 获取客户有效资产
-            from database.db import get_customer_by_id, get_customer_effective_asset
+            from db import get_customer_by_id, get_customer_effective_asset
             is_demo = get_global_is_demo()
             customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
             
@@ -7699,7 +8512,7 @@ class TradeService:
                 logger.warning(f"[补偿计算] 客户 {customer_uid} 有效资产为空，使用默认值 {total_asset}")
             
             # 2. 获取信号源当前资产
-            from database.db import get_signal_source_current_asset
+            from db import get_signal_source_current_asset
             signal_current_asset_raw = get_signal_source_current_asset(self.db_pool, source_uid)
             if signal_current_asset_raw is None:
                 signal_current_asset = 10000.0  # 默认值
@@ -7862,7 +8675,7 @@ class TradeService:
                 logger.warning(f"客户 {customer_uid} API配置不完整")
                 return []
             
-            from exchange.okx.okx_rest_client import OKXRESTClient
+            
             rest_client = OKXRESTClient(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -8063,7 +8876,7 @@ class TradeService:
             customer_uid = customer.get('customer_uid')
             
             # 先保存客户开仓记录到数据库
-            from database.db import insert_customer_trade
+            from db import insert_customer_trade
             
             # 获取客户策略信息
             strategy_uid = None

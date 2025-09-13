@@ -12,7 +12,7 @@ from utils.logger import logger
 from dataclasses import fields
 import traceback
 import time
-
+from exchange.okx.okx_ws_client import get_global_client_manager, OKXWebSocketClient
 # 导入合约配置
 from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
 
@@ -66,7 +66,7 @@ class SignalService:
 
     async def listen_signal_account(self, signal_account: SignalAccount):
         """监听信号源账户的资产和订单推送"""
-        from exchange.okx.okx_ws_client import get_global_client_manager
+        
         client = None
         reconnect_count = 0
         max_reconnect_attempts = 5
@@ -233,9 +233,7 @@ class SignalService:
                                         "SELECT trade_uid, volume_contract, close_volume_contract, status, close_order_id, trade_type FROM signal_account_trades WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s AND is_demo=%s",
                                         (signal_account.source_uid, symbol, order['posSide'], is_demo)
                                     )
-                                    logger.info(f"[信号源减仓] 所有相关记录: {len(all_trades)}条")
-                                    for i, trade in enumerate(all_trades):
-                                        logger.info(f"[信号源减仓] 记录{i+1}: trade_uid={trade['trade_uid']}, status={trade['status']}, close_order_id={trade['close_order_id']}, trade_type={trade['trade_type']}, volume_contract={trade['volume_contract']}")
+                                    # logger.info(f"[信号源减仓] 所有相关记录: {len(all_trades)}条")
                                     
                                     # 查找开仓记录，包括正常开仓和补偿开仓
                                     open_trades = self.db_pool.query(
@@ -249,6 +247,8 @@ class SignalService:
                                     
                                     if open_trades:
                                         # FIFO原则分配减仓量到多个开仓记录
+                                        # 计算当前总持仓量（用于计算减仓比例）
+                                        current_total_position = sum(float(trade['volume_contract'] or 0) for trade in open_trades)
                                         remaining_reduce = fill_sz
                                         logger.info(f"[信号源减仓] 开始FIFO分配减仓量: 总减仓量={fill_sz}, 开仓记录数={len(open_trades)}")
                                         
@@ -315,7 +315,7 @@ class SignalService:
                                                 'reduce_volume': this_reduce,
                                                 'signal_trade_uid': trade_uid,
                                                 'signal_original_volume': original_volume,
-                                                'signal_reduce_ratio': this_reduce / original_volume if original_volume > 0 else 0,
+                                                'signal_reduce_ratio': this_reduce / current_total_position if current_total_position > 0 else 0,
                                                 'is_fully_closed': is_fully_closed
                                             })
                                             
@@ -344,8 +344,16 @@ class SignalService:
                                                 )
                                             # 清空减仓订单列表
                                             self._current_reduce_orders = []
+                                    # ==================== 处理限价跟单减仓 ====================
+                                        logger.info(f"[限价跟单] 信号源减仓，处理限价跟单: {signal_account.source_uid} {symbol} {order['posSide']}")
+                                        await self._handle_limit_follow_close(signal_account.source_uid, symbol, order['posSide'], trade_uid)
                                     else:
                                         logger.warning(f"[信号源减仓] 未找到对应的开仓记录: signal_source_uid={signal_account.source_uid}, symbol={symbol}, pos_side={order['posSide']}")
+                                        
+                                        # ==================== 处理限价跟单减仓 ====================
+                                        logger.info(f"[限价跟单] 信号源减仓，处理限价跟单: {signal_account.source_uid} {symbol} {order['posSide']}")
+                                        trade_uid = None
+                                        await self._handle_limit_follow_close(signal_account.source_uid, symbol, order['posSide'], trade_uid)
 
                                     # 注意：这里不需要再次调用on_signal_trade，因为开仓和减仓时已经调用了
 
@@ -657,6 +665,7 @@ class SignalService:
                         
                         logger.info(f"[客户跟单] 信号订单参数: {signal_orders}")
                         
+                        # ==================== 1. 普通跟单（市价单） ====================
                         # 使用信号源级别的锁防止同一信号源并发处理
                         from trade_service import get_signal_processing_lock
                         signal_lock = get_signal_processing_lock(signal_account.source_uid, order['instId'], order['posSide'])
@@ -687,10 +696,14 @@ class SignalService:
                                     logger.error(f"[信号源跟单] 客户跟单任务异常: {e}")
                                     results.append(e)
                             logger.info(f"[信号源跟单] 完成所有客户跟单任务，结果: {results}")
+                            
+                        # ==================== 2. 限价跟单 ====================
+                        # 2. 处理限价跟单（新增逻辑）
                 finally:
                     # 清理处理中标识
                     self._processing_follow_signals.discard(follow_key)
             # 平仓信号不在这里处理
+            await self._handle_limit_follow(signal_account, order)
         except Exception as e:
             logger.error(f"on_signal_trade回调异常: {e}\n{traceback.format_exc()}")
 
@@ -799,7 +812,6 @@ class SignalService:
         """创建信号源客户端"""
         try:
             # 使用全局客户端管理器
-            from exchange.okx.okx_ws_client import get_global_client_manager
             client_manager = get_global_client_manager()
             
             client = await client_manager.get_client(
@@ -833,3 +845,91 @@ class SignalService:
         except Exception as e:
             logger.error(f"创建信号源 {signal_account.source_uid} 客户端失败: {e}")
             return None 
+
+    async def _handle_limit_follow(self, signal_account, order):
+        """处理限价跟单"""
+        try:
+            signal_source_uid = signal_account.source_uid
+            symbol = order['instId']
+            pos_side = order['posSide']
+            
+            logger.info(f"[限价跟单] 开始处理限价跟单: signal_source_uid={signal_source_uid}, symbol={symbol}, pos_side={pos_side}")
+            
+            # 1. 检查是否有该信号源的限价跟单策略
+            strategies = self.db_pool.query(
+                """SELECT * FROM limit_follow_strategies 
+                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') AND enabled=1""",
+                (signal_source_uid, symbol)
+            )
+            
+            logger.info(f"[限价跟单] 查询策略结果: 找到 {len(strategies) if strategies else 0} 个策略")
+            
+            if not strategies:
+                logger.info(f"[限价跟单] 信号源 {signal_source_uid} 没有限价跟单策略，跳过")
+                return
+            
+            logger.info(f"[限价跟单] 信号源 {signal_source_uid} 有 {len(strategies)} 个限价跟单策略")
+            
+            # 2. 判断是开仓还是平仓
+            is_open = self._is_open_position(order['side'], order['posSide'])
+            logger.info(f"[限价跟单] 订单类型判断: side={order['side']}, pos_side={order['posSide']}, is_open={is_open}")
+            
+            if is_open:
+                # 开仓 - 触发限价跟单
+                logger.info(f"[限价跟单] 处理开仓信号")
+                await self._handle_limit_follow_open(signal_source_uid, symbol, pos_side, order)
+            else:
+                # 平仓 - 处理平仓逻辑
+                logger.info(f"[限价跟单] 处理平仓信号")
+                await self._handle_limit_follow_close(signal_source_uid, symbol, pos_side, order)
+                
+        except Exception as e:
+            logger.error(f"处理限价跟单失败: {e}")
+            import traceback
+            logger.error(f"处理限价跟单异常详情: {traceback.format_exc()}")
+
+    def _is_open_position(self, side, pos_side):
+        """判断是否为开仓"""
+        return (side == 'buy' and pos_side == 'long') or (side == 'sell' and pos_side == 'short')
+
+    async def _handle_limit_follow_open(self, signal_source_uid, symbol, pos_side, order):
+        """处理限价跟单开仓"""
+        try:
+            # 获取信号价格
+            signal_price = safe_float(order.get('fillPx', order.get('px', 0)))
+            if signal_price <= 0:
+                logger.warning(f"[限价跟单] 信号价格无效，跳过: fillPx={order.get('fillPx')}, px={order.get('px')}")
+                return
+            
+            logger.info(f"[限价跟单] 信号源 {signal_source_uid} 开仓，触发限价跟单: {symbol} {pos_side} @ {signal_price}")
+            
+            # 调用 trade_service 处理限价跟单
+            logger.info(f"[限价跟单]: 信号源订单号{order.get('ordId', '')}")
+            await self.trade_service.trigger_limit_follow_orders(
+                signal_source_uid,
+                symbol,
+                pos_side,
+                signal_price,
+                order.get('ordId', '')
+            )
+            
+        except Exception as e:
+            logger.error(f"处理限价跟单开仓失败: {e}")
+
+    async def _handle_limit_follow_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
+        """处理限价跟单平仓"""
+        try:
+            logger.info(f"[限价跟单] 信号源 {signal_source_uid} 平仓，处理限价跟单: {symbol} {pos_side}")
+            trade_uid = signal_trade_uid
+            if type(signal_trade_uid) != str:
+                trade_uid = signal_trade_uid.get('ordId', '')
+            # 调用 trade_service 处理平仓
+            await self.trade_service.handle_signal_close(
+                signal_source_uid,
+                symbol,
+                pos_side,
+                trade_uid
+            )
+            
+        except Exception as e:
+            logger.error(f"处理限价跟单平仓失败: {e}")

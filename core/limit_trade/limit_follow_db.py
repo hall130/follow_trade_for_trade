@@ -31,16 +31,16 @@ class LimitFollowDB:
         try:
             sql = """INSERT INTO limit_follow_strategies 
                      (strategy_name, trader_unique_name, customer_uid, symbol, pos_side, 
-                      follow_type, follow_value, min_follow_value, max_follow_value, 
+                      follow_type, follow_mode, follow_value, min_follow_value, max_follow_value, 
                       max_orders_per_signal, max_net_leverage, proportional_position, 
                       auto_cancel_on_signal_close, enabled) 
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             
             params = (
                 strategy.strategy_name, strategy.trader_unique_name, strategy.customer_uid,
-                strategy.symbol, strategy.pos_side, strategy.follow_type, strategy.follow_value,
-                strategy.min_follow_value, strategy.max_follow_value, strategy.max_orders_per_signal,
-                strategy.max_net_leverage, strategy.proportional_position,
+                strategy.symbol, strategy.pos_side, strategy.follow_type, strategy.follow_mode, 
+                strategy.follow_value, strategy.min_follow_value, strategy.max_follow_value, 
+                strategy.max_orders_per_signal, strategy.max_net_leverage, strategy.proportional_position,
                 strategy.auto_cancel_on_signal_close, strategy.enabled
             )
             
@@ -110,7 +110,7 @@ class LimitFollowDB:
             params = []
             
             for key, value in updates.items():
-                if key in ['follow_type', 'follow_value', 'min_follow_value', 'max_follow_value',
+                if key in ['follow_type', 'follow_mode', 'follow_value', 'min_follow_value', 'max_follow_value',
                           'max_orders_per_signal', 'max_net_leverage', 'proportional_position',
                           'auto_cancel_on_signal_close', 'enabled']:
                     set_clauses.append(f"{key}=%s")
@@ -586,6 +586,7 @@ class LimitFollowDB:
             symbol=data.get('symbol', ''),
             pos_side=data.get('pos_side', 'both'),
             follow_type=data.get('follow_type', 'percentage'),
+            follow_mode=data.get('follow_mode', 'follow_signal_source'),  # 新增：跟单模式字段
             follow_value=float(data.get('follow_value', 0)),
             min_follow_value=float(data.get('min_follow_value', 0.5)),
             max_follow_value=float(data.get('max_follow_value', 5.0)),

@@ -20,7 +20,9 @@ from utils.logger import logger
 from utils.dingtalk_bot import init_dingtalk_bot
 from config.dingtalk_config import get_dingtalk_config
 from config.limit_follow_config import get_customer_limit_follow_config
-
+from core.limit_trade.limit_follow_service import get_limit_follow_service
+from database.db import get_customer_by_id, get_signal_source_by_id
+from database.global_db_manager import get_global_db_pool
 # 策略交易相关导入
 try:
     from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
@@ -36,7 +38,7 @@ app = Flask(__name__)
 CORS(app)  # 允许跨域请求
 
 # 全局数据库连接池
-db_pool = None
+db_pool = get_global_db_pool()
 trade_service = None  # 全局trade_service实例
 
 # 在模块导入时就初始化数据库连接池
@@ -105,6 +107,22 @@ class APIError(Exception):
         self.message = message
         self.status_code = status_code
 
+def ensure_db_pool():
+    """确保数据库连接池可用的装饰器"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            global db_pool
+            if db_pool is None:
+                db_pool = get_db_pool()
+            
+            if db_pool is None:
+                raise APIError("数据库连接不可用", 500)
+            
+            return func(*args, **kwargs)
+        wrapper.__name__ = func.__name__
+        return wrapper
+    return decorator
+
 def handle_api_error(error):
     """统一错误处理"""
     if isinstance(error, APIError):
@@ -148,7 +166,7 @@ def get_customers():
         offset = (page - 1) * page_size
         
         is_demo = get_global_is_demo()
-        logger.info(f"获取客户数据: is_demo={is_demo}, name={name}, page={page}, page_size={page_size}")
+        # logger.info(f"获取客户数据: is_demo={is_demo}, name={name}, page={page}, page_size={page_size}")
         
         try:
             # 获取筛选参数
@@ -177,7 +195,7 @@ def get_customers():
             data_params = query_params + [page_size, offset]
             customers = db_pool.query(data_query, tuple(data_params))
             
-            logger.info(f"数据库查询成功: total={total}, customers_count={len(customers) if customers else 0}")
+            # logger.info(f"数据库查询成功: total={total}, customers_count={len(customers) if customers else 0}")
         except Exception as e:
             logger.error(f"数据库查询失败: {e}")
             # 返回空数据而不是抛出异常
@@ -199,7 +217,7 @@ def get_customers():
                 'customers': customers
         })
         
-        logger.info(f"返回客户数据: total={total}, customers_count={len(customers) if customers else 0}")
+        # logger.info(f"返回客户数据: total={total}, customers_count={len(customers) if customers else 0}")
         
         return jsonify({
             'success': 200,
@@ -1044,7 +1062,6 @@ def update_strategy(strategy_uid):
             return jsonify({'success': 400, 'data': None, 'message': '没有提供更新字段'}), 400
         
         update_values.append(strategy_uid)
-        update_values.append(is_demo)
         
         sql = f"UPDATE strategies SET {', '.join(update_fields)} WHERE strategy_uid=%s AND is_demo=%s"
         db_pool.execute(sql, tuple(update_values))
@@ -1440,10 +1457,10 @@ def get_recent_activities():
         
         if activities and len(activities) > 0:
             for activity in activities:
-                logger.info(f"处理活动记录: {activity}")
+                # logger.info(f"处理活动记录: {activity}")
                 # 根据交易类型生成标题和描述
                 volume_contract = activity.get('volume_contract', activity.get('sz', 0))
-                logger.info(f"处理数量字段: volume_contract={volume_contract}, type={type(volume_contract)}")
+                # logger.info(f"处理数量字段: volume_contract={volume_contract}, type={type(volume_contract)}")
                 
                 if activity.get('direction') == 'buy':
                     title = f"买入 {activity.get('symbol', '')}"
@@ -1457,15 +1474,15 @@ def get_recent_activities():
                 
                 # 格式化时间
                 created_at = activity.get('created_at')
-                logger.info(f"处理时间字段: created_at={created_at}, type={type(created_at)}")
+                # logger.info(f"处理时间字段: created_at={created_at}, type={type(created_at)}")
                 
                 if created_at:
                     if isinstance(created_at, datetime):
                         formatted_timestamp = created_at.strftime('%Y-%m-%d %H:%M:%S')
-                        logger.info(f"格式化时间: {formatted_timestamp}")
+                        # logger.info(f"格式化时间: {formatted_timestamp}")
                     else:
                         formatted_timestamp = str(created_at)
-                        logger.info(f"转换时间字符串: {formatted_timestamp}")
+                        # logger.info(f"转换时间字符串: {formatted_timestamp}")
                 else:
                     formatted_timestamp = '未知时间'
                     logger.info("时间字段为空，使用默认值")
@@ -1516,7 +1533,7 @@ def get_recent_activities():
             ]
             formatted_activities = mock_activities
         
-        logger.info(f"返回 {len(formatted_activities)} 条格式化的活动记录")
+        #logger.info(f"返回 {len(formatted_activities)} 条格式化的活动记录")
         
         return jsonify({
             'success': 200,
@@ -1548,6 +1565,7 @@ def get_recent_activities():
         })
 
 @app.route('/api/v1/stats/overview', methods=['GET'])
+@ensure_db_pool()
 def get_stats_overview():
     """获取统计概览"""
     try:
@@ -1583,7 +1601,7 @@ def get_stats_overview():
         # 系统状态
         system_status = '正常'
         
-        logger.info(f"统计概览数据: total_customers={total_customers}, active_strategies={active_strategies}, today_trades={today_trades}")
+        # logger.info(f"统计概览数据: total_customers={total_customers}, active_strategies={active_strategies}, today_trades={today_trades}")
         
         return jsonify({
             'success': 200,
@@ -3014,13 +3032,7 @@ def manual_close_position_internal(account_type):
         
         try:
             # 使用REST API进行平仓，避免事件循环冲突
-            from okx_rest_client import OKXRESTClient
-            rest_client = OKXRESTClient(
-                api_key=account_data['api_key'],
-                api_secret=account_data['api_secret'],
-                passphrase=account_data['passphrase'],
-                is_demo=is_demo
-            )
+            rest_client = _create_rest_client(account_data, is_demo)
             
             # 构建平仓参数
             order_data = {
@@ -3325,13 +3337,8 @@ def manual_open_position_internal(account_type):
         
         try:
             # 使用REST API进行开仓，避免事件循环冲突
-            from okx_rest_client import OKXRESTClient
-            rest_client = OKXRESTClient(
-                api_key=account_data['api_key'],
-                api_secret=account_data['api_secret'],
-                passphrase=account_data['passphrase'],
-                is_demo=is_demo
-            )
+            
+            rest_client = _create_rest_client(account_data, is_demo)
             
             # 获取订单类型和价格
             order_type = data.get('order_type', 'market')
@@ -3495,23 +3502,17 @@ def get_manual_orders():
         
         # 获取账户信息
         if account_type == 'signal':
-            from db import get_signal_source_by_id
+            
             account_data = get_signal_source_by_id(db_pool, account_uid, is_demo)
         else:
-            from db import get_customer_by_id
+            
             account_data = get_customer_by_id(db_pool, account_uid, is_demo)
         
         if not account_data:
             return jsonify({'success': 404, 'data': None, 'message': '账户不存在'}), 404
         
         # 从交易所获取订单状态
-        from okx_rest_client import OKXRESTClient
-        rest_client = OKXRESTClient(
-            api_key=account_data['api_key'],
-            api_secret=account_data['api_secret'],
-            passphrase=account_data['passphrase'],
-            is_demo=is_demo
-        )
+        rest_client = _create_rest_client(account_data, is_demo)
         
         import asyncio
         
@@ -3522,7 +3523,7 @@ def get_manual_orders():
             if order_id:
                 try:
                     # 查询订单状态
-                    logger.info(f"[订单查询] 查询订单状态: {order_id}")
+                    # logger.info(f"[订单查询] 查询订单状态: {order_id}")
                     # 需要从订单信息中获取instId
                     symbol = operation.get('symbol')
                     if not symbol:
@@ -3530,7 +3531,7 @@ def get_manual_orders():
                         continue
                     
                     order_info = asyncio.run(rest_client.get_order(symbol, ordId=order_id))
-                    logger.info(f"[订单查询] 订单状态响应: {order_info}")
+                    # logger.info(f"[订单查询] 订单状态响应: {order_info}")
                     
                     if order_info and order_info.get('code') == '0' and order_info.get('data'):
                         order_data = order_info['data'][0]
@@ -3601,7 +3602,7 @@ def get_manual_orders():
                         logger.warning(f"[订单查询] 订单 {order_id} 状态查询失败: {order_info}")
                         # 如果查询失败，根据数据库中的execution_status判断
                         db_execution_status = operation.get('execution_status', 'unknown')
-                        logger.info(f"[订单查询] 使用数据库状态: {db_execution_status}")
+                        # logger.info(f"[订单查询] 使用数据库状态: {db_execution_status}")
                         
                         # 根据数据库状态和查询条件决定是否显示
                         should_show = False
@@ -3695,13 +3696,8 @@ def cancel_manual_order():
             return jsonify({'success': 404, 'data': None, 'message': '账户不存在'}), 404
         
         # 调用交易所撤单API
-        from okx_rest_client import OKXRESTClient
-        rest_client = OKXRESTClient(
-            api_key=account_data['api_key'],
-            api_secret=account_data['api_secret'],
-            passphrase=account_data['passphrase'],
-            is_demo=is_demo
-        )
+        
+        rest_client = _create_rest_client(account_data, is_demo)
         
         # 需要从订单信息中获取instId
         # 先查询订单信息
@@ -4981,13 +4977,14 @@ def get_customer_strategy_positions():
 # ==================== 限价跟单模块API ====================
 
 @app.route('/api/v1/limit-follow/traders', methods=['GET'])
+@ensure_db_pool()
 def get_limit_follow_traders():
     """获取限价跟单跟单员列表"""
     try:
         traders = db_pool.query("SELECT * FROM limit_follow_traders ORDER BY created_at DESC")
-        
+        # logger.info(f"限价跟单跟单员列表: {traders}")
         return jsonify({
-            'success': True,
+            'success': 200,
             'data': traders,
             'message': '限价跟单跟单员获取成功'
         })
@@ -5091,6 +5088,11 @@ def delete_limit_follow_trader(trader_id):
 def get_limit_follow_strategies():
     """获取限价跟单策略列表"""
     try:
+        # 检查数据库连接
+        if db_pool is None:
+            logger.error("数据库连接池未初始化")
+            raise APIError("数据库连接未初始化，请检查数据库配置")
+        
         customer_uid = request.args.get('customer_uid')
         strategy_id = request.args.get('strategy_id')
         trader_unique_name = request.args.get('trader_unique_name')
@@ -5118,15 +5120,34 @@ def get_limit_follow_strategies():
         
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         
-        # 查询策略，关联跟单员表获取跟单员名称
-        strategies = db_pool.query(
-            f"""SELECT lfs.*, lt.name as trader_name 
-                FROM limit_follow_strategies lfs
-                LEFT JOIN limit_follow_traders lt ON lfs.trader_unique_name = lt.unique_name
-                WHERE {where_clause} 
-                ORDER BY lfs.created_at DESC""",
-            tuple(params) if params else None
-        )
+        # 测试数据库连接
+        try:
+            # 查询策略，关联跟单员表获取跟单员名称
+            strategies = db_pool.query(
+                f"""SELECT lfs.*, lt.name as trader_name 
+                    FROM limit_follow_strategies lfs
+                    LEFT JOIN limit_follow_traders lt ON lfs.trader_unique_name = lt.unique_name
+                    WHERE {where_clause} 
+                    ORDER BY lfs.created_at DESC""",
+                tuple(params) if params else None
+            )
+        except Exception as db_error:
+            logger.error(f"数据库查询失败: {db_error}")
+            # 尝试重新初始化数据库连接
+            try:
+                init_db()
+                strategies = db_pool.query(
+                    f"""SELECT lfs.*, lt.name as trader_name 
+                        FROM limit_follow_strategies lfs
+                        LEFT JOIN limit_follow_traders lt ON lfs.trader_unique_name = lt.unique_name
+                        WHERE {where_clause} 
+                        ORDER BY lfs.created_at DESC""",
+                    tuple(params) if params else None
+                )
+                logger.info("数据库连接重新初始化成功")
+            except Exception as retry_error:
+                logger.error(f"重新初始化数据库连接失败: {retry_error}")
+                raise APIError("数据库连接失败，请检查数据库服务状态")
         
         return jsonify({
             'success': 200,
@@ -5135,6 +5156,8 @@ def get_limit_follow_strategies():
             'message': '限价跟单策略获取成功'
         })
         
+    except APIError:
+        raise
     except Exception as e:
         logger.error(f"获取限价跟单策略失败: {e}")
         raise APIError(f"获取限价跟单策略失败: {str(e)}")
@@ -5155,38 +5178,62 @@ def create_limit_follow_strategy():
         if pos_side not in ['long', 'short', 'both']:
             raise APIError("持仓方向必须是long、short或both")
         
+        # follow_mode默认为follow_signal_source（跟信号源）
+        follow_mode = data.get('follow_mode', 'follow_signal_source')
+        if follow_mode not in ['follow_signal_source', 'follow_trader']:
+            raise APIError("跟单模式必须是follow_signal_source或follow_trader")
+        
         # 验证跟单值范围
         follow_value = float(data['follow_value'])
         if data['follow_type'] == 'percentage':
             if follow_value < 0.1 or follow_value > 10.0:
                 raise APIError("百分比跟单值必须在0.1%到10%之间")
         
-        # 验证跟单员是否存在
-        trader_exists = db_pool.query(
-            "SELECT 1 FROM limit_follow_traders WHERE unique_name=%s",
-            (data['trader_unique_name'],)
-        )
+        # 根据跟单模式验证跟单员或信号源是否存在
+        if follow_mode == 'follow_trader':
+            # 跟单员模式：验证跟单员是否存在
+            trader_exists = db_pool.query(
+                "SELECT 1 FROM limit_follow_traders WHERE unique_name=%s",
+                (data['trader_unique_name'],)
+            )
+            
+            if not trader_exists:
+                raise APIError(f"跟单员 {data['trader_unique_name']} 不存在")
         
-        if not trader_exists:
-            raise APIError(f"跟单员 {data['trader_unique_name']} 不存在")
+        elif follow_mode == 'follow_signal_source':
+            # 信号源模式：验证信号源是否存在
+            signal_source_exists = db_pool.query(
+                "SELECT 1 FROM signal_sources WHERE source_uid=%s",
+                (data['trader_unique_name'],)
+            )
+            
+            if not signal_source_exists:
+                raise APIError(f"信号源 {data['trader_unique_name']} 不存在")
         
         # 插入策略
         strategy_id = db_pool.execute(
             """INSERT INTO limit_follow_strategies 
-               (strategy_name, trader_unique_name, customer_uid, symbol, pos_side, follow_type, follow_value, 
+               (strategy_name, trader_unique_name, customer_uid, symbol, pos_side, follow_type, follow_mode, follow_value, 
                 min_follow_value, max_follow_value, max_orders_per_signal, max_net_leverage, proportional_position,
                 auto_cancel_on_signal_close) 
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (data['strategy_name'], data['trader_unique_name'], data['customer_uid'], data['symbol'], pos_side,
-             data['follow_type'], data['follow_value'], data.get('min_follow_value', 0.5), 
+             data['follow_type'], follow_mode, data['follow_value'], data.get('min_follow_value', 0.5), 
              data.get('max_follow_value', 5.0), data.get('max_orders_per_signal', 4),
              data.get('max_net_leverage', 10.0), data.get('proportional_position', False),
              data.get('auto_cancel_on_signal_close', True))
         )
         
+        # 返回创建的策略信息
+        response_data = {
+            'id': strategy_id,
+            'follow_mode': follow_mode,
+            'follow_mode_description': '跟信号源：客户账户不包含信号源账户' if follow_mode == 'follow_signal_source' else '跟交易员：客户账户包含信号源账户'
+        }
+        
         return jsonify({
             'success': 200,
-            'data': {'id': strategy_id},
+            'data': response_data,
             'message': '限价跟单策略创建成功'
         })
         
@@ -5306,6 +5353,7 @@ def update_limit_follow_strategy(strategy_id):
         logger.error(f"更新限价跟单策略失败: {e}")
         raise APIError(f"更新限价跟单策略失败: {str(e)}")
 
+
 @app.route('/api/v1/limit-follow/strategies/<int:strategy_id>', methods=['DELETE'])
 def delete_limit_follow_strategy(strategy_id):
     """删除限价跟单策略"""
@@ -5404,6 +5452,48 @@ def execute_limit_follow():
         logger.error(f"执行限价跟单失败: {e}")
         raise APIError(f"执行限价跟单失败: {str(e)}")
 
+def calculate_limit_follow_order_size(strategy, signal_price):
+    """计算限价跟单订单数量"""
+    try:
+        # 获取客户信息
+        customer = db_pool.query(
+            "SELECT * FROM customers WHERE customer_uid=%s",
+            (strategy['customer_uid'],)
+        )
+        
+        if not customer:
+            return 1.0  # 默认数量
+        
+        customer_data = customer[0]
+        
+        # 获取策略规则
+        rule = db_pool.query(
+            "SELECT * FROM rules WHERE rule_uid=%s",
+            (strategy['strategy_uid'],)
+        )
+        
+        if not rule:
+            return 1.0  # 默认数量
+        
+        rule_data = rule[0]
+        
+        # 根据position_ratio计算数量
+        position_ratio = float(rule_data.get('position_ratio', 1.0))
+        customer_asset = float(customer_data.get('total_asset', 1000))
+        
+        # 计算订单数量（简化计算）
+        order_size = (customer_asset * position_ratio / 100) / float(signal_price)
+        
+        # 确保最小数量
+        if order_size < 0.1:
+            order_size = 0.1
+        
+        return round(order_size, 4)
+        
+    except Exception as e:
+        logger.error(f"计算限价跟单订单数量失败: {e}")
+        return 1.0
+
 @app.route('/api/v1/limit-follow/cancel-on-signal-close', methods=['POST'])
 def cancel_orders_on_signal_close():
     """信号源平仓时撤销跟单订单"""
@@ -5415,10 +5505,13 @@ def cancel_orders_on_signal_close():
             if field not in data:
                 raise APIError(f"缺少必填字段: {field}")
         
-        # 查找需要撤销的策略（支持双向跟随）
+        order_uid = data.get('order_uid')  # 可选：指定订单ID
+        logger.info(f"[限价跟单撤单] 查询参数: trader_unique_name={data['trader_unique_name']}, symbol={data['symbol']}, pos_side={data['pos_side']}, order_uid={order_uid}")
+        
+        # 查找需要撤销的策略
         strategies = db_pool.query(
             """SELECT * FROM limit_follow_strategies 
-               WHERE trader_unique_name=%s AND symbol=%s 
+               WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
                AND (pos_side='both' OR pos_side=%s) 
                AND enabled=1 AND auto_cancel_on_signal_close=1""",
             (data['trader_unique_name'], data['symbol'], data['pos_side'])
@@ -5432,15 +5525,23 @@ def cancel_orders_on_signal_close():
             })
         
         canceled_count = 0
+        is_demo = get_global_is_demo()
+        
         for strategy in strategies:
-            # 撤销该策略下指定方向的待处理订单（根据实际订单方向撤单）
-            result = db_pool.execute(
-                """UPDATE limit_follow_orders 
-                   SET status='canceled' 
-                   WHERE strategy_id=%s AND pos_side=%s AND status IN ('pending', 'live')""",
-                (strategy['id'], data['pos_side'])
-            )
-            canceled_count += result.rowcount
+            # 获取账户信息
+            account_data = _get_account_data(strategy, is_demo)
+            if not account_data:
+                continue
+            
+            # 创建REST客户端
+            rest_client = _create_rest_client(account_data, is_demo)
+            
+            if order_uid:
+                # 撤销指定订单
+                canceled_count += _cancel_single_order(rest_client, order_uid, strategy, data['pos_side'])
+            else:
+                # 批量撤销订单
+                canceled_count += _cancel_batch_orders(rest_client, strategy, data['pos_side'])
         
         return jsonify({
             'success': 200,
@@ -5452,7 +5553,197 @@ def cancel_orders_on_signal_close():
         logger.error(f"撤销跟单订单失败: {e}")
         raise APIError(f"撤销跟单订单失败: {str(e)}")
 
+@app.route('/api/v1/limit-follow/limit-follow-closed-by-order-id', methods=['POST'])
+def limit_follow_closed_by_order_id():
+    """根据订单ID平仓(限价跟单单笔订单)"""
+    try:
+        data = request.get_json()
+        required_fields = ['order_uid']
+        
+        for field in required_fields:
+            if field not in data:
+                raise APIError(f"缺少必填字段: {field}")
+        
+        order_uid = data['order_uid']
+        
+        # 查询订单信息
+        order = db_pool.query(
+            "SELECT * FROM limit_follow_orders WHERE order_uid=%s",
+            (order_uid,)
+        )
+        if not order:
+            raise APIError(f"订单不存在: {order_uid}")
+        
+        order = order[0]
+        inst_id = order['symbol']
+        exchange_order_id = order['exchange_order_id']
+        pos_side = order['pos_side']
+        strategy_id = order['strategy_id']
+        trader_unique_name = order['trader_unique_name']
+        order_size = order['order_size']
+        symbol = order['symbol']
+        customer_uid = order['customer_uid']
+        
+        # 获取策略信息
+        strategy = db_pool.query(
+            "SELECT * FROM limit_follow_strategies WHERE id=%s",
+            (strategy_id,)
+        )
+        if not strategy:
+            raise APIError(f"策略不存在: {strategy_id}")
+        
+        strategy = strategy[0]
+        
+        # 获取账户信息
+        is_demo = get_global_is_demo()
+        account_data = _get_account_data(strategy, is_demo)
+        if not account_data:
+            raise APIError(f"账户信息不存在: {trader_unique_name}")
+        
+        # 创建REST客户端
+        rest_client = _create_rest_client(account_data, is_demo)
+        
+        # 调用交易所API平仓
+        logger.info(f"[平仓] 调用REST API平仓: instId={inst_id}, ordId={exchange_order_id}")
+        # 构建开仓参数
+        if pos_side == 'long':
+            open_side = 'sell'
+        else:
+            open_side = 'buy'
+        order_data = {
+            "instId": symbol,
+            "tdMode": "cross",
+            "side": open_side,
+            "posSide": pos_side,  # 添加持仓方向
+            "ordType": 'market',
+            "sz": str(order_size),
+            "clOrdId": exchange_order_id,
+            "reduceOnly": True
+        }
+        import asyncio
+        close_result = asyncio.run(rest_client.place_order(**order_data))
+        
+        if close_result and close_result.get('code') == '0':
+            # 更新数据库状态
+            db_pool.execute(
+                "UPDATE limit_follow_orders SET status='closed', updated_at=NOW() WHERE order_uid=%s",
+                (order_uid,)
+            )
+            logger.info(f"[平仓] 订单平仓成功: {order_uid}")
+            return jsonify({
+                'success': 200,
+                'message': f'成功平仓订单: {order_uid}',
+                'data': {'closed_count': 1}
+            })
+        else:
+            logger.warning(f"[平仓] 订单平仓失败: {order_uid}")
+            return jsonify({
+                'success': 400,
+                'message': f'平仓失败: {order_uid}'
+            })
+    
+        
+    except Exception as e:
+        logger.error(f"[平仓] 平仓异常: {e}")
+        raise APIError(f"平仓失败: {str(e)}")
+
+def _get_account_data(strategy, is_demo):
+    """获取账户信息"""
+    if strategy['follow_mode'] == 'follow_signal_source':
+        return get_customer_by_id(db_pool, strategy['customer_uid'], is_demo)
+    else:
+        account_data = get_customer_by_id(db_pool, strategy['customer_uid'], is_demo)
+        if not account_data:
+            account_data = get_signal_source_by_id(db_pool, strategy['customer_uid'], is_demo)
+        return account_data
+
+def _create_rest_client(account_data, is_demo):
+    """创建REST客户端"""
+    from exchange.okx.okx_rest_client import OKXRESTClient
+    return OKXRESTClient(
+        api_key=account_data['api_key'],
+        api_secret=account_data['api_secret'],
+        passphrase=account_data['passphrase'],
+        is_demo=is_demo
+    )
+
+def _cancel_single_order(rest_client, order_uid, strategy, pos_side):
+    """撤销单个订单"""
+    try:
+        # 查询订单信息
+        order = db_pool.query(
+            "SELECT * FROM limit_follow_orders WHERE order_uid=%s",
+            (order_uid,)
+        )
+        
+        if not order:
+            logger.warning(f"[撤单] 订单不存在: {order_uid}")
+            return 0
+        
+        order = order[0]
+        inst_id = order['symbol']
+        exchange_order_id = order['exchange_order_id']
+        
+        # 调用交易所API撤销
+        logger.info(f"[撤单] 调用REST API撤单: instId={inst_id}, ordId={exchange_order_id}")
+        import asyncio
+        cancel_result = asyncio.run(rest_client.cancel_order(inst_id, ordId=exchange_order_id))
+        
+        if cancel_result and cancel_result.get('code') == '0':
+            # 更新数据库状态
+            db_pool.execute(
+                "UPDATE limit_follow_orders SET status='canceled' WHERE order_uid=%s",
+                (order_uid,)
+            )
+            logger.info(f"[撤单] 订单撤销成功: {order_uid}")
+            return 1
+        else:
+            logger.warning(f"[撤单] 订单撤销失败: {order_uid}")
+            return 0
+            
+    except Exception as e:
+        logger.error(f"[撤单] 撤销订单异常: {order_uid}, 错误: {e}")
+        return 0
+
+def _cancel_batch_orders(rest_client, strategy, pos_side):
+    """批量撤销订单"""
+    try:
+        # 查询待撤销订单
+        orders = db_pool.query(
+            """SELECT * FROM limit_follow_orders 
+               WHERE strategy_id=%s AND pos_side=%s AND status IN ('pending', 'live')""",
+            (strategy['id'], pos_side)
+        )
+        
+        canceled_count = 0
+        for order in orders:
+            inst_id = order['symbol']
+            exchange_order_id = order['exchange_order_id']
+            
+            # 调用交易所API撤销
+            logger.info(f"[撤单] 调用REST API撤单: instId={inst_id}, ordId={exchange_order_id}")
+            import asyncio
+            cancel_result = asyncio.run(rest_client.cancel_order(inst_id, ordId=exchange_order_id))
+            
+            if cancel_result and cancel_result.get('code') == '0':
+                # 更新数据库状态
+                db_pool.execute(
+                    "UPDATE limit_follow_orders SET status='canceled' WHERE order_uid=%s",
+                    (order['order_uid'],)
+                )
+                canceled_count += 1
+                logger.info(f"[撤单] 订单撤销成功: {order['order_uid']}")
+            else:
+                logger.warning(f"[撤单] 订单撤销失败: {order['order_uid']}")
+        
+        return canceled_count
+        
+    except Exception as e:
+        logger.error(f"[撤单] 批量撤销订单异常: {e}")
+        return 0
+
 @app.route('/api/v1/limit-follow/orders', methods=['GET'])
+@ensure_db_pool()
 def get_limit_follow_orders():
     """获取限价跟单订单列表"""
     try:
@@ -5498,9 +5789,12 @@ def get_limit_follow_orders():
         
         # 查询订单（关联客户和跟单员信息）
         orders = db_pool.query(
-            f"""SELECT lfo.*, c.name as customer_name, lt.name as trader_name
+            f"""SELECT lfo.*, 
+                COALESCE(c.name, s.name) as customer_name,
+                lt.name as trader_name
                 FROM limit_follow_orders lfo
                 LEFT JOIN customers c ON lfo.customer_uid = c.customer_uid
+                LEFT JOIN signal_sources s ON lfo.customer_uid = s.source_uid
                 LEFT JOIN limit_follow_traders lt ON lfo.trader_unique_name = lt.unique_name
                 WHERE {where_clause}
                 ORDER BY lfo.created_at DESC""",
@@ -5548,13 +5842,7 @@ def cancel_limit_follow_order(order_uid):
                 customer_info = customer_config['customer_info']
                 
                 # 创建OKX客户端
-                from okx_rest_client import OKXRESTClient
-                okx_client = OKXRESTClient(
-                    api_key=customer_info['api_key'],
-                    api_secret=customer_info['api_secret'],
-                    passphrase=customer_info['passphrase'],
-                    is_demo=customer_info.get('is_demo', False)
-                )
+                rest_client = _create_rest_client(customer_info, is_demo=customer_info.get('is_demo', 1))
                 
                 # 调用交易所撤销订单
                 import asyncio
@@ -5636,6 +5924,7 @@ def cancel_limit_follow_order(order_uid):
         raise APIError(f"撤销限价跟单订单失败: {str(e)}")
 
 @app.route('/api/v1/limit-follow/orders/all', methods=['GET'])
+@ensure_db_pool()
 def get_all_limit_follow_orders():
     """获取所有限价跟单订单列表（包括已撤单、已成交等）"""
     try:
@@ -5678,9 +5967,12 @@ def get_all_limit_follow_orders():
         
         # 查询订单（关联客户和跟单员信息）
         orders = db_pool.query(
-            f"""SELECT lfo.*, c.name as customer_name, lt.name as trader_name
+            f"""SELECT lfo.*, 
+                COALESCE(c.name, s.name) as customer_name,
+                lt.name as trader_name
                 FROM limit_follow_orders lfo
                 LEFT JOIN customers c ON lfo.customer_uid = c.customer_uid
+                LEFT JOIN signal_sources s ON lfo.customer_uid = s.source_uid
                 LEFT JOIN limit_follow_traders lt ON lfo.trader_unique_name = lt.unique_name
                 WHERE {where_clause}
                 ORDER BY lfo.created_at DESC""",
@@ -5979,6 +6271,458 @@ def calculate_limit_follow_order_size(strategy, signal_price):
     except Exception as e:
         logger.error(f"计算限价跟单订单数量失败: {e}")
         return 1.0
+
+# ==================== 限价跟单监控和健康检查API ====================
+@app.route('/api/v1/limit-follow/modes', methods=['GET'])
+def get_limit_follow_modes():
+    """获取限价跟单模式信息"""
+    try:
+        modes = {
+            'follow_signal_source': {
+                'value': 'follow_signal_source',
+                'name': '跟信号源',
+                'description': '客户账户不包含信号源账户',
+                'detail': '在此模式下，客户账户与信号源账户是完全独立的，跟单数量计算时不会考虑信号源账户的资金'
+            },
+            'follow_trader': {
+                'value': 'follow_trader',
+                'name': '跟交易员',
+                'description': '客户账户包含信号源账户',
+                'detail': '在此模式下，客户账户包含了信号源账户，跟单数量计算时会减去信号源账户的资金占用'
+            }
+        }
+        
+        # 从配置中获取默认模式
+        default_mode_config = db_pool.query(
+            "SELECT config_value FROM limit_follow_configs WHERE config_key='default_follow_mode'",
+            None
+        )
+        default_mode = default_mode_config[0]['config_value'] if default_mode_config else 'follow_signal_source'
+        
+        return jsonify({
+            'success': 200,
+            'data': {
+                'modes': modes,
+                'default_mode': default_mode,
+                'available_modes': list(modes.keys())
+            },
+            'message': '跟单模式信息获取成功'
+        })
+        
+    except Exception as e:
+        logger.error(f"获取跟单模式信息失败: {e}")
+        raise APIError(f"获取跟单模式信息失败: {str(e)}")
+
+@app.route('/api/v1/limit-follow/health', methods=['GET'])
+def limit_follow_health_check():
+    """限价跟单服务健康检查"""
+    try:
+        
+        service = get_limit_follow_service()
+        
+        # 获取服务状态
+        status_info = service.get_status()
+        
+        # 检查最近的订单状态更新（安全查询）
+        recent_updates_result = db_pool.query("""
+            SELECT COUNT(*) as count, MAX(updated_at) as last_update
+            FROM limit_follow_orders 
+            WHERE updated_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+        """)
+        recent_updates = recent_updates_result[0] if recent_updates_result else {'count': 0, 'last_update': None}
+        
+        # 检查异常状态的订单（安全查询）
+        problematic_orders_result = db_pool.query("""
+            SELECT COUNT(*) as count
+            FROM limit_follow_orders 
+            WHERE status = 'live' 
+            AND exchange_order_id IS NOT NULL
+            AND created_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        """)
+        problematic_orders = problematic_orders_result[0] if problematic_orders_result else {'count': 0}
+        
+        # 检查总体状态（安全查询）
+        total_orders_result = db_pool.query("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN status = 'live' THEN 1 ELSE 0 END) as live_count,
+                   SUM(CASE WHEN status = 'filled' THEN 1 ELSE 0 END) as filled_count,
+                   SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
+            FROM limit_follow_orders 
+            WHERE created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        """)
+        total_orders = total_orders_result[0] if total_orders_result else {
+            'total': 0, 'live_count': 0, 'filled_count': 0, 'pending_count': 0
+        }
+        
+        # 计算健康评分
+        health_score = 100
+        if problematic_orders['count'] > 10:
+            health_score -= 30
+        elif problematic_orders['count'] > 5:
+            health_score -= 15
+        
+        if status_info['metrics']['success_rate'] < 90:
+            health_score -= 20
+        elif status_info['metrics']['success_rate'] < 95:
+            health_score -= 10
+        
+        if not status_info['running']:
+            health_score = 0
+        
+        # 确定健康状态
+        if health_score >= 90:
+            health_status = 'healthy'
+        elif health_score >= 70:
+            health_status = 'warning'
+        else:
+            health_status = 'error'
+        
+        health_data = {
+            'overall_status': health_status,
+            'health_score': health_score,
+            'service_running': status_info['running'],
+            'service_status': status_info['status'],
+            'recent_updates': recent_updates['count'],
+            'last_update': str(recent_updates['last_update']) if recent_updates['last_update'] else None,
+            'problematic_orders': problematic_orders['count'],
+            'orders_summary': {
+                'total_24h': total_orders['total'],
+                'live': total_orders['live_count'],
+                'filled': total_orders['filled_count'],
+                'pending': total_orders['pending_count']
+            },
+            'metrics': status_info['metrics'],
+            'config': status_info['config'],
+            'recommendations': []
+        }
+        
+        # 添加建议
+        if problematic_orders['count'] > 5:
+            health_data['recommendations'].append('建议执行手动状态同步')
+        
+        if status_info['metrics']['success_rate'] < 95:
+            health_data['recommendations'].append('订单成功率偏低，请检查API配置')
+        
+        if not status_info['running']:
+            health_data['recommendations'].append('监控服务未运行，请重启服务')
+        
+        return jsonify({
+            'success': 200,
+            'data': health_data,
+            'message': '限价跟单服务健康检查完成'
+        })
+        
+    except Exception as e:
+        logger.error(f"限价跟单健康检查失败: {e}")
+        return jsonify({
+            'success': 500,
+            'data': {
+                'overall_status': 'error',
+                'health_score': 0,
+                'error': str(e)
+            },
+            'message': f'健康检查失败: {str(e)}'
+        })
+
+@app.route('/api/v1/limit-follow/fix-position-status', methods=['POST'])
+def fix_limit_follow_position_status():
+    """修复限价跟单订单与持仓状态的不一致"""
+    try:
+        logger.info("🔧 开始修复限价跟单订单状态...")
+        
+        # 查找所有已成交但持仓已完全平仓的限价跟单订单
+        inconsistent_orders = db_pool.query("""
+            SELECT lfo.order_uid, lfo.customer_uid, lfo.symbol, lfo.pos_side, lfo.trader_unique_name
+            FROM limit_follow_orders lfo
+            WHERE lfo.status = 'filled'
+            AND NOT EXISTS (
+                SELECT 1 FROM customer_trades ct 
+                WHERE ct.customer_uid = lfo.customer_uid 
+                AND ct.symbol = lfo.symbol 
+                AND ct.pos_side = lfo.pos_side
+                AND ct.status = 'open'
+                AND (ct.volume_contract - IFNULL(ct.close_volume_contract, 0)) > 0
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM signal_account_trades sat
+                WHERE sat.signal_source_uid = lfo.trader_unique_name
+                AND sat.symbol = lfo.symbol
+                AND sat.pos_side = lfo.pos_side
+                AND sat.status = 'open'
+                AND (sat.volume_contract - IFNULL(sat.close_volume_contract, 0)) > 0
+            )
+        """)
+        
+        fixed_count = 0
+        for order in inconsistent_orders:
+            # 更新订单状态为closed
+            success = db_pool.execute("""
+                UPDATE limit_follow_orders 
+                SET status='closed', updated_at=NOW() 
+                WHERE order_uid=%s
+            """, (order['order_uid'],))
+            
+            if success:
+                fixed_count += 1
+                logger.info(f"✅ 修复订单状态: {order['order_uid']} -> closed")
+        
+        return jsonify({
+            'success': 200,
+            'data': {
+                'total_checked': len(inconsistent_orders),
+                'fixed_count': fixed_count
+            },
+            'message': f'成功修复 {fixed_count} 个订单状态'
+        })
+        
+    except Exception as e:
+        logger.error(f"修复限价跟单订单状态失败: {e}")
+        return jsonify({
+            'success': 500,
+            'data': None,
+            'message': f'修复失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/limit-follow/sync-status', methods=['POST'])
+def sync_limit_follow_status():
+    """手动同步订单状态"""
+    try:
+        # 获取请求参数
+        data = request.get_json() or {}
+        force_sync = data.get('force_sync', False)
+        max_orders = min(data.get('max_orders', 100), 500)  # 限制最大数量
+        
+        logger.info(f"🔄 开始手动同步订单状态 - 强制同步: {force_sync}, 最大订单数: {max_orders}")
+        
+        # 获取需要同步的订单
+        if force_sync:
+            # 强制同步模式：获取所有live状态的订单
+            query = """
+                SELECT * FROM limit_follow_orders 
+                WHERE status = 'live' 
+                AND exchange_order_id IS NOT NULL
+                ORDER BY updated_at ASC
+                LIMIT %s
+            """
+            params = (max_orders,)
+        else:
+            # 正常模式：只同步长时间未更新的订单
+            query = """
+                SELECT * FROM limit_follow_orders 
+                WHERE status = 'live' 
+                AND exchange_order_id IS NOT NULL
+                AND updated_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+                ORDER BY updated_at ASC
+                LIMIT %s
+            """
+            params = (max_orders,)
+        
+        orders_to_sync = db_pool.query(query, params)
+        
+        if not orders_to_sync:
+            return jsonify({
+                'success': 200,
+                'data': {
+                    'total_checked': 0,
+                    'updated_count': 0,
+                    'error_count': 0,
+                    'duration': 0
+                },
+                'message': '没有需要同步的订单'
+            })
+        
+        # 执行同步
+        import asyncio
+        from datetime import datetime
+        
+        async def sync_orders():
+            start_time = datetime.now()
+            updated_count = 0
+            error_count = 0
+            error_details = []
+            
+            # 获取客户信息缓存
+            customers_cache = {}
+            
+            for order in orders_to_sync:
+                try:
+                    customer_uid = order['customer_uid']
+                    
+                    # 获取客户信息（使用缓存，根据当前盘口模式）
+                    if customer_uid not in customers_cache:
+                        is_demo = get_global_is_demo()
+                        customer_rows = db_pool.query(
+                            "SELECT * FROM customers WHERE customer_uid = %s AND enabled = 1 AND is_demo = %s",
+                            (customer_uid, is_demo)
+                        )
+                        if not customer_rows:
+                            error_count += 1
+                            error_details.append(f"客户不存在或已禁用: {customer_uid}")
+                            continue
+                        customers_cache[customer_uid] = customer_rows[0]
+                    
+                    customer = customers_cache[customer_uid]
+                    
+                    # 创建OKX客户端
+                    rest_client = _create_rest_client(customer, is_demo)
+                    
+                    # 查询订单状态
+                    response = await rest_client.get_order(
+                        order['symbol'], 
+                        order['exchange_order_id']
+                    )
+                    
+                    if response and response.get('code') == '0' and response.get('data'):
+                        order_data = response['data'][0]
+                        exchange_status = order_data['state']
+                        
+                        # 如果状态有变化，更新数据库
+                        if exchange_status != order['status']:
+                            if exchange_status == 'filled':
+                                # 更新为已成交
+                                filled_price = float(order_data['avgPx'])
+                                filled_size = float(order_data['accFillSz'])
+                                
+                                success = db_pool.execute("""
+                                    UPDATE limit_follow_orders 
+                                    SET status='filled', filled_price=%s, filled_size=%s, updated_at=NOW()
+                                    WHERE order_uid=%s
+                                """, (filled_price, filled_size, order['order_uid']))
+                                
+                                updated_count += 1
+                                logger.info(f"✅ 同步成交订单: {order['order_uid']} - 价格: {filled_price}")
+                                
+                            elif exchange_status in ['canceled', 'expired', 'rejected']:
+                                # 更新为取消/过期/拒绝
+                                success = db_pool.execute("""
+                                    UPDATE limit_follow_orders 
+                                    SET status=%s, updated_at=NOW()
+                                    WHERE order_uid=%s
+                                """, (exchange_status, order['order_uid']))
+                                
+                                updated_count += 1
+                                logger.info(f"🚫 同步订单状态: {order['order_uid']} -> {exchange_status}")
+                        
+                        # API调用间隔
+                        await asyncio.sleep(0.1)  # 100ms间隔
+                        
+                    else:
+                        error_count += 1
+                        error_details.append(f"查询订单失败: {order['order_uid']}")
+                        
+                except Exception as order_error:
+                    error_count += 1
+                    error_details.append(f"订单 {order['order_uid']}: {str(order_error)}")
+                    logger.error(f"同步订单状态失败 {order['order_uid']}: {order_error}")
+            
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            
+            return {
+                'total_checked': len(orders_to_sync),
+                'updated_count': updated_count,
+                'error_count': error_count,
+                'duration': duration,
+                'error_details': error_details[:10]  # 只返回前10个错误
+            }
+        
+        # 运行异步同步
+        result = asyncio.run(sync_orders())
+        
+        # 记录同步结果
+        logger.info(f"📊 手动同步完成 - 检查: {result['total_checked']}, "
+                   f"更新: {result['updated_count']}, 错误: {result['error_count']}, "
+                   f"耗时: {result['duration']:.2f}秒")
+        
+        return jsonify({
+            'success': 200,
+            'data': result,
+            'message': f'订单状态同步完成，更新了 {result["updated_count"]} 个订单'
+        })
+        
+    except Exception as e:
+        logger.error(f"手动同步订单状态失败: {e}")
+        return jsonify({
+            'success': 500,
+            'data': {
+                'total_checked': 0,
+                'updated_count': 0,
+                'error_count': 1,
+                'error': str(e)
+            },
+            'message': f'订单状态同步失败: {str(e)}'
+        })
+
+@app.route('/api/v1/limit-follow/metrics', methods=['GET'])
+def get_limit_follow_metrics():
+    """获取限价跟单监控指标"""
+    try:
+        from limit_follow_service import get_limit_follow_service
+        service = get_limit_follow_service()
+        
+        # 获取基础状态
+        status_info = service.get_status()
+        
+        # 获取订单统计
+        order_stats = db_pool.query("""
+            SELECT 
+                COUNT(*) as total_orders,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_orders,
+                SUM(CASE WHEN status = 'live' THEN 1 ELSE 0 END) as live_orders,
+                SUM(CASE WHEN status = 'filled' THEN 1 ELSE 0 END) as filled_orders,
+                SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) as canceled_orders,
+                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_orders,
+                AVG(CASE WHEN status = 'filled' AND filled_price > 0 THEN filled_price ELSE NULL END) as avg_fill_price,
+                SUM(CASE WHEN status = 'filled' AND filled_size > 0 THEN filled_size ELSE 0 END) as total_filled_size
+            FROM limit_follow_orders 
+            WHERE created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        """)[0]
+        
+        # 获取策略统计
+        strategy_stats = db_pool.query("""
+            SELECT 
+                COUNT(*) as total_strategies,
+                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as active_strategies
+            FROM limit_follow_strategies
+        """)[0]
+        
+        # 计算成功率
+        total_completed = order_stats['filled_orders'] + order_stats['canceled_orders'] + order_stats['rejected_orders']
+        success_rate = (order_stats['filled_orders'] / total_completed * 100) if total_completed > 0 else 0
+        
+        metrics_data = {
+            'service_status': status_info,
+            'order_statistics': {
+                'total_orders_24h': order_stats['total_orders'],
+                'pending_orders': order_stats['pending_orders'],
+                'live_orders': order_stats['live_orders'],
+                'filled_orders': order_stats['filled_orders'],
+                'canceled_orders': order_stats['canceled_orders'],
+                'rejected_orders': order_stats['rejected_orders'],
+                'success_rate': round(success_rate, 2),
+                'average_fill_price': float(order_stats['avg_fill_price']) if order_stats['avg_fill_price'] else 0,
+                'total_filled_volume': float(order_stats['total_filled_size'])
+            },
+            'strategy_statistics': {
+                'total_strategies': strategy_stats['total_strategies'],
+                'active_strategies': strategy_stats['active_strategies']
+            }
+        }
+        
+        return jsonify({
+            'success': 200,
+            'data': metrics_data,
+            'message': '限价跟单监控指标获取成功'
+        })
+        
+    except Exception as e:
+        logger.error(f"获取限价跟单监控指标失败: {e}")
+        return jsonify({
+            'success': 500,
+            'data': {'error': str(e)},
+            'message': f'获取监控指标失败: {str(e)}'
+        })
+
 
 @app.route('/api/v1/signal-sources/reset-reconnect-protection', methods=['POST'])
 def reset_signal_source_reconnect_protection():

@@ -80,6 +80,7 @@ class LimitFollowOrder:
     order_size: float = 0.0
     order_type: str = 'limit'
     status: str = 'pending'
+    order_id: Optional[str] = None
     exchange_order_id: Optional[str] = None
     filled_price: Optional[float] = None
     filled_size: Optional[float] = None
