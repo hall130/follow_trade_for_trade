@@ -336,7 +336,7 @@ risk_metrics = {
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/follow_trade_for_trade.git
+git clone https://github.com/hall130/follow_trade_for_trade.git
 cd follow_trade_for_trade
 
 # 2. 安装依赖
@@ -922,9 +922,9 @@ class TradingStrategy:
 ## 📞 联系我们
 
 ### 🌐 项目链接
-- **🏠 项目主页**：[GitHub Repository](https://github.com/your-username/follow_trade_for_trade)
-- **📋 问题反馈**：[GitHub Issues](https://github.com/your-username/follow_trade_for_trade/issues)
-- **💬 社区讨论**：[GitHub Discussions](https://github.com/your-username/follow_trade_for_trade/discussions)
+- **🏠 项目主页**：[GitHub Repository](https://github.com/hall130/follow_trade_for_trade)
+- **📋 问题反馈**：[GitHub Issues](https://github.com/hall130/follow_trade_for_trade/issues)
+- **💬 社区讨论**：[GitHub Discussions](https://github.com/hall130/follow_trade_for_trade/discussions)
 
 ### 📧 商业合作
 - **商务邮箱**：business@follow-trade.com
