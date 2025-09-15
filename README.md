@@ -952,7 +952,12 @@ class TradingStrategy:
 
 **⭐ 如果这个项目对你有帮助，请给我们一个Star！**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hall130/follow_trade_for_trade&type=Date)](https://star-history.com/#hall130/follow_trade_for_trade&Date)
+## Star History
+
+<img src="https://api.star-history.com/svg?repos=hall130/follow_trade_for_trade&type=Date" alt="Star History Chart" />
+
+[查看完整的 Star History](https://star-history.com/#hall130/follow_trade_for_trade&Date)
+
 
 **📖 继续探索**
 
