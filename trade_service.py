@@ -1,11 +1,11 @@
-from database.db import (
+from db import (
     insert_customer_trade, update_customer_trade_order_id, log_trade_failure, get_open_trades_by_customer, close_customer_trade, get_customer_by_id, update_customer_trade_open_px, update_customer_trade_close_order_id, update_customer_trade_close_volume_contract
 )
-from exchange.okx.okx_ws_client import OKXWebSocketClient, WebSocketStatus
-from model.models import Customer, Rule, CustomerTrade
+from okx_ws_client import OKXWebSocketClient, WebSocketStatus
+from models import Customer, Rule, CustomerTrade
 import asyncio
 from typing import List, Optional, Dict, Any
-from utils.logger import logger
+from logger import logger
 import uuid
 from dataclasses import fields
 import hashlib
@@ -21,16 +21,14 @@ import gc
 import tracemalloc
 import traceback
 
-from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
-from database.db import get_enabled_customers, get_enabled_signal_accounts
-from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async, get_dingtalk_bot, init_dingtalk_bot
-from config.dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings, get_dingtalk_config
+from contract_config import get_contract_min_sz, get_contract_multiplier
+from db import get_enabled_customers, get_enabled_signal_accounts
+from dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async
+from dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings
 from datetime import datetime
-from exchange.okx.okx_rest_client import OKXRESTClient
+from okx_rest_client import OKXRESTClient
 import os
-from config.config import get_websocket_config
-from database.global_db_manager import get_global_db_pool
-
+from config import get_websocket_config
 
 TICKER_CACHE = {}
 TICKER_CACHE_TIME = {}  # 记录每个价格的时间戳
@@ -208,7 +206,7 @@ def safe_volume(val, ndigits=3):
 
 
 # 导入合约配置
-
+from contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
 
 
 
@@ -524,7 +522,8 @@ class TradeService:
     def _ensure_dingtalk_initialized(self):
         """确保钉钉机器人已初始化"""
         try:
-            
+            from dingtalk_bot import get_dingtalk_bot, init_dingtalk_bot
+            from dingtalk_config import get_dingtalk_config
             
             # 检查是否已初始化
             bot = get_dingtalk_bot()
@@ -737,7 +736,7 @@ class TradeService:
         return [Rule(**row) for row in rows]
 
     def safe_customer(self, row):
-        from model.models import Customer
+        from models import Customer
         customer_fields = {f.name for f in fields(Customer)}
         data = {k: v for k, v in row.items() if k in customer_fields}
         # enabled 字段类型兼容
@@ -4265,7 +4264,7 @@ class TradeService:
                 return []
             
             # 创建REST API客户端
-            
+            from okx_rest_client import OKXRESTClient
             rest_client = OKXRESTClient(
                 api_key=api_key,
                 api_secret=api_secret,
@@ -4314,6 +4313,8 @@ class TradeService:
         """从数据库获取本地记录的信号源持仓"""
         try:
             # 查询本地数据库中的信号源持仓 - 使用全局连接池
+            from global_db_manager import get_global_db_pool
+            
             db_pool = get_global_db_pool()
             
             # 查询状态为open的持仓，必须包含trade_uid字段
@@ -6232,7 +6233,7 @@ class TradeService:
             target_total_position = signal_position * follow_ratio
             
             # 4. 获取客户当前仓位
-            customer_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side, signal_trade_uid)
+            customer_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side)
             
             # 5. 计算需要补充的仓位
             need_position = target_total_position - customer_position
@@ -6336,11 +6337,8 @@ class TradeService:
                     logger.warning(f"[限价跟单] 信号源资金为0，跳过: {signal_source_uid}")
                     return 0
                 
-                # 计算资金比例 如果proportional_position为1，则按资金比例计算，否则按1:1比例计算
-                if strategy['proportional_position']:
-                    fund_ratio = customer_funds / signal_funds
-                else:
-                    fund_ratio = 1.0
+                # 计算资金比例
+                fund_ratio = customer_funds / signal_funds
                 
                 # 获取跟单比例
                 follow_ratio = float(strategy.get('follow_value', 2.0)) / 100  # 跟单比例
@@ -6460,27 +6458,17 @@ class TradeService:
             logger.error(f"[限价跟单] 获取信号源仓位失败: {e}")
             return 0.0
 
-    async def _get_customer_position(self, customer_uid, symbol, pos_side, signal_trade_uid=None):
+    async def _get_customer_position(self, customer_uid, symbol, pos_side):
         """获取客户当前仓位"""
         try:
             # 查询客户当前仓位（包括已成交和挂单）
-            if signal_trade_uid:
-                position = self.db_pool.query(
-                    """SELECT SUM(order_size) as total_volume 
-                    FROM limit_follow_orders 
-                    WHERE signal_order_id=%s 
-                    AND status='filled'""",
-                    (signal_trade_uid, )
-                )
-            else:
-                # 查询客户当前仓位（包括已成交和挂单）
-                position = self.db_pool.query(
-                    """SELECT SUM(order_size) as total_volume 
-                    FROM limit_follow_orders 
-                    WHERE customer_uid=%s AND symbol=%s AND pos_side=%s 
-                    AND status='filled'""",
-                    (customer_uid, symbol, pos_side)
-                )
+            position = self.db_pool.query(
+                """SELECT SUM(order_size) as total_volume 
+                FROM limit_follow_orders 
+                WHERE customer_uid=%s AND symbol=%s AND pos_side=%s 
+                AND status='filled'""",
+                (customer_uid, symbol, pos_side)
+            )
             
             if position and position[0]['total_volume']:
                 return float(position[0]['total_volume'])
@@ -6886,7 +6874,7 @@ class TradeService:
             
             if not pending_orders:
                 logger.info(f"[限价跟单] 没有待撤销的订单")
-                
+                return
             
             # 2. 按FIFO顺序选择需要撤销的订单
             orders_to_cancel = []
@@ -6899,25 +6887,24 @@ class TradeService:
                 total_canceled += float(order['order_size'])
             
             logger.info(f"[限价跟单] 需要撤销 {len(orders_to_cancel)} 个订单，总仓位: {total_canceled}")
-            if orders_to_cancel:
-                # 3. 逐个撤销订单
-                for order in orders_to_cancel:
-                    try:
+            
+            # 3. 逐个撤销订单
+            for order in orders_to_cancel:
+                try:
+                    canceled_count = await self.cancel_limit_follow_orders_on_signal_close(
+                        strategy['trader_unique_name'], 
+                        symbol, 
+                        pos_side, 
+                        order['order_uid']  # 传递具体订单ID
+                    )
+                    
+                    if canceled_count > 0:
+                        logger.info(f"[限价跟单] 撤单成功: {order['order_uid']}, 仓位: {order['order_size']}")
+                    else:
+                        logger.warning(f"[限价跟单] 撤单失败: {order['order_uid']}")
                         
-                        canceled_count = await self.cancel_limit_follow_orders_on_signal_close(
-                            strategy['trader_unique_name'], 
-                            symbol, 
-                            pos_side, 
-                            order['order_uid']  # 传递具体订单ID
-                        )
-                        
-                        if canceled_count > 0:
-                            logger.info(f"[限价跟单] 撤单成功: {order['order_uid']}, 仓位: {order['order_size']}")
-                        else:
-                            logger.warning(f"[限价跟单] 撤单失败: {order['order_uid']}")
-                            
-                    except Exception as e:
-                        logger.error(f"[限价跟单] 撤单异常: {order['order_uid']}, 错误: {e}")
+                except Exception as e:
+                    logger.error(f"[限价跟单] 撤单异常: {order['order_uid']}, 错误: {e}")
             
             # 4. 如果撤单后仍不满足，平已成交单
             remaining = need_reduce - total_canceled
@@ -7069,7 +7056,6 @@ class TradeService:
         except Exception as e:
             logger.error(f"[限价跟单撤单] 取消限价跟单失败: {e}")
             return 0
-
     # ==================== 信号丢失检测和补全模块 ====================
     
     async def _find_closed_positions(self, exchange_positions, local_positions):
@@ -7689,7 +7675,7 @@ class TradeService:
                     logger.warning(f"[客户平仓补全] 客户 {customer_uid} API配置不完整，跳过持仓检查")
                 else:
                     # 创建REST API客户端查询客户实际持仓
-                    
+                    from okx_rest_client import OKXRESTClient
                     rest_client = OKXRESTClient(
                         api_key=api_key,
                         api_secret=api_secret,
@@ -8678,7 +8664,7 @@ class TradeService:
                 logger.warning(f"客户 {customer_uid} API配置不完整")
                 return []
             
-            
+            from okx_rest_client import OKXRESTClient
             rest_client = OKXRESTClient(
                 api_key=api_key,
                 api_secret=api_secret,

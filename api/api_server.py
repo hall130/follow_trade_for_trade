@@ -3486,7 +3486,7 @@ def get_manual_orders():
     try:
         account_uid = request.args.get('account_uid')
         account_type = request.args.get('account_type', 'customer')  # customer 或 signal
-        is_demo = request.args.get('is_demo', 1, type=int)
+        is_demo = get_global_is_demo()
         status = request.args.get('status', 'live')  # live: 未成交, filled: 已成交, canceled: 已撤单
         
         if not account_uid:
@@ -5186,8 +5186,8 @@ def create_limit_follow_strategy():
         # 验证跟单值范围
         follow_value = float(data['follow_value'])
         if data['follow_type'] == 'percentage':
-            if follow_value < 0.1 or follow_value > 10.0:
-                raise APIError("百分比跟单值必须在0.1%到10%之间")
+            if follow_value < 0.1 or follow_value > 500.0:
+                raise APIError("百分比跟单值必须在0.1%到500%之间")
         
         # 根据跟单模式验证跟单员或信号源是否存在
         if follow_mode == 'follow_trader':
@@ -5271,6 +5271,11 @@ def update_limit_follow_strategy(strategy_id):
                 (data['trader_unique_name'],)
             )
             if not trader_exists:
+                trader_exists = db_pool.query(
+                    "SELECT 1 FROM signal_sources WHERE source_uid=%s",
+                    (data['trader_unique_name'],)
+                )
+            else:
                 raise APIError(f"跟单员 {data['trader_unique_name']} 不存在")
             update_fields.append("trader_unique_name=%s")
             params.append(data['trader_unique_name'])
@@ -5296,8 +5301,8 @@ def update_limit_follow_strategy(strategy_id):
         if 'follow_value' in data:
             follow_value = float(data['follow_value'])
             if data.get('follow_type', 'percentage') == 'percentage':
-                if follow_value < 0.1 or follow_value > 10.0:
-                    raise APIError("百分比跟单值必须在0.1%到10%之间")
+                if follow_value < 0.1 or follow_value > 500.0:
+                    raise APIError("百分比跟单值必须在0.1%到500%之间")
             update_fields.append("follow_value=%s")
             params.append(follow_value)
         
@@ -5482,7 +5487,9 @@ def calculate_limit_follow_order_size(strategy, signal_price):
         customer_asset = float(customer_data.get('total_asset', 1000))
         
         # 计算订单数量（简化计算）
-        order_size = (customer_asset * position_ratio / 100) / float(signal_price)
+        from contract_config import get_contract_min_sz
+        min_sz = get_contract_min_sz(strategy['symbol'])
+        order_size = round((customer_asset * position_ratio / 100) / float(signal_price), min_sz)
         
         # 确保最小数量
         if order_size < 0.1:
@@ -6957,7 +6964,7 @@ def get_all_customer_positions():
         
         for pos in customer_positions:
             remaining_volume = float(pos['total_volume'] or 0) - float(pos['closed_volume'] or 0)
-            logger.info(f"处理客户持仓: {pos['customer_uid']} {pos['symbol']} {pos['pos_side']}, 总数量={pos['total_volume']}, 已平仓={pos['closed_volume']}, 剩余={remaining_volume}")
+            # logger.info(f"处理客户持仓: {pos['customer_uid']} {pos['symbol']} {pos['pos_side']}, 总数量={pos['total_volume']}, 已平仓={pos['closed_volume']}, 剩余={remaining_volume}")
             
             if remaining_volume > 0:
                 formatted_positions.append({
@@ -6972,7 +6979,7 @@ def get_all_customer_positions():
                     'last_open_time': pos['last_open_time']
                 })
         
-        logger.info(f"客户持仓格式化完成，共{len(formatted_positions)}条有效持仓")
+        # logger.info(f"客户持仓格式化完成，共{len(formatted_positions)}条有效持仓")
         
         return jsonify({
             'success': 200,

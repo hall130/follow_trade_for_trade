@@ -1627,25 +1627,41 @@
                             </div>
                         </div>
                         <div class="row">
-                            <div class="col-md-6">
+                            <div class="col-md-4">
                                 <div class="mb-3">
                                     <label for="leverage" class="form-label">杠杆倍数</label>
                                     <input type="number" class="form-control" id="leverage" value="1" min="1" max="100">
                                 </div>
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-md-4">
                                 <div class="mb-3">
                                     <label for="stopLossPercent" class="form-label">止损百分比</label>
                                     <input type="number" class="form-control" id="stopLossPercent" step="0.1" min="0" max="100">
                                 </div>
                             </div>
+                            <div class="col-md-4">
+                                <div class="mb-3">
+                                    <label for="exchange" class="form-label">归属交易所</label>
+                                    <input type="text" class="form-control" id="Exchange" value="okx" required>
+                                </div>
+                            </div>
                         </div>
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="isDemo">
-                                <label class="form-check-label" for="isDemo">
-                                    模拟账户
-                                </label>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="isDemo">
+                                    <label class="form-check-label" for="isDemo">
+                                        模拟账户
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="isEnabled">
+                                    <label class="form-check-label" for="isEnabled">
+                                        是否启用
+                                    </label>
+                                </div>
                             </div>
                         </div>
                     </form>
@@ -1867,7 +1883,7 @@
                                 <div class="mb-3">
                                     <label for="limitFollowStrategyFollowValue" class="form-label">跟单值 (%)</label>
                                     <input type="number" class="form-control" id="limitFollowStrategyFollowValue" 
-                                           step="0.1" min="0.1" max="10" value="1" required>
+                                           step="0.1" min="0.1" max="500" value="1" required>
                                     <div class="form-text">
                                         <strong>价格偏移百分比：</strong><br>
                                         • 多仓跟单：比跟单员便宜 1%/2%/3%/4% 挂单<br>

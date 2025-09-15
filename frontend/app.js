@@ -1,7 +1,7 @@
 // OKX跟单交易系统前端应用
 class OKXTradingApp {
     constructor() {
-        this.apiBaseUrl = window.APP_CONFIG?.api?.baseUrl || 'http://localhost:5000/api/v1';
+        this.apiBaseUrl = window.APP_CONFIG?.api?.baseUrl || '/api/v1';
         this.currentPage = 'dashboard';
         this.currentTradesPage = 1;
         this.tradesSearchParams = {};
@@ -3264,6 +3264,8 @@ class OKXTradingApp {
                     init_asset: parseFloat(document.getElementById('initAsset').value),
                     leverage: parseInt(document.getElementById('leverage').value) || 1,
                     stop_loss_percent: parseFloat(document.getElementById('stopLossPercent').value) || 0,
+                    exchange: document.getElementById('Exchange').value,
+                    enabled: document.getElementById('isEnabled').checked,
                     is_demo: document.getElementById('isDemo').checked
                 };
                 

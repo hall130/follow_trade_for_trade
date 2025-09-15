@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_value
 
 from utils.logger import logger
 from core.limit_trade.limit_follow_db import LimitFollowDB
@@ -235,10 +236,12 @@ class EnhancedLimitFollowService:
             
             # 创建OKX客户端
             from okx_rest_client import OKXRESTClient
+            from trade_service import get_global_is_demo
             okx_client = OKXRESTClient(
                 customer['api_key'],
                 customer.get('secret_key') or customer.get('api_secret'),
-                customer['passphrase']
+                customer['passphrase'],
+                is_demo=get_global_is_demo()
             )
             
             # 查询订单状态
@@ -830,7 +833,13 @@ class EnhancedLimitFollowService:
             timestamp = str(int(time.time() * 1000))[-8:]  # 时间戳后8位
             order_hash = str(hash(order.order_uid))[-8:]   # 订单UID哈希后8位
             client_order_id = f"LF{timestamp}{order_hash}"  # 限价跟单标识
-            
+            leverage = 10 # 默认杠杆倍数
+            leverage_data = await rest_client.set_leverage(leverage, "cross", order.symbol)
+            if leverage_data and leverage_data.get('code') == '0':
+                logger.info(f"✅ 设置杠杆成功: {order.symbol} {leverage}")
+            else:
+                logger.error(f"❌ 设置杠杆失败: {order.symbol} {leverage}")
+            min_sz = get_contract_min_sz(order.symbol)
             # 构建订单参数
             order_data = {
                 "instId": order.symbol,
@@ -838,13 +847,14 @@ class EnhancedLimitFollowService:
                 "side": "buy" if order.pos_side == "long" else "sell",
                 "posSide": order.pos_side,
                 "ordType": order.order_type,  # 一般是 "limit"
-                "sz": str(order.order_size),
+                "sz": str(round(order.order_size, min_sz)),
                 "clOrdId": client_order_id  # 使用简化的客户端订单ID
             }
             
             # 如果是限价单，添加价格
             if order.order_type == "limit" and order.target_price:
-                order_data["px"] = str(order.target_price)
+                tick_sz = get_contract_tick_sz_from_usdt_value(order.symbol)
+                order_data["px"] = str(round(order.target_price, tick_sz))
             
             logger.info(f"📤 提交限价跟单订单到交易所: {order.order_uid}")
             logger.debug(f"订单参数: {order_data}")
