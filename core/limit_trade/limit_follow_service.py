@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_value
-
+from config.contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_value
+from exchange.okx.okx_rest_client import OKXRESTClient
 from utils.logger import logger
 from core.limit_trade.limit_follow_db import LimitFollowDB
 from core.limit_trade.limit_follow_models import LimitFollowOrder, LimitFollowStrategy, FollowOrderRequest, FollowOrderResponse
@@ -235,7 +235,6 @@ class EnhancedLimitFollowService:
                 return
             
             # 创建OKX客户端
-            from okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             okx_client = OKXRESTClient(
                 customer['api_key'],
@@ -714,7 +713,6 @@ class EnhancedLimitFollowService:
                 return []
             
             # 获取OKX客户端
-            from okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             okx_client = OKXRESTClient(
                 customer['api_key'],
@@ -762,7 +760,6 @@ class EnhancedLimitFollowService:
                 return None
             
             # 获取OKX客户端
-            from okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             okx_client = OKXRESTClient(
                 customer['api_key'],
@@ -815,7 +812,6 @@ class EnhancedLimitFollowService:
                 return False
             
             # 创建REST客户端
-            from okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             
             rest_client = OKXRESTClient(

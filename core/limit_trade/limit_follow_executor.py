@@ -15,6 +15,8 @@ from utils.logger import logger
 from database.db import MySQLPool
 from core.limit_trade.limit_follow_models import LimitFollowStrategy, LimitFollowOrder
 from core.limit_trade.limit_follow_db import LimitFollowDB
+import requests
+
 
 class LimitFollowExecutor:
     def __init__(self, db_pool: MySQLPool):

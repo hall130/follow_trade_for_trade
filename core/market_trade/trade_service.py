@@ -1,7 +1,8 @@
 from database.db import (
-    insert_customer_trade, update_customer_trade_order_id, log_trade_failure, get_open_trades_by_customer, close_customer_trade, get_customer_by_id, update_customer_trade_open_px, update_customer_trade_close_order_id, update_customer_trade_close_volume_contract
+    insert_customer_trade, update_customer_trade_order_id, log_trade_failure, get_open_trades_by_customer, close_customer_trade, get_customer_by_id, update_customer_trade_open_px, update_customer_trade_close_order_id, update_customer_trade_close_volume_contract,
+    get_customer_effective_asset, get_signal_source_current_asset, MySQLPool
 )
-from exchange.okx.okx_ws_client import OKXWebSocketClient, WebSocketStatus
+from exchange.okx.okx_ws_client import OKXWebSocketClient, WebSocketStatus, get_global_client_manager
 from model.models import Customer, Rule, CustomerTrade
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -21,9 +22,9 @@ import gc
 import tracemalloc
 import traceback
 
-from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
+from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier, get_contract_info
 from database.db import get_enabled_customers, get_enabled_signal_accounts
-from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async, get_dingtalk_bot, init_dingtalk_bot
+from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async, get_dingtalk_bot, init_dingtalk_bot, send_trade_notification_async
 from config.dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings, get_dingtalk_config
 from datetime import datetime
 from exchange.okx.okx_rest_client import OKXRESTClient
@@ -111,7 +112,6 @@ def get_order_lock_key(customer_uid, symbol, pos_side, rule_uid=None):
 
 async def get_price_on_demand(symbol):
     """按需获取价格，用于风控判断"""
-    from okx_ws_client import OKXWebSocketClient
     import time
     
     current_time = time.time()
@@ -299,7 +299,6 @@ class ConnectionManager:
                 logger.info(f"创建新连接: {client_key}")
                 
                 # 使用全局客户端管理器
-                from okx_ws_client import get_global_client_manager
                 client_manager = get_global_client_manager()
                 
                 client = await client_manager.get_client(
@@ -1093,8 +1092,6 @@ class TradeService:
                                                    signal_source_uid: str = None):
         """异步发送客户成交通知到钉钉（仅在异常情况下）"""
         try:
-            from dingtalk_bot import get_dingtalk_bot, send_trade_notification_async
-            from dingtalk_config import should_send_trade_notification
             
             # 快速检查是否应该发送通知
             if not should_send_trade_notification():
@@ -1171,8 +1168,6 @@ class TradeService:
                                        success: bool = True, error: str = None):
         """发送客户成交通知到钉钉（同步方式，保持向后兼容）"""
         try:
-            from dingtalk_bot import get_dingtalk_bot, send_trade_notification
-            from dingtalk_config import should_send_trade_notification
             
             # 快速检查是否应该发送通知
             if not should_send_trade_notification():
@@ -1430,7 +1425,6 @@ class TradeService:
                         # 下单成功
                         if res.get('code') == '0' and res.get('data') and res['data'][0].get('ordId'):
                             ordId = res['data'][0]['ordId']
-                            from db import update_customer_trade_order_id, update_customer_trade_open_px
                             update_customer_trade_order_id(self.db_pool, trade_uid, ordId)
                             self.db_pool.execute("UPDATE customer_trades SET order_id=%s, clOrdId=%s WHERE trade_uid=%s", (ordId, clOrdId, trade_uid))
                             logger.info(f"[下单补全] 已写入order_id: trade_uid={trade_uid}, ordId={ordId}, clOrdId={clOrdId}")
@@ -1483,7 +1477,6 @@ class TradeService:
                                         
                                         # 如果close_volume_contract为0，设置为volume_contract（全平）
                                         if current_closed == 0:
-                                            from db import update_customer_trade_close_volume_contract
                                             update_customer_trade_close_volume_contract(self.db_pool, trade_uid, volume_contract)
                                             logger.info(f"[持仓检查] 更新close_volume_contract: trade_uid={trade_uid}, volume_contract={volume_contract}")
                                         
@@ -1636,13 +1629,11 @@ class TradeService:
             trades = self.get_open_trades(customer_uid)
             
             # 使用db.py中的get_customer_by_id函数获取完整的客户信息
-            from db import get_customer_by_id
             is_demo = get_global_is_demo()
             customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
             
             if customer_data:
                 # 使用新的有效资产获取逻辑，优先使用开仓资产
-                from db import get_customer_effective_asset
                 total_asset = get_customer_effective_asset(self.db_pool, customer_uid, is_demo)
                 if total_asset is None or total_asset <= 0:
                     total_asset = 10000.0  # 默认值
@@ -1682,7 +1673,6 @@ class TradeService:
                         continue
                     
                     # 获取信号源当前快照资产
-                    from db import get_signal_source_current_asset
                     signal_current_asset_raw = get_signal_source_current_asset(self.db_pool, signal_source_uid)
                     if signal_current_asset_raw is None:
                         logger.warning(f"[集合下单] 信号源{signal_source_uid}当前快照资产为空，使用默认值10000")
@@ -1903,7 +1893,6 @@ class TradeService:
                         continue
                     
                     # 获取信号源当前快照资产
-                    from db import get_signal_source_current_asset
                     signal_current_asset_raw = get_signal_source_current_asset(self.db_pool, signal_source_uid)
                     if signal_current_asset_raw is None:
                         logger.warning(f"[集合平单] 信号源{signal_source_uid}当前快照资产为空，使用默认值10000")
@@ -2189,7 +2178,6 @@ class TradeService:
         """
         按信号源减仓比例FIFO分配到客户所有open持仓，累加close_volume_contract，只平需要平的单。
         """
-        from db import update_customer_trade_close_volume_contract
         
         # 强制过滤trades，只保留status=open的trade，避免处理已closed的trade
         trades = [t for t in trades if get_trade_field(t, 'status') == 'open']
@@ -2646,7 +2634,6 @@ class TradeService:
         await self.batch_close_trades(trades, symbol, pos_side, signal_volume, rule_ratio_map, signal_source_uid)
 
     async def listen_customer_account(self, customer: Customer):
-        from okx_ws_client import OKXWebSocketClient
         client = await self.get_client(customer)
         
         async def on_account(data):
@@ -2657,7 +2644,6 @@ class TradeService:
                     is_demo = get_global_is_demo()
                     
                     # 更新客户资产到数据库（优化：只在init_asset为NULL时更新，减少更新频率）
-                    from db import get_customer_by_id
                     customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
 
                     if customer_data:
@@ -2940,7 +2926,6 @@ class TradeService:
                         
                         # 发送钉钉通知
                         try:
-                            from dingtalk_bot import get_dingtalk_bot
                             bot = get_dingtalk_bot()
                             if bot:
                                 alert_info = {
@@ -2966,7 +2951,6 @@ class TradeService:
                     await asyncio.sleep(5)  # 等待5秒后重试
 
     async def listen_customer_accounts(self):
-        from db import get_enabled_customers
         is_demo = get_global_is_demo()
         logger.info(f"[日志] listen_customer_accounts: is_demo={is_demo}")
         customers = get_enabled_customers(self.db_pool, is_demo)
@@ -3236,7 +3220,6 @@ class TradeService:
                     
                     # 如果close_volume_contract为0，设置为volume_contract（全平）
                     if current_closed == 0:
-                        from db import update_customer_trade_close_volume_contract
                         update_customer_trade_close_volume_contract(self.db_pool, trade_uid, volume_contract)
                         logger.info(f"[客户平仓] 更新close_volume_contract: trade_uid={trade_uid}, volume_contract={volume_contract}")
                     
@@ -3310,7 +3293,6 @@ class TradeService:
             is_demo = get_global_is_demo()
             
             # 获取所有启用的客户
-            from db import get_enabled_customers
             customers = get_enabled_customers(self.db_pool, is_demo)
             
             for customer_data in customers:
@@ -3326,7 +3308,6 @@ class TradeService:
                         
                         # 从交易所获取实际持仓
                         # 获取完整的客户信息
-                        from db import get_customer_by_id
                         customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
                         if customer_data:
                             customer = self.safe_customer(customer_data)
@@ -3453,7 +3434,6 @@ class TradeService:
                 return
             
             # 获取完整的客户信息
-            from db import get_customer_by_id
             customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
             if not customer_data:
                 logger.error(f"[自动修复] 未找到客户{customer_uid}信息")
@@ -3555,7 +3535,6 @@ class TradeService:
                     volume_usdt = abs(difference_sz) * multiplier * latest_px
                     
                     # 插入customer_trades记录
-                    from db import insert_customer_trade
                     insert_customer_trade(
                         self.db_pool,
                         customer_uid,
@@ -3615,7 +3594,6 @@ class TradeService:
                     volume_usdt = abs(difference_sz) * multiplier * latest_px
                     
                     # 插入customer_trades记录
-                    from db import insert_customer_trade
                     insert_customer_trade(
                         self.db_pool,
                         customer_uid,
@@ -4420,11 +4398,9 @@ class TradeService:
     async def _create_signal_source_trade_record(self, source_uid, symbol, pos_side, size, avg_px):
         """创建信号源持仓记录 - 补全丢失的信号"""
         try:
-            from db import MySQLPool
             from config import get_mysql_config
             import uuid
             
-            from global_db_manager import get_global_db_pool
             db_pool = get_global_db_pool()
             is_demo = get_global_is_demo()
             # 生成交易UID
@@ -6133,7 +6109,6 @@ class TradeService:
                 return None
             
             # 使用全局客户端管理器获取现有客户端
-            from okx_ws_client import get_global_client_manager
             client_manager = get_global_client_manager()
             
             # 构建客户端key
@@ -6161,7 +6136,6 @@ class TradeService:
                 return None
             
             # 使用全局客户端管理器获取现有客户端
-            from okx_ws_client import get_global_client_manager
             client_manager = get_global_client_manager()
             
             # 构建客户端key
@@ -6273,7 +6247,6 @@ class TradeService:
         """调整订单数量精度"""
         try:
             # 获取合约信息
-            from contract_config import get_contract_info
             contract_info = get_contract_info(symbol)
             
             if not contract_info:
@@ -6959,7 +6932,7 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5000/api/v1/limit-follow/limit-follow-closed-by-order-id"
+            api_url = f"http://localhost:5001/api/v1/limit-follow/limit-follow-closed-by-order-id"
             
             for order in filled_orders:
                 if closed >= need_close:
@@ -7041,7 +7014,7 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5000/api/v1/limit-follow/cancel-on-signal-close"
+            api_url = f"http://localhost:5001/api/v1/limit-follow/cancel-on-signal-close"
             payload = {
                 'trader_unique_name': signal_source_uid,
                 'symbol': symbol,
@@ -7673,8 +7646,6 @@ class TradeService:
                 return {'success': False, 'error': '没有对应的持仓'}
             
             # 检查客户在交易所的实际持仓
-            from db import MySQLPool
-            from global_db_manager import get_global_db_pool
             
             db_pool = get_global_db_pool()
             
@@ -7760,8 +7731,6 @@ class TradeService:
                 logger.warning(f"[客户跟单补全] 客户 {customer_uid} 计算的下单量为0，跳过跟单")
                 return {'success': False, 'error': '计算的下单量为0'}
             
-            # 先保存客户开仓记录到数据库
-            from db import insert_customer_trade
             
             # 获取客户策略信息
             strategy_uid = None
@@ -8501,7 +8470,6 @@ class TradeService:
             logger.info(f"[补偿计算] 开始计算客户 {customer_uid} 补偿下单量")
             
             # 1. 获取客户有效资产
-            from db import get_customer_by_id, get_customer_effective_asset
             is_demo = get_global_is_demo()
             customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
             
@@ -8515,7 +8483,6 @@ class TradeService:
                 logger.warning(f"[补偿计算] 客户 {customer_uid} 有效资产为空，使用默认值 {total_asset}")
             
             # 2. 获取信号源当前资产
-            from db import get_signal_source_current_asset
             signal_current_asset_raw = get_signal_source_current_asset(self.db_pool, source_uid)
             if signal_current_asset_raw is None:
                 signal_current_asset = 10000.0  # 默认值
@@ -8877,9 +8844,6 @@ class TradeService:
         """为客户下开仓订单"""
         try:
             customer_uid = customer.get('customer_uid')
-            
-            # 先保存客户开仓记录到数据库
-            from db import insert_customer_trade
             
             # 获取客户策略信息
             strategy_uid = None

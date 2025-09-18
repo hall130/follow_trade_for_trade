@@ -424,7 +424,7 @@ def get_strategy_customers(db_pool, strategy_uid):
     """获取策略绑定的所有客户"""
     return db_pool.query(
         "SELECT c.* FROM customers c JOIN customer_strategy cs ON c.customer_uid = cs.customer_uid WHERE cs.strategy_uid = %s",
-        (strategy_uid, is_demo)
+        (strategy_uid, )
     )
 
 def bind_customer_to_strategy(db_pool, customer_uid, strategy_uid):

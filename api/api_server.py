@@ -16,13 +16,21 @@ import traceback
 from database.db import MySQLPool
 from model.models import SignalAccount, Strategy, Rule, Customer
 from config.config import get_mysql_config
+from config.contract_config import get_contract_min_sz
 from utils.logger import logger
 from utils.dingtalk_bot import init_dingtalk_bot
 from config.dingtalk_config import get_dingtalk_config
 from config.limit_follow_config import get_customer_limit_follow_config
 from core.limit_trade.limit_follow_service import get_limit_follow_service
-from database.db import get_customer_by_id, get_signal_source_by_id
+from database.db import (get_customer_by_id, get_signal_source_by_id, get_customer_effective_asset, get_signal_trades_by_symbol_and_pos, get_customer_trades_by_symbol_and_pos,
+                         update_customer_trade_close_volume_contract, insert_customer_trade, get_db_pool, get_customer_strategy_bindings, get_customer_strategy_all, get_customer_strategies,
+                         get_strategy_customers, bind_customer_to_strategy, unbind_customer_from_strategy
+)
 from database.global_db_manager import get_global_db_pool
+from exchange.okx.okx_ws_client import OKXWebSocketClient, get_global_client_manager
+from exchange.okx.okx_rest_client import OKXRestClient
+from core.limit_trade.limit_follow_models import LimitFollowLog
+from core.limit_trade.limit_follow_service import get_limit_follow_service
 # 策略交易相关导入
 try:
     from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
@@ -379,7 +387,7 @@ def set_customer_leverage(customer_uid):
         customer_data = customer[0]
         
         # 调用交易所API设置杠杆倍率
-        from okx_ws_client import OKXWebSocketClient
+
         client = OKXWebSocketClient(
             is_demo=is_demo,
             api_key=customer_data['api_key'],
@@ -684,7 +692,6 @@ def set_signal_source_leverage(source_uid):
         signal_data = signal_source[0]
         
         # 调用交易所API设置杠杆倍率
-        from okx_ws_client import OKXWebSocketClient
         client = OKXWebSocketClient(
             is_demo=is_demo,
             api_key=signal_data['api_key'],
@@ -2623,7 +2630,6 @@ def health_check():
         
         # 2. 检查WebSocket连接
         try:
-            from okx_ws_client import get_global_client_manager
             manager = get_global_client_manager()
             
             if hasattr(manager, '_clients') and manager._clients:
@@ -2736,7 +2742,6 @@ def update_customer_assets():
             return jsonify({'success': 400, 'data': None, 'message': 'customer_uid is required'}), 400
         
         # 获取客户信息
-        from db import get_customer_by_id
         customer_data = get_customer_by_id(db_pool, customer_uid, is_demo)
         
         if not customer_data:
@@ -2781,7 +2786,6 @@ def get_customer_assets():
             return jsonify({'success': 400, 'data': None, 'message': 'customer_uid is required'}), 400
         
         # 获取客户信息
-        from db import get_customer_by_id, get_customer_effective_asset
         customer_data = get_customer_by_id(db_pool, customer_uid, is_demo)
         
         if not customer_data:
@@ -2839,7 +2843,6 @@ def set_customer_trading_asset():
             return jsonify({'success': 400, 'data': None, 'message': 'trading_asset is required'}), 400
         
         # 验证客户是否存在
-        from db import get_customer_by_id
         customer_data = get_customer_by_id(db_pool, customer_uid, is_demo)
         
         if not customer_data:
@@ -2909,22 +2912,18 @@ def manual_close_position_internal(account_type):
         
         # 获取账户信息
         if account_type == 'signal':
-            from db import get_signal_source_by_id
             account_data = get_signal_source_by_id(db_pool, account_uid, is_demo)
             if not account_data:
                 return jsonify({'success': 404, 'data': None, 'message': f'Signal source {account_uid} not found'}), 404
             
             # 获取信号源持仓
-            from db import get_signal_trades_by_symbol_and_pos
             trades = get_signal_trades_by_symbol_and_pos(db_pool, account_uid, symbol, pos_side, is_demo)
         else:
-            from db import get_customer_by_id
             account_data = get_customer_by_id(db_pool, account_uid, is_demo)
             if not account_data:
                 return jsonify({'success': 404, 'data': None, 'message': f'Customer {account_uid} not found'}), 404
             
             # 获取客户持仓
-            from db import get_customer_trades_by_symbol_and_pos
             trades = get_customer_trades_by_symbol_and_pos(db_pool, account_uid, symbol, pos_side, is_demo)
         
         if not trades:
@@ -2971,7 +2970,6 @@ def manual_close_position_internal(account_type):
         
         # 创建账户对象 - 使用完整的账户数据
         if account_type == 'signal':
-            from models import SignalAccount
             account = SignalAccount(
                 source_uid=account_uid,
                 name=account_data['name'],
@@ -2985,7 +2983,6 @@ def manual_close_position_internal(account_type):
                 is_demo=is_demo
             )
         else:
-            from models import Customer
             account = Customer(
                 customer_uid=account_uid,
                 name=account_data['name'],
@@ -3020,7 +3017,6 @@ def manual_close_position_internal(account_type):
         
         if account_uid_key not in trade_service.clients:
             logger.info(f"[手动平仓] 创建临时连接: {account_uid}")
-            from okx_ws_client import OKXWebSocketClient
             temp_client = OKXWebSocketClient(
                 is_demo=is_demo,
                 api_key=account_data['api_key'],
@@ -3143,7 +3139,6 @@ def manual_close_position_internal(account_type):
                         trade_close_sz = min(remaining_close_sz, available_volume)
                         
                         # 更新平仓数量
-                        from db import update_customer_trade_close_volume_contract
                         update_customer_trade_close_volume_contract(db_pool, trade['trade_uid'], trade_close_sz)
                         
                         # 更新执行类型和执行原因（标识为手动平仓）
@@ -3257,12 +3252,10 @@ def manual_open_position_internal(account_type):
         
         # 获取账户信息
         if account_type == 'signal':
-            from db import get_signal_source_by_id
             account_data = get_signal_source_by_id(db_pool, account_uid, is_demo)
             if not account_data:
                 return jsonify({'success': 404, 'data': None, 'message': f'Signal source {account_uid} not found'}), 404
         else:
-            from db import get_customer_by_id
             account_data = get_customer_by_id(db_pool, account_uid, is_demo)
             if not account_data:
                 return jsonify({'success': 404, 'data': None, 'message': f'Customer {account_uid} not found'}), 404
@@ -3276,7 +3269,6 @@ def manual_open_position_internal(account_type):
         
         # 创建账户对象 - 使用完整的账户数据
         if account_type == 'signal':
-            from models import SignalAccount
             account = SignalAccount(
                 source_uid=account_uid,
                 name=account_data['name'],
@@ -3290,7 +3282,6 @@ def manual_open_position_internal(account_type):
                 is_demo=is_demo
             )
         else:
-            from models import Customer
             account = Customer(
                 customer_uid=account_uid,
                 name=account_data['name'],
@@ -3325,7 +3316,6 @@ def manual_open_position_internal(account_type):
         
         if account_uid_key not in trade_service.clients:
             logger.info(f"[手动开仓] 创建临时连接: {account_uid}")
-            from okx_ws_client import OKXWebSocketClient
             temp_client = OKXWebSocketClient(
                 is_demo=is_demo,
                 api_key=account_data['api_key'],
@@ -3402,7 +3392,6 @@ def manual_open_position_internal(account_type):
                         
                         if order_type == 'market':
                             # 市价单：立即插入持仓记录，因为会立即成交
-                            from db import insert_customer_trade
                             insert_customer_trade(
                                 db_pool,
                                 account_uid,
@@ -3686,10 +3675,8 @@ def cancel_manual_order():
         
         # 获取账户信息
         if account_type == 'signal':
-            from db import get_signal_source_by_id
             account_data = get_signal_source_by_id(db_pool, account_uid, is_demo)
         else:
-            from db import get_customer_by_id
             account_data = get_customer_by_id(db_pool, account_uid, is_demo)
         
         if not account_data:
@@ -3945,7 +3932,6 @@ def sync_positions():
             return jsonify({'success': 400, 'data': None, 'message': 'customer_uid is required'}), 400
         
         # 获取客户信息
-        from db import get_customer_by_id
         customer_data = get_customer_by_id(db_pool, customer_uid, is_demo)
         if not customer_data:
             return jsonify({'success': 404, 'data': None, 'message': f'Customer {customer_uid} not found'}), 404
@@ -4091,8 +4077,6 @@ def manual_close_position_internal_helper(customer_uid, symbol, pos_side, close_
     """内部手动平仓函数"""
     try:
         from trade_service import TradeService
-        from models import Customer
-        from db import get_customer_by_id
         
         trade_service = TradeService(db_pool)
         
@@ -4146,8 +4130,6 @@ def manual_open_position_internal_helper(customer_uid, symbol, pos_side, open_sz
     """内部手动开仓函数 - 用于异常修复"""
     try:
         from trade_service import TradeService
-        from models import Customer
-        from db import get_customer_by_id
         
         trade_service = TradeService(db_pool)
         
@@ -4289,7 +4271,6 @@ def check_order_status_consistency():
     try:
         from trade_service import TradeService
         from config import get_mysql_config
-        from db import MySQLPool
         
         # 创建临时数据库连接
         mysql_conf = get_mysql_config()
@@ -4519,7 +4500,6 @@ def check_risk_control():
         trade_service = TradeService(None)  # 临时实例
         
         # 设置数据库连接
-        from db import get_db_pool
         db_pool = get_db_pool()
         trade_service.set_db_pool(db_pool)
         
@@ -4589,7 +4569,6 @@ def get_customer_strategy_binding():
     """获取所有启用状态下客户策略绑定关系"""
     try:
         enabled = request.args.get('enabled', 1, type=int)
-        from db import get_customer_strategy_bindings
         bindings = get_customer_strategy_bindings(db_pool, enabled)
         
         return jsonify({
@@ -4609,7 +4588,6 @@ def get_customer_strategy_binding():
 def get_customer_strategy_all():
     """获取所有客户策略绑定关系"""
     try:
-        from db import get_customer_strategy_all
         bindings = get_customer_strategy_all(db_pool)
         
         return jsonify({
@@ -4629,7 +4607,6 @@ def get_customer_strategy_all():
 def get_customer_strategies(customer_uid):
     """获取客户绑定的所有策略"""
     try:
-        from db import get_customer_strategies
         strategies = get_customer_strategies(db_pool, customer_uid)
         
         return jsonify({
@@ -4649,9 +4626,6 @@ def get_customer_strategies(customer_uid):
 def get_strategy_customers(strategy_uid):
     """获取策略绑定的所有客户"""
     try:
-
-        
-        from db import get_strategy_customers
         customers = get_strategy_customers(db_pool, strategy_uid)
         
         return jsonify({
@@ -4691,7 +4665,6 @@ def bind_customer_to_strategy():
         
         is_demo = get_global_is_demo()
         
-        from db import bind_customer_to_strategy
         success, message = bind_customer_to_strategy(db_pool, customer_uid, strategy_uid)
         
         if success:
@@ -4739,7 +4712,6 @@ def unbind_customer_from_strategy():
         
         logger.info(f"[解绑] 开始解绑客户与策略: customer_uid={customer_uid}, strategy_uid={strategy_uid}")
         
-        from db import unbind_customer_from_strategy
         success, message = unbind_customer_from_strategy(db_pool, customer_uid, strategy_uid)
         
         logger.info(f"[解绑] 解绑结果: success={success}, message={message}")
@@ -4789,7 +4761,6 @@ def batch_bind_customers_to_strategy():
         
         is_demo = get_global_is_demo()
         
-        from db import bind_customer_to_strategy
         results = []
         success_count = 0
         fail_count = 0
@@ -4847,7 +4818,6 @@ def batch_unbind_customers_from_strategy():
                 'message': 'strategy_uid 和 customer_uids 不能为空'
             }), 400
         
-        from db import unbind_customer_from_strategy
         results = []
         success_count = 0
         fail_count = 0
@@ -5487,7 +5457,6 @@ def calculate_limit_follow_order_size(strategy, signal_price):
         customer_asset = float(customer_data.get('total_asset', 1000))
         
         # 计算订单数量（简化计算）
-        from contract_config import get_contract_min_sz
         min_sz = get_contract_min_sz(strategy['symbol'])
         order_size = round((customer_asset * position_ratio / 100) / float(signal_price), min_sz)
         
@@ -5853,7 +5822,7 @@ def cancel_limit_follow_order(order_uid):
                 
                 # 调用交易所撤销订单
                 import asyncio
-                cancel_result = asyncio.run(okx_client.cancel_order(
+                cancel_result = asyncio.run(rest_client.cancel_order(
                     instId=order['symbol'],
                     ordId=order['exchange_order_id']
                 ))
@@ -5894,7 +5863,7 @@ def cancel_limit_follow_order(order_uid):
                 raise APIError(f"更新订单状态失败，当前状态: {current_status}")
         
         # 记录撤销日志
-        from limit_follow_models import LimitFollowLog
+        
         log_entry = {
             'log_level': 'INFO',
             'message': f'订单撤销成功: {order_uid}',
@@ -6664,7 +6633,7 @@ def sync_limit_follow_status():
 def get_limit_follow_metrics():
     """获取限价跟单监控指标"""
     try:
-        from limit_follow_service import get_limit_follow_service
+        
         service = get_limit_follow_service()
         
         # 获取基础状态
