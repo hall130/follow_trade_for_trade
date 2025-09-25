@@ -343,10 +343,21 @@ class SignalService:
                                                     reduce_order['is_fully_closed']
                                                 )
                                             # 清空减仓订单列表
-                                            self._current_reduce_orders = []
                                     # ==================== 处理限价跟单减仓 ====================
                                         logger.info(f"[限价跟单] 信号源减仓，处理限价跟单: {signal_account.source_uid} {symbol} {order['posSide']}")
-                                        await self._handle_limit_follow_close(signal_account.source_uid, symbol, order['posSide'], trade_uid)
+                                        if hasattr(self, '_current_reduce_orders') and self._current_reduce_orders: # 如果有减仓信息就按照减仓信息处理
+                                            for reduce_order in self._current_reduce_orders:
+                                                await self._handle_limit_follow_close(
+                                                    reduce_order['signal_source_uid'],
+                                                    reduce_order['symbol'],
+                                                    reduce_order['pos_side'],
+                                                    reduce_order['signal_trade_uid'],
+                                                    reduce_order['signal_reduce_ratio']
+                                                )
+                                            
+                                        else: # 如果没有减仓信息就按照原本的逻辑处理
+                                            await self._handle_limit_follow_close(signal_account.source_uid, symbol, order['posSide'], trade_uid)
+                                        self._current_reduce_orders = [] # 清空减仓订单列表
                                     else:
                                         logger.warning(f"[信号源减仓] 未找到对应的开仓记录: signal_source_uid={signal_account.source_uid}, symbol={symbol}, pos_side={order['posSide']}")
                                         
@@ -354,7 +365,6 @@ class SignalService:
                                         logger.info(f"[限价跟单] 信号源减仓，处理限价跟单: {signal_account.source_uid} {symbol} {order['posSide']}")
                                         trade_uid = None
                                         await self._handle_limit_follow_close(signal_account.source_uid, symbol, order['posSide'], trade_uid)
-
                                     # 注意：这里不需要再次调用on_signal_trade，因为开仓和减仓时已经调用了
 
                     except Exception as e:
@@ -916,19 +926,20 @@ class SignalService:
         except Exception as e:
             logger.error(f"处理限价跟单开仓失败: {e}")
 
-    async def _handle_limit_follow_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
+    async def _handle_limit_follow_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid, reduce_ratio=None):
         """处理限价跟单平仓"""
         try:
             logger.info(f"[限价跟单] 信号源 {signal_source_uid} 平仓，处理限价跟单: {symbol} {pos_side}")
             trade_uid = signal_trade_uid
             if type(signal_trade_uid) != str:
                 trade_uid = signal_trade_uid.get('ordId', '')
-            # 调用 trade_service 处理平仓
+            # 调用 trade_service 处理平仓，传递减仓比例
             await self.trade_service.handle_signal_close(
                 signal_source_uid,
                 symbol,
                 pos_side,
-                trade_uid
+                trade_uid,
+                reduce_ratio  # 传递减仓比例
             )
             
         except Exception as e:

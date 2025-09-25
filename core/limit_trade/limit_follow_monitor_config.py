@@ -137,7 +137,7 @@ def get_monitor_config() -> Dict[str, Any]:
         # 自动修复配置
         "auto_repair_enabled": True,  # 启用自动修复
         "enable_auto_repair": True,  # 启用自动修复（别名）
-        "auto_repair_max_orders": 10,  # 自动修复最大订单数
+        "auto_repair_max_orders": 3,  # 自动修复最大订单数
         "stale_order_timeout": 3600,  # 过期订单超时时间（秒）
         
         # 并发和批处理配置

@@ -5531,7 +5531,7 @@ def cancel_orders_on_signal_close():
 
 @app.route('/api/v1/limit-follow/limit-follow-closed-by-order-id', methods=['POST'])
 def limit_follow_closed_by_order_id():
-    """根据订单ID平仓(限价跟单单笔订单)"""
+    """根据订单ID平仓(限价跟单单笔订单) - 支持按指定量减仓"""
     try:
         data = request.get_json()
         required_fields = ['order_uid']
@@ -5541,6 +5541,7 @@ def limit_follow_closed_by_order_id():
                 raise APIError(f"缺少必填字段: {field}")
         
         order_uid = data['order_uid']
+        reduce_volume = data.get('reduce_volume', None)  # 获取减仓量，如果为None则完全平仓
         
         # 查询订单信息
         order = db_pool.query(
@@ -5586,26 +5587,62 @@ def limit_follow_closed_by_order_id():
             open_side = 'sell'
         else:
             open_side = 'buy'
+        trade_service = get_trade_service()
+        adjusted_size = asyncio.run(trade_service._adjust_order_size_precision(symbol, order_size))
+
+         # 如果指定了减仓量，使用减仓量；否则使用订单总量
+        if reduce_volume is not None:
+            trade_size = reduce_volume
+            logger.info(f"[平仓] 按指定量减仓: {reduce_volume}")
+        else:
+            trade_size = order_size
+            logger.info(f"[平仓] 完全平仓: {order_size}")
+        
+        trade_service = get_trade_service()
+        adjusted_size = asyncio.run(trade_service._adjust_order_size_precision(symbol, trade_size))
+
         order_data = {
             "instId": symbol,
             "tdMode": "cross",
             "side": open_side,
-            "posSide": pos_side,  # 添加持仓方向
+            "posSide": pos_side,
             "ordType": 'market',
-            "sz": str(order_size),
+            "sz": str(adjusted_size),
             "clOrdId": exchange_order_id,
             "reduceOnly": True
         }
-        import asyncio
+        
         close_result = asyncio.run(rest_client.place_order(**order_data))
         
         if close_result and close_result.get('code') == '0':
             # 更新数据库状态
-            db_pool.execute(
-                "UPDATE limit_follow_orders SET status='closed', updated_at=NOW() WHERE order_uid=%s",
-                (order_uid,)
-            )
-            logger.info(f"[平仓] 订单平仓成功: {order_uid}")
+            if reduce_volume is not None:
+                # 部分减仓，更新减仓量
+                current_reduced = float(order.get('limit_close_size', 0) or 0)
+                new_reduced = current_reduced + reduce_volume
+                
+                if new_reduced >= float(order_size):
+                    # 完全减仓
+                    db_pool.execute(
+                        "UPDATE limit_follow_orders SET status='closed', limit_close_size=%s, updated_at=NOW() WHERE order_uid=%s",
+                        (new_reduced, order_uid)
+                    )
+                    logger.info(f"[平仓] 订单完全减仓: {order_uid}")
+                else:
+                    # 部分减仓
+                    db_pool.execute(
+                        "UPDATE limit_follow_orders SET limit_close_size=%s, updated_at=NOW() WHERE order_uid=%s",
+                        (new_reduced, order_uid)
+                    )
+                    logger.info(f"[平仓] 订单部分减仓: {order_uid}, 已减仓: {new_reduced}/{order_size}")
+            else:
+                # 完全平仓
+                db_pool.execute(
+                    "UPDATE limit_follow_orders SET status='closed', updated_at=NOW() WHERE order_uid=%s",
+                    (order_uid,)
+                )
+                logger.info(f"[平仓] 订单完全平仓: {order_uid}")
+            
             return jsonify({
                 'success': 200,
                 'message': f'成功平仓订单: {order_uid}',
@@ -5618,7 +5655,6 @@ def limit_follow_closed_by_order_id():
                 'message': f'平仓失败: {order_uid}'
             })
     
-        
     except Exception as e:
         logger.error(f"[平仓] 平仓异常: {e}")
         raise APIError(f"平仓失败: {str(e)}")

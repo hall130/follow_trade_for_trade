@@ -40,7 +40,7 @@ DEFAULT_LIMIT_FOLLOW_CONFIG = {
 FOLLOW_STRATEGY_CONFIG = {
     'default_follow_type': 'percentage',  # 默认跟单类型：percentage(百分比) fixed(固定价格)
     'default_max_orders': 4,  # 默认最大订单数
-    'default_auto_cancel': True,  # 默认自动撤单
+    'default_auto_cancel': False,  # 默认自动撤单
     'supported_pos_sides': ['long', 'short', 'both'],  # 支持的持仓方向
     'supported_follow_types': ['percentage', 'fixed'],  # 支持的跟单类型
     'supported_order_types': ['limit', 'market'],  # 支持的订单类型

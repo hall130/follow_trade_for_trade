@@ -6463,45 +6463,86 @@ class TradeService:
             logger.error(f"[限价跟单] 获取客户仓位失败: {e}")
             return 0.0
 
-    async def _check_leverage_limit(self, strategy, need_position):
+    async def _check_leverage_limit(self, strategy, need_position, current_price=None):
         """检查最大净杠杆限制"""
         try:
+            customer_uid = strategy['customer_uid']
+            symbol = strategy['symbol']
+            pos_side = strategy.get('pos_side', 'both')
+            
             # 获取客户当前资金
             customer = self.db_pool.query(
                 "SELECT total_asset FROM customers WHERE customer_uid=%s",
-                (strategy['customer_uid'],)
+                (customer_uid,)
             )
             
             if not customer:
+                logger.warning(f"[杠杆检查] 无法获取客户资产: {customer_uid}")
                 return False
             
             current_asset = float(customer[0]['total_asset'])
             max_leverage = float(strategy['max_net_leverage'])
             
-            # 计算需要的保证金（简化计算）
-            required_margin = need_position * 0.1  # 假设10%保证金
+            # 获取当前价格
+            if not current_price:
+                current_price = await get_price_on_demand(symbol)
+                if not current_price:
+                    logger.warning(f"[杠杆检查] 无法获取价格: {symbol}")
+                    return False
             
-            # 检查是否超过杠杆限制
-            if required_margin / current_asset > max_leverage:
-                return False
+            # 1. 获取已成交持仓（考虑方向）
+            current_position = await self._get_customer_position(customer_uid, symbol, pos_side)
             
-            return True
+            # 2. 获取未成交挂单
+            if pos_side == 'both':
+                pending_orders = self.db_pool.query(
+                    """SELECT order_size FROM limit_follow_orders 
+                    WHERE customer_uid=%s AND symbol=%s 
+                    AND status IN ('pending', 'live')""",
+                    (customer_uid, symbol)
+                )
+            else:
+                pending_orders = self.db_pool.query(
+                    """SELECT order_size FROM limit_follow_orders 
+                    WHERE customer_uid=%s AND symbol=%s AND pos_side=%s 
+                    AND status IN ('pending', 'live')""",
+                    (customer_uid, symbol, pos_side)
+                )
+            
+            # 3. 计算总风险敞口（考虑方向性）
+            pending_exposure = sum(float(order['order_size']) for order in pending_orders)
+            
+            # 计算总风险敞口：已成交持仓 + 挂单 + 新增仓位
+            # 注意：这里应该考虑持仓的方向性，多空持仓应该分别计算
+            total_exposure = abs(current_position) + pending_exposure + need_position
+            
+            # 4. 计算所需保证金
+            margin_rate = 0.1  # 默认10%保证金
+            risk_multiplier = 1.2  # 20%风险缓冲
+            required_margin = total_exposure * current_price * margin_rate * risk_multiplier
+            
+            # 5. 检查杠杆限制
+            leverage_ratio = required_margin / current_asset
+            
+            logger.info(f"[杠杆检查] 客户={customer_uid}, 资产={current_asset}, 已成交={current_position}, 挂单={pending_exposure}, 新增={need_position}, 总敞口={total_exposure}, 杠杆比例={leverage_ratio:.2%}, 最大杠杆={max_leverage:.2%}")
+            
+            return leverage_ratio <= max_leverage
             
         except Exception as e:
-            logger.error(f"[限价跟单] 检查杠杆限制失败: {e}")
+            logger.error(f"[杠杆检查] 检查失败: {e}")
             return False
 
-    async def _handle_leverage_limit_exceeded(self, strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid):
+    async def _handle_leverage_limit_exceeded(self, strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid, need_position):
         """处理净杠杆超限 - FIFO撤单"""
         try:
             logger.info(f"[限价跟单] 开始处理杠杆超限: 客户={strategy['customer_uid']}, 信号源={signal_source_uid}")
             
-            # 1. 撤销最老的未成交限价单（按创建时间排序）
+            # 1. 撤销最老的未成交限价单（按创建时间和ID排序）
             pending_orders = self.db_pool.query(
                 """SELECT * FROM limit_follow_orders 
                 WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
                 AND status IN ('pending', 'live')
-                ORDER BY created_at ASC""",  # 按创建时间升序
+                ORDER BY created_at ASC, id ASC""",
                 (strategy['id'], symbol, pos_side)
             )
             
@@ -6509,36 +6550,49 @@ class TradeService:
                 logger.warning(f"[限价跟单] 没有可撤销的限价单: 客户={strategy['customer_uid']}")
                 return
             
-            # 2. 撤销足够的限价单以满足杠杆要求
+            # 2. 逐步撤销限价单直到满足杠杆要求
+            canceled_count = 0
             for order in pending_orders:
-                # 撤单
-                self.db_pool.execute(
-                    "UPDATE limit_follow_orders SET status='canceled' WHERE order_uid=%s",
-                    (order['order_uid'],)
-                )
-                
-                logger.info(f"[限价跟单] 杠杆超限撤单: {order['order_uid']}, 创建时间: {order['created_at']}")
-                
-                # 重新检查杠杆限制
-                if await self._check_leverage_limit(strategy, 0):
-                    logger.info(f"[限价跟单] 杠杆限制已满足，停止撤单")
-                    break
+                try:
+                    # 撤单
+                    self.db_pool.execute(
+                        "UPDATE limit_follow_orders SET status='canceled', updated_at=NOW() WHERE order_uid=%s",
+                        (order['order_uid'],)
+                    )
                     
+                    canceled_count += 1
+                    logger.info(f"[限价跟单] 杠杆超限撤单: {order['order_uid']}, 创建时间: {order['created_at']}")
+                    
+                    # 重新检查杠杆限制
+                    if await self._check_leverage_limit(strategy, need_position, signal_price):
+                        logger.info(f"[限价跟单] 杠杆限制已满足，停止撤单，共撤销{canceled_count}个订单")
+                        break
+                        
+                except Exception as e:
+                    logger.error(f"[限价跟单] 撤单失败: {order['order_uid']}, 错误: {e}")
+                    continue
+            
             # 3. 重新尝试创建限价单
-            logger.info(f"[限价跟单] 重新尝试创建限价单")
-            await self._process_limit_follow_strategy(
-                strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid
-            )
+            if canceled_count > 0:
+                logger.info(f"[限价跟单] 重新尝试创建限价单")
+                await self._process_limit_follow_strategy(
+                    strategy, signal_source_uid, symbol, pos_side, signal_price, signal_trade_uid
+                )
             
         except Exception as e:
             logger.error(f"[限价跟单] 处理杠杆超限失败: {e}")
 
     async def _create_limit_orders(self, strategy, signal_source_uid, symbol, pos_side, signal_price, order_size, orders_count, signal_trade_uid):
-        """创建限价单"""
+        """创建限价单 - 支持多个订单，平均分配仓位"""
         try:
             # 获取基础偏移值
             base_offset = float(strategy['min_follow_value'])  # 基础偏移百分比
             logger.info(f"[限价跟单] 信号源订单号: {signal_trade_uid}")
+            
+            # 计算每个订单的大小（平均分配）
+            order_size_per_order = order_size / orders_count
+            logger.info(f"[限价跟单] 创建限价单: 订单数量={orders_count}, 总仓位={order_size}, 每单大小={order_size_per_order}, 基础偏移={base_offset}%")
+            
             # 创建限价单
             for i in range(orders_count):
                 # 计算累积偏移：第i个订单的偏移 = base_offset * (i + 1)
@@ -6560,18 +6614,18 @@ class TradeService:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (order_uid, strategy['id'], None, signal_source_uid, 
                 strategy['customer_uid'], symbol, pos_side, cumulative_offset, target_price, 
-                order_size, 'limit', 'pending', signal_trade_uid)
+                order_size_per_order, 'limit', 'pending', signal_trade_uid)
             )
                 
-                logger.info(f"[限价跟单] 创建订单: {order_uid} {symbol} {pos_side} @ {target_price} (偏移{cumulative_offset}%)")
+                logger.info(f"[限价跟单] 创建订单{i+1}: {order_uid} {symbol} {pos_side} @ {target_price} (偏移{cumulative_offset}%, 大小={order_size_per_order})")
             
-            logger.info(f"[限价跟单] 完成，共创建 {orders_count} 个限价跟单订单")
+            logger.info(f"[限价跟单] 完成，共创建 {orders_count} 个限价跟单订单，总仓位={order_size}")
             
         except Exception as e:
             logger.error(f"[限价跟单] 创建限价单失败: {e}")
 
-    async def handle_signal_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
-        """处理信号源平仓"""
+    async def handle_signal_close(self, signal_source_uid, symbol, pos_side, signal_trade_uid, reduce_ratio=None):
+        """处理信号源平仓 - 使用传入的减仓比例"""
         try:
             logger.info(f"[限价跟单] 信号源平仓: {signal_source_uid} {symbol} {pos_side}")
             
@@ -6584,68 +6638,59 @@ class TradeService:
                 await self.cancel_limit_follow_orders_on_signal_close(
                     signal_source_uid, symbol, pos_side, None
                 )
-                # 平仓已成交的限价单
-                logger.info(f"[限价跟单] 开始平仓已成交的限价单")
                 await self._close_all_filled_orders(signal_source_uid, symbol, pos_side)
             else:
-                # 部分平仓 - 按减仓比例调整
-                logger.info(f"[限价跟单] 信号源部分平仓，剩余仓位: {remaining_position}")
-                reduce_ratio = await self._get_signal_reduce_ratio(signal_source_uid, symbol, pos_side, signal_trade_uid)
-                if reduce_ratio > 0:
-                    logger.info(f"[限价跟单] 减仓比例: {reduce_ratio:.2%}")
+                # 部分平仓 - 使用传入的减仓比例
+                if reduce_ratio and reduce_ratio > 0:
+                    logger.info(f"[限价跟单] 使用传入的减仓比例: {reduce_ratio:.2%}")
                     await self._adjust_customer_position_by_ratio(
                         signal_source_uid, symbol, pos_side, reduce_ratio, signal_trade_uid
                     )
                 else:
-                    logger.warning(f"[限价跟单] 无法计算减仓比例，跳过调整")
+                    logger.warning(f"[限价跟单] 未提供减仓比例，跳过调整")
                     
         except Exception as e:
             logger.error(f"[限价跟单] 处理信号源平仓失败: {e}")
 
-    async def _adjust_customer_position(self, signal_source_uid, symbol, pos_side, target_position, signal_trade_uid):
-        """调整客户仓位到目标仓位"""
+    async def _handle_limit_follow_close_with_ratio(self, signal_source_uid, symbol, pos_side, signal_trade_uid, reduce_ratio):
+        """处理限价跟单平仓（使用预计算的减仓比例）"""
         try:
-            logger.info(f"[限价跟单] 调整客户仓位: 目标仓位={target_position}")
+            logger.info(f"[限价跟单] 信号源平仓: {signal_source_uid} {symbol} {pos_side}")
             
-            # 查询相关策略（支持ALL和具体symbol）
-            strategies = self.db_pool.query(
-                """SELECT * FROM limit_follow_strategies 
-                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
-                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
-                (signal_source_uid, symbol, pos_side)
-            )
+            # 检查是否完全平仓
+            remaining_position = await self._get_signal_position(signal_source_uid, symbol, pos_side)
             
-            for strategy in strategies:
-                # 获取客户当前仓位
-                current_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side)
-                
-                if current_position <= 0:
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 无仓位，跳过调整")
-                    continue
-                
-                # 计算需要调整的量
-                if current_position > target_position:
-                    # 需要减仓
-                    need_reduce = current_position - target_position
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 需要减仓: {need_reduce} (当前: {current_position}, 目标: {target_position})")
-                    await self._reduce_customer_position(strategy, symbol, pos_side, need_reduce)
-                elif current_position < target_position:
-                    # 需要加仓
-                    need_increase = target_position - current_position
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 需要加仓: {need_increase} (当前: {current_position}, 目标: {target_position})")
-                    await self._increase_customer_position(strategy, signal_source_uid, symbol, pos_side, need_increase, signal_trade_uid)
-                else:
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 仓位已匹配目标: {current_position}")
-                    
+            if remaining_position <= 0:
+                # 完全平仓 - 撤销所有限价单
+                logger.info(f"[限价跟单] 信号源完全平仓，撤销所有限价单")
+                await self.cancel_limit_follow_orders_on_signal_close(
+                    signal_source_uid, symbol, pos_side, None
+                )
+                # 平仓已成交的限价单
+                logger.info(f"[限价跟单] 开始平仓已成交的限价单")
+                await self._close_all_filled_orders(signal_source_uid, symbol, pos_side)
+            else:
+                # 部分平仓 - 使用预计算的减仓比例
+                logger.info(f"[限价跟单] 信号源部分平仓，剩余仓位: {remaining_position}")
+                logger.info(f"[限价跟单] 减仓比例: {reduce_ratio:.2%}")
+                await self._adjust_customer_position_by_ratio(
+                    signal_source_uid, symbol, pos_side, reduce_ratio, signal_trade_uid
+                )
+                        
         except Exception as e:
-            logger.error(f"[限价跟单] 调整客户仓位失败: {e}")
-    
+            logger.error(f"[限价跟单] 处理信号源平仓失败: {e}")
+
     async def _adjust_customer_position_by_ratio(self, signal_source_uid, symbol, pos_side, reduce_ratio, signal_trade_uid):
-        """按减仓比例调整客户仓位"""
+        """按减仓比例调整客户仓位 - 支持三种情况"""
         try:
             logger.info(f"[限价跟单] 按减仓比例调整客户仓位: 减仓比例={reduce_ratio:.2%}")
             
-            # 查询相关策略（支持ALL和具体symbol）
+            # 验证减仓比例
+            if not reduce_ratio or reduce_ratio <= 0:
+                logger.warning(f"[限价跟单] 减仓比例无效: {reduce_ratio}")
+                return
+            
+            # 查询相关策略
             strategies = self.db_pool.query(
                 """SELECT * FROM limit_follow_strategies 
                 WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
@@ -6654,147 +6699,107 @@ class TradeService:
             )
             
             for strategy in strategies:
-                # 1. 先处理限价挂单 - 传递signal_trade_uid参数
-                await self._reduce_limit_orders_by_ratio(strategy, symbol, pos_side, reduce_ratio, signal_trade_uid)
+                customer_uid = strategy['customer_uid']
                 
-                # 2. 再处理已成交仓位
-                current_position = await self._get_customer_position(strategy['customer_uid'], symbol, pos_side)
+                # 获取客户当前状态
+                current_position = await self._get_customer_position(customer_uid, symbol, pos_side)
                 
-                if current_position <= 0:
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 无已成交仓位，跳过调整")
+                # 获取挂单状态
+                pending_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders 
+                    WHERE customer_uid=%s AND symbol=%s AND pos_side=%s 
+                    AND status IN ('pending', 'live')""",
+                    (customer_uid, symbol, pos_side)
+                )
+                
+                logger.info(f"[限价跟单] 客户{customer_uid} 当前状态: 已成交={current_position}, 挂单数={len(pending_orders)}")
+                
+                # 根据三种情况处理
+                if current_position <= 0 and not pending_orders:
+                    # 情况1: 无持仓无挂单 - 跳过
+                    logger.info(f"[限价跟单] 客户{customer_uid} 无持仓无挂单，跳过调整")
                     continue
-                
-                # 计算需要减仓的量
-                need_reduce = current_position * reduce_ratio
-                
-                if need_reduce > 0:
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 减仓比例: {reduce_ratio:.2%}, 需要减仓: {need_reduce}")
-                    await self._reduce_customer_position(strategy, symbol, pos_side, need_reduce)
-                else:
-                    logger.info(f"[限价跟单] 客户 {strategy['customer_uid']} 无需减仓")
                     
+                elif current_position <= 0 and pending_orders:
+                    # 情况1: 无持仓有挂单 - 不撤挂单，等待信号源再次开仓
+                    logger.info(f"[限价跟单] 客户{customer_uid} 无持仓有挂单，保持挂单不变")
+                    continue
+                    
+                elif current_position > 0 and not pending_orders:
+                    # 情况2: 有持仓无挂单 - 按比例减仓
+                    need_reduce = current_position * reduce_ratio
+                    if need_reduce > 0:
+                        logger.info(f"[限价跟单] 客户{customer_uid} 减仓: {need_reduce} (比例: {reduce_ratio:.2%})")
+                        await self._reduce_customer_position(strategy, symbol, pos_side, need_reduce)
+                        
+                elif current_position > 0 and pending_orders:
+                    # 情况3: 有持仓有挂单 - 只减仓已成交部分，挂单不变
+                    need_reduce = current_position * reduce_ratio
+                    if need_reduce > 0:
+                        logger.info(f"[限价跟单] 客户{customer_uid} 减仓已成交部分: {need_reduce} (比例: {reduce_ratio:.2%})")
+                        await self._reduce_customer_position(strategy, symbol, pos_side, need_reduce)
+                        logger.info(f"[限价跟单] 客户{customer_uid} 保持挂单不变")
+                        
         except Exception as e:
-            logger.error(f"[限价跟单] 调整客户仓位失败: {e}")
+            logger.error(f"[限价跟单] 按比例调整仓位失败: {e}")
 
     async def _reduce_limit_orders_by_ratio(self, strategy, symbol, pos_side, reduce_ratio, signal_order_id=None):
         """按比例减少限价挂单"""
         try:
-            logger.info(f"[限价跟单] 开始按比例减少限价挂单: 策略ID={strategy['id']}, 减仓比例={reduce_ratio:.2%}")
+            logger.info(f"[限价跟单] 按比例减少限价挂单: 减仓比例={reduce_ratio:.2%}")
             
-            # 查询限价单
-            if signal_order_id:
-                # 只处理该订单相关的限价单
-                pending_orders = self.db_pool.query(
-                    """SELECT * FROM limit_follow_orders 
-                    WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
-                    AND signal_order_id=%s AND status IN ('pending', 'live')
-                    ORDER BY created_at ASC""",
-                    (strategy['id'], symbol, pos_side, signal_order_id)
-                )
-            else:
-                # 处理所有限价单
-                pending_orders = self.db_pool.query(
-                    """SELECT * FROM limit_follow_orders 
-                    WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
-                    AND status IN ('pending', 'live')
-                    ORDER BY created_at ASC""",
-                    (strategy['id'], symbol, pos_side)
-                )
+            # 获取当前挂单
+            pending_orders = self.db_pool.query(
+                """SELECT * FROM limit_follow_orders 
+                WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
+                AND status IN ('pending', 'live')
+                ORDER BY created_at ASC, id ASC""",
+                (strategy['id'], symbol, pos_side)
+            )
             
             if not pending_orders:
-                logger.info(f"[限价跟单] 没有限价挂单需要撤销")
+                logger.info(f"[限价跟单] 没有可减少的挂单")
                 return
             
-            # 计算总限价单价值
-            total_limit_value = sum(float(order['order_size']) for order in pending_orders)
-            need_cancel_value = total_limit_value * reduce_ratio
+            # 计算需要减少的总量
+            total_pending = sum(float(order['order_size']) for order in pending_orders)
+            need_reduce = total_pending * reduce_ratio
             
-            logger.info(f"[限价跟单] 总限价单价值: {total_limit_value}, 需要撤销: {need_cancel_value}")
+            if need_reduce <= 0:
+                logger.info(f"[限价跟单] 无需减少挂单")
+                return
             
-            # 按FIFO顺序选择需要撤销的订单
-            orders_to_cancel = []
-            total_canceled = 0.0
-            
+            # 按FIFO顺序减少挂单
+            reduced_amount = 0
             for order in pending_orders:
-                if total_canceled >= need_cancel_value:
+                if reduced_amount >= need_reduce:
                     break
-                orders_to_cancel.append(order)
-                total_canceled += float(order['order_size'])
-            
-            logger.info(f"[限价跟单] 需要撤销 {len(orders_to_cancel)} 个限价单，总价值: {total_canceled}")
-            
-            # 撤销限价单
-            for order in orders_to_cancel:
-                try:
-                    await self.cancel_limit_follow_orders_on_signal_close(
-                        order['trader_unique_name'], order['symbol'], order['pos_side'], order['order_uid']
+                    
+                order_size = float(order['order_size'])
+                reduce_amount = min(order_size, need_reduce - reduced_amount)
+                
+                if reduce_amount >= order_size:
+                    # 完全撤销这个订单
+                    self.db_pool.execute(
+                        "UPDATE limit_follow_orders SET status='canceled', updated_at=NOW() WHERE order_uid=%s",
+                        (order['order_uid'],)
                     )
-                except Exception as e:
-                    logger.error(f"[限价跟单] 撤销限价单失败: {order['order_uid']}, 错误: {e}")
+                    logger.info(f"[限价跟单] 完全撤销挂单: {order['order_uid']}")
+                else:
+                    # 部分减少订单数量
+                    remaining_size = order_size - reduce_amount
+                    self.db_pool.execute(
+                        "UPDATE limit_follow_orders SET order_size=%s, updated_at=NOW() WHERE order_uid=%s",
+                        (remaining_size, order['order_uid'])
+                    )
+                    logger.info(f"[限价跟单] 部分减少挂单: {order['order_uid']}, 从{order_size}减少到{remaining_size}")
+                
+                reduced_amount += reduce_amount
             
-            logger.info(f"[限价跟单] 限价单撤销完成，已撤销价值: {total_canceled}")
-            
-        except Exception as e:
-            logger.error(f"[限价跟单] 按比例减少限价挂单失败: {e}")
-
-    async def _get_signal_reduce_ratio(self, signal_source_uid, symbol, pos_side, signal_trade_uid):
-        """获取信号源减仓比例"""
-        try:
-            # 获取当前信号源的总持仓量（所有open状态的持仓）
-            current_position = await self._get_signal_position(signal_source_uid, symbol, pos_side)
-            
-            if current_position <= 0:
-                logger.warning(f"[限价跟单] 信号源当前无持仓: {current_position}")
-                return 0.0
-            
-            # 从信号源减仓信息中获取本次减仓量
-            reduce_trade = self.db_pool.query(
-                """SELECT volume_contract, close_volume_contract 
-                FROM signal_account_trades 
-                WHERE trade_uid=%s AND signal_source_uid=%s AND symbol=%s AND pos_side=%s""",
-                (signal_trade_uid, signal_source_uid, symbol, pos_side)
-            )
-            
-            if not reduce_trade:
-                logger.warning(f"[限价跟单] 未找到减仓记录: {signal_trade_uid}")
-                return 0.0
-            
-            # 计算本次减仓量
-            original_volume = float(reduce_trade[0]['volume_contract'])
-            total_closed = float(reduce_trade[0]['close_volume_contract'])
-            
-            # 计算本次减仓量：总减仓量 - 之前已减仓量
-            # 查询减仓前的状态
-            previous_closed = self.db_pool.query(
-                """SELECT close_volume_contract 
-                FROM signal_account_trades 
-                WHERE trade_uid=%s AND signal_source_uid=%s AND symbol=%s AND pos_side=%s
-                AND close_order_id IS NOT NULL
-                ORDER BY created_at DESC LIMIT 1 OFFSET 1""",
-                (signal_trade_uid, signal_source_uid, symbol, pos_side)
-            )
-            
-            if previous_closed:
-                previous_closed_volume = float(previous_closed[0]['close_volume_contract'] or 0)
-            else:
-                # 如果没有之前的减仓记录，说明这是第一次减仓
-                previous_closed_volume = 0
-            
-            this_reduce_volume = total_closed - previous_closed_volume
-            
-            if this_reduce_volume <= 0:
-                logger.warning(f"[限价跟单] 本次减仓量为0: {this_reduce_volume}")
-                return 0.0
-            
-            # 计算减仓比例：本次减仓量 / 当前总持仓量
-            reduce_ratio = this_reduce_volume / current_position
-            logger.info(f"[限价跟单] 信号源减仓比例: {reduce_ratio:.2%} (本次减仓量: {this_reduce_volume}, 当前总持仓: {current_position})")
-            
-            return reduce_ratio
+            logger.info(f"[限价跟单] 挂单减仓完成: 总挂单={total_pending}, 减少={reduced_amount}")
             
         except Exception as e:
-            logger.error(f"[限价跟单] 获取信号源减仓比例失败: {e}")
-            return 0.0
+            logger.error(f"[限价跟单] 按比例减少挂单失败: {e}")
 
     async def _close_all_filled_orders(self, signal_source_uid, symbol, pos_side, signal_trade_uid=None):
         """平仓所有已成交的限价单"""
@@ -6842,73 +6847,93 @@ class TradeService:
             return 0
 
     async def _reduce_customer_position(self, strategy, symbol, pos_side, need_reduce):
-        """减少客户仓位 - FIFO优先撤单"""
+        """减少客户仓位 - FIFO方式按比例减仓"""
         try:
             logger.info(f"[限价跟单] 开始减少客户仓位: 策略ID={strategy['id']}, 需要减少={need_reduce}")
             
-            # 1. 获取待撤销的订单（按FIFO顺序）
-            pending_orders = self.db_pool.query(
+            # 获取所有已成交的限价单订单（按创建时间排序，FIFO）
+            filled_orders = self.db_pool.query(
                 """SELECT * FROM limit_follow_orders 
                 WHERE strategy_id=%s AND symbol=%s AND pos_side=%s 
-                AND status IN ('pending', 'live')
-                ORDER BY created_at ASC""",
+                AND status='filled' AND order_size > 0
+                ORDER BY created_at ASC, id ASC""",
                 (strategy['id'], symbol, pos_side)
             )
             
-            logger.info(f"[限价跟单] 找到 {len(pending_orders)} 个待成交订单")
+            if not filled_orders:
+                logger.info(f"[限价跟单] 没有已成交的限价单")
+                return
             
-            if not pending_orders:
-                logger.info(f"[限价跟单] 没有待撤销的订单")
-                
+            # 计算总持仓量
+            total_position = sum(float(order['order_size']) for order in filled_orders)
+            if total_position <= 0:
+                logger.info(f"[限价跟单] 总持仓量为0")
+                return
             
-            # 2. 按FIFO顺序选择需要撤销的订单
-            orders_to_cancel = []
-            total_canceled = 0.0
+            # 计算减仓比例
+            reduce_ratio = need_reduce / total_position
+            logger.info(f"[限价跟单] 减仓比例: {reduce_ratio:.2%}, 总持仓={total_position}, 需要减仓={need_reduce}")
             
-            for order in pending_orders:
-                if total_canceled >= need_reduce:
+            # 按FIFO顺序减仓每个限价单订单
+            remaining_reduce = need_reduce
+            
+            for order in filled_orders:
+                if remaining_reduce <= 0:
                     break
-                orders_to_cancel.append(order)
-                total_canceled += float(order['order_size'])
-            
-            logger.info(f"[限价跟单] 需要撤销 {len(orders_to_cancel)} 个订单，总仓位: {total_canceled}")
-            if orders_to_cancel:
-                # 3. 逐个撤销订单
-                for order in orders_to_cancel:
-                    try:
-                        
-                        canceled_count = await self.cancel_limit_follow_orders_on_signal_close(
-                            strategy['trader_unique_name'], 
-                            symbol, 
-                            pos_side, 
-                            order['order_uid']  # 传递具体订单ID
-                        )
-                        
-                        if canceled_count > 0:
-                            logger.info(f"[限价跟单] 撤单成功: {order['order_uid']}, 仓位: {order['order_size']}")
-                        else:
-                            logger.warning(f"[限价跟单] 撤单失败: {order['order_uid']}")
-                            
-                    except Exception as e:
-                        logger.error(f"[限价跟单] 撤单异常: {order['order_uid']}, 错误: {e}")
-            
-            # 4. 如果撤单后仍不满足，平已成交单
-            remaining = need_reduce - total_canceled
-            if remaining > 0:
-                logger.info(f"[限价跟单] 撤单后仍需减少: {remaining}")
-                await self._close_filled_orders(strategy, symbol, pos_side, remaining)
-            else:
-                logger.info(f"[限价跟单] 撤单完成，已减少仓位: {total_canceled}")
                     
+                order_uid = order['order_uid']
+                order_size = float(order['order_size'])
+                
+                # 获取已减仓数量
+                current_reduced = float(order.get('limit_close_size', 0) or 0)
+                available_size = order_size - current_reduced  # 剩余可减仓量
+                
+                if available_size <= 0:
+                    logger.info(f"[限价跟单] 订单{order_uid}已完全减仓，跳过")
+                    continue
+                
+                # 计算这个订单需要减仓的量
+                order_reduce = min(remaining_reduce, available_size)
+                
+                if order_reduce > 0:
+                    logger.info(f"[限价跟单] 订单{order_uid}: 总持仓={order_size}, 已减仓={current_reduced}, 剩余可减仓={available_size}, 本次减仓={order_reduce}")
+                    
+                    # 调用修改后的_close_filled_orders方法，传递单个订单和减仓量
+                    await self._close_filled_orders(
+                        strategy, symbol, pos_side, 
+                        need_close=order_reduce, 
+                        order_uid=order_uid, 
+                        reduce_volume=order_reduce
+                    )
+                    
+                    # 更新剩余需要减仓的量
+                    remaining_reduce -= order_reduce
+                    
+                    # 检查是否完全减仓
+                    new_reduced = current_reduced + order_reduce
+                    if new_reduced >= order_size:
+                        logger.info(f"[限价跟单] 订单{order_uid}完全减仓")
+                    else:
+                        logger.info(f"[限价跟单] 订单{order_uid}部分减仓: {new_reduced}/{order_size}")
+            
+            logger.info(f"[限价跟单] FIFO减仓完成，剩余需要减仓: {remaining_reduce}")
+            
         except Exception as e:
             logger.error(f"[限价跟单] 减少客户仓位失败: {e}")
 
-    async def _close_filled_orders(self, strategy, symbol, pos_side, need_close, signal_trade_uid=None):
-        """平已成交订单 - FIFO"""
+    async def _close_filled_orders(self, strategy, symbol, pos_side, need_close, signal_trade_uid=None, order_uid=None, reduce_volume=None):
+        """平已成交订单 - FIFO，支持按指定量减仓或按订单减仓"""
         try:
             logger.info(f"[限价跟单] 开始平已成交订单: 策略ID={strategy['id']}, 需要平仓={need_close}")
             
-            if signal_trade_uid:
+            # 如果指定了单个订单，只处理该订单
+            if order_uid:
+                filled_orders = self.db_pool.query(
+                    """SELECT * FROM limit_follow_orders 
+                    WHERE order_uid=%s AND status='filled'""",
+                    (order_uid,)
+                )
+            elif signal_trade_uid:
                 filled_orders = self.db_pool.query(
                     """SELECT * FROM limit_follow_orders 
                     WHERE status='filled' AND signal_order_id=%s
@@ -6932,15 +6957,33 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5001/api/v1/limit-follow/limit-follow-closed-by-order-id"
+            api_url = f"http://localhost:5000/api/v1/limit-follow/limit-follow-closed-by-order-id"
             
             for order in filled_orders:
                 if closed >= need_close:
                     break
                     
                 try:
+                    # 计算这个订单需要平仓的量
+                    order_size = float(order['order_size'])
+                    current_reduced = float(order.get('limit_close_size', 0) or 0)
+                    available_size = order_size - current_reduced
+                    
+                    if available_size <= 0:
+                        logger.info(f"[限价跟单] 订单{order['order_uid']}已完全减仓，跳过")
+                        continue
+                    
+                    # 计算本次平仓量
+                    if reduce_volume is not None:
+                        # 按指定量减仓
+                        close_amount = min(reduce_volume, available_size)
+                    else:
+                        # 按需要平仓量减仓
+                        close_amount = min(need_close - closed, available_size)
+                    
                     payload = {
-                        'order_uid': order['order_uid'],  # 修正参数名
+                        'order_uid': order['order_uid'],
+                        'reduce_volume': close_amount  # 传递减仓量
                     }
                     
                     async with aiohttp.ClientSession() as session:
@@ -6948,8 +6991,24 @@ class TradeService:
                             if response.status == 200:
                                 result = await response.json()
                                 if result.get('success') == 200:
-                                    closed += float(order['order_size'])
-                                    logger.info(f"[限价跟单] 平仓成功: {order['order_uid']}, 数量: {order['order_size']}")
+                                    closed += close_amount
+                                    logger.info(f"[限价跟单] 平仓成功: {order['order_uid']}, 数量: {close_amount}")
+                                    
+                                    # 更新数据库中的 limit_close_size
+                                    new_reduced = current_reduced + close_amount
+                                    self.db_pool.execute(
+                                        "UPDATE limit_follow_orders SET limit_close_size=%s, updated_at=NOW() WHERE order_uid=%s",
+                                        (new_reduced, order['order_uid'])
+                                    )
+                                    if new_reduced >= order_size:
+                                        self.db_pool.execute(
+                                            "UPDATE limit_follow_orders SET status='closed', updated_at=NOW() WHERE order_uid=%s",
+                                            (order['order_uid'],)
+                                        )
+                                        logger.info(f"[限价跟单] 订单{order['order_uid']}完全减仓")
+                                    else:
+                                        logger.info(f"[限价跟单] 订单{order['order_uid']}部分减仓: {new_reduced}/{order_size}")
+                                    
                                 else:
                                     logger.warning(f"[限价跟单] 平仓失败: {order['order_uid']}, 原因: {result.get('message')}")
                             else:
@@ -7014,7 +7073,7 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5001/api/v1/limit-follow/cancel-on-signal-close"
+            api_url = f"http://localhost:5000/api/v1/limit-follow/cancel-on-signal-close"
             payload = {
                 'trader_unique_name': signal_source_uid,
                 'symbol': symbol,

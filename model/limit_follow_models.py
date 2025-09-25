@@ -118,6 +118,7 @@ class LimitFollowOrder:
     exchange_order_id: Optional[str] = None
     filled_price: Optional[float] = None
     filled_size: Optional[float] = None
+    limit_close_size: Optional[float] = None
     remaining_size: Optional[float] = None
     order_time: Optional[datetime] = None
     filled_time: Optional[datetime] = None

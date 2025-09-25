@@ -12,8 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from config.contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_value
-from exchange.okx.okx_rest_client import OKXRESTClient
+from config.contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_tick_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_valuefrom exchange.okx.okx_rest_client import OKXRESTClient
 from utils.logger import logger
 from core.limit_trade.limit_follow_db import LimitFollowDB
 from core.limit_trade.limit_follow_models import LimitFollowOrder, LimitFollowStrategy, FollowOrderRequest, FollowOrderResponse
@@ -235,6 +234,7 @@ class EnhancedLimitFollowService:
                 return
             
             # 创建OKX客户端
+            from okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             okx_client = OKXRESTClient(
                 customer['api_key'],
@@ -243,26 +243,61 @@ class EnhancedLimitFollowService:
                 is_demo=get_global_is_demo()
             )
             
-            # 查询订单状态
-            response = await okx_client.get_order(order.symbol, order.exchange_order_id)
+            # 添加重试机制处理50011错误
+            max_retries = 3
+            retry_delay = 2.0
             
-            if response and response.get('code') == '0' and response.get('data'):
-                order_data = response['data'][0]
-                exchange_status = order_data['state']
-                
-                # 如果状态有变化，更新数据库
-                if exchange_status != order.status:
-                    await self._update_order_status_from_exchange(order, order_data)
-                    self.metrics.record_order_check(success=True)
+            for attempt in range(max_retries):
+                try:
+                    # 查询订单状态
+                    response = await okx_client.get_order(order.symbol, order.exchange_order_id)
                     
-                    if self.config['log_order_updates']:
-                        logger.info(f"🔄 订单状态更新: {order.order_uid} {order.status} -> {exchange_status}")
-                else:
-                    self.metrics.record_order_check(success=True)
-            else:
-                logger.warning(f"查询订单状态失败: {order.order_uid}")
-                self.metrics.record_api_call(success=False)
-                self.metrics.record_order_check(success=False)
+                    if response and response.get('code') == '0' and response.get('data'):
+                        order_data = response['data'][0]
+                        exchange_status = order_data['state']
+                        
+                        # 如果状态有变化，更新数据库
+                        if exchange_status != order.status:
+                            await self._update_order_status_from_exchange(order, order_data)
+                            self.metrics.record_order_check(success=True)
+                            
+                            if self.config['log_order_updates']:
+                                logger.info(f"订单状态更新: {order.order_uid} {order.status} -> {exchange_status}")
+                        else:
+                            self.metrics.record_order_check(success=True)
+                        
+                        # 成功获取状态，跳出重试循环
+                        break
+                        
+                    elif response and response.get('code') == '50011':
+                        # 处理Too Many Requests错误
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (2 ** attempt)  # 指数退避
+                            logger.warning(f"API请求频率过高，{wait_time}秒后重试 (第{attempt + 1}次): {order.order_uid}")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(f"API请求频率过高，重试次数已用完: {order.order_uid}")
+                            self.metrics.record_api_call(success=False)
+                            self.metrics.record_order_check(success=False)
+                            break
+                    else:
+                        logger.warning(f"查询订单状态失败: {order.order_uid} - {response}")
+                        self.metrics.record_api_call(success=False)
+                        self.metrics.record_order_check(success=False)
+                        break
+                        
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"查询订单状态异常，{wait_time}秒后重试: {order.order_uid} - {e}")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"查询订单状态异常，重试次数已用完: {order.order_uid} - {e}")
+                        self.metrics.record_api_call(success=False)
+                        self.metrics.record_order_check(success=False)
+                        break
                 
         except Exception as e:
             logger.error(f"检查订单状态失败 {order.order_uid}: {e}")
@@ -391,7 +426,14 @@ class EnhancedLimitFollowService:
                 repaired_count = 0
                 for order in problematic_orders[:self.config['auto_repair_max_orders']]:
                     try:
-                        await self._sync_single_order_status(order)
+                        # 检查订单是否超时（超过2小时）
+                        order_age = datetime.now() - order['created_at']
+                        if order_age.total_seconds() > 7200:  # 2小时
+                            logger.warning(f"订单超时，取消订单: {order['order_uid']}")
+                            # 取消超时订单
+                            await self._cancel_timeout_order(order)
+                        else:
+                            await self._sync_single_order_status(order)
                         repaired_count += 1
                     except Exception as e:
                         logger.error(f"自动修复订单失败 {order.get('order_uid', 'unknown')}: {e}")
@@ -400,7 +442,64 @@ class EnhancedLimitFollowService:
             
         except Exception as e:
             logger.error(f"自动修复订单失败: {e}")
-    
+
+    async def _cancel_timeout_order(self, order):
+        """取消超时订单"""
+        try:
+            logger.info(f"🔄 开始取消超时订单: {order['order_uid']}")
+            
+            # 获取客户信息
+            customer_info = await self._get_customer_info(order['customer_uid'])
+            if not customer_info:
+                logger.error(f"无法获取客户信息: {order['customer_uid']}")
+                return False
+            
+            # 创建REST客户端
+            from okx_rest_client import OKXRESTClient
+            from trade_service import get_global_is_demo
+            
+            rest_client = OKXRESTClient(
+                api_key=customer_info['api_key'],
+                api_secret=customer_info.get('secret_key') or customer_info.get('api_secret'),
+                passphrase=customer_info['passphrase'],
+                is_demo=get_global_is_demo()
+            )
+            
+            # 如果有交易所订单ID，尝试取消订单
+            if order.get('exchange_order_id'):
+                try:
+                    cancel_result = await rest_client.cancel_order(
+                        instId=order['symbol'],
+                        ordId=order['exchange_order_id']
+                    )
+                    
+                    if cancel_result and cancel_result.get('code') == '0':
+                        logger.info(f"✅ 成功取消交易所订单: {order['exchange_order_id']}")
+                    else:
+                        error_msg = cancel_result.get('msg', '未知错误') if cancel_result else '请求失败'
+                        logger.warning(f"⚠️ 取消交易所订单失败: {error_msg}")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ 取消交易所订单异常: {e}")
+            
+            # 更新本地订单状态为已取消
+            success = self.db.db_pool.execute("""
+                UPDATE limit_follow_orders 
+                SET status='cancelled', updated_at=NOW()
+                WHERE order_uid=%s
+            """, (order['order_uid'],))
+            
+            if success:
+                logger.info(f"✅ 超时订单已标记为取消: {order['order_uid']}")
+                return True
+            else:
+                logger.error(f"❌ 更新订单状态失败: {order['order_uid']}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 取消超时订单异常: {order['order_uid']} - {e}")
+            return False
+
     async def _check_position_status_consistency(self):
         """检查并修复订单与持仓状态的一致性"""
         try:
@@ -812,6 +911,7 @@ class EnhancedLimitFollowService:
                 return False
             
             # 创建REST客户端
+            from okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             
             rest_client = OKXRESTClient(
@@ -821,39 +921,93 @@ class EnhancedLimitFollowService:
                 is_demo=get_global_is_demo()
             )
             
-            # 生成符合OKX要求的客户端订单ID（最大32字符）
+            # 调整订单数量精度
+            min_sz = get_contract_min_sz(order.symbol)
+            sz_precision = get_contract_sz_precision(order.symbol)
+            tick_sz = get_contract_tick_sz(order.symbol)
+            
+            # 确保数量是最小单位的倍数
+            adjusted_size = round(order.order_size / min_sz) * min_sz
+            adjusted_size = round(adjusted_size, sz_precision)  # sz_precision 是整数
+            
+            # 确保不小于最小数量
+            if adjusted_size < min_sz:
+                adjusted_size = min_sz
+            
+            # 调整价格精度
+            adjusted_price = None
+            if order.order_type == "limit" and order.target_price:
+                # 确保价格是tick size的倍数
+                adjusted_price = round(order.target_price / tick_sz) * tick_sz
+                # 根据tick size确定价格精度（计算小数位数）
+                if tick_sz >= 1:
+                    price_precision = 0
+                elif tick_sz >= 0.1:
+                    price_precision = 1
+                elif tick_sz >= 0.01:
+                    price_precision = 2
+                elif tick_sz >= 0.001:
+                    price_precision = 3
+                elif tick_sz >= 0.0001:
+                    price_precision = 4
+                elif tick_sz >= 0.00001:
+                    price_precision = 5
+                elif tick_sz >= 0.000001:
+                    price_precision = 6
+                elif tick_sz >= 0.0000001:
+                    price_precision = 7
+                elif tick_sz >= 0.00000001:
+                    price_precision = 8
+                elif tick_sz >= 0.000000001:
+                    price_precision = 9
+                else:
+                    # 对于更小的tick size，使用科学计数法或字符串处理
+                    price_precision = 9
+                
+                adjusted_price = round(adjusted_price, price_precision)
+            
+            # 生成符合OKX要求的客户端订单ID
             from trade_service import make_clOrdId
             import time
             
-            # 使用简化的ID生成策略
-            timestamp = str(int(time.time() * 1000))[-8:]  # 时间戳后8位
-            order_hash = str(hash(order.order_uid))[-8:]   # 订单UID哈希后8位
-            client_order_id = f"LF{timestamp}{order_hash}"  # 限价跟单标识
-            leverage = 10 # 默认杠杆倍数
-            leverage_data = await rest_client.set_leverage(leverage, "cross", order.symbol)
-            if leverage_data and leverage_data.get('code') == '0':
-                logger.info(f"✅ 设置杠杆成功: {order.symbol} {leverage}")
-            else:
-                logger.error(f"❌ 设置杠杆失败: {order.symbol} {leverage}")
-            min_sz = get_contract_min_sz(order.symbol)
+            timestamp = str(int(time.time() * 1000))[-8:]
+            order_hash = str(hash(order.order_uid))[-8:]
+            client_order_id = f"LF{timestamp}{order_hash}"
+            
+            # 设置杠杆
+            leverage = 10
+            logger.info(f"开始设置杠杆: {order.symbol} {leverage}倍")
+
+            try:
+                leverage_data = await rest_client.set_leverage(leverage, "cross", order.symbol)
+                logger.info(f"🔧 杠杆设置响应: {leverage_data}")
+                
+                if leverage_data and leverage_data.get('code') == '0':
+                    logger.info(f"✅ 设置杠杆成功: {order.symbol} {leverage}倍")
+                else:
+                    error_msg = leverage_data.get('msg', '未知错误') if leverage_data else '请求失败'
+                    logger.error(f"❌ 设置杠杆失败: {order.symbol} {leverage}倍 - {error_msg}")
+                    
+            except Exception as e:
+                logger.error(f"❌ 设置杠杆异常: {order.symbol} {leverage}倍 - {e}")
+
             # 构建订单参数
             order_data = {
                 "instId": order.symbol,
-                "tdMode": "cross",  # 交叉保证金模式
+                "tdMode": "cross",
                 "side": "buy" if order.pos_side == "long" else "sell",
                 "posSide": order.pos_side,
-                "ordType": order.order_type,  # 一般是 "limit"
-                "sz": str(round(order.order_size, min_sz)),
-                "clOrdId": client_order_id  # 使用简化的客户端订单ID
+                "ordType": order.order_type,
+                "sz": str(adjusted_size),  # 使用调整后的数量
+                "clOrdId": client_order_id
             }
             
-            # 如果是限价单，添加价格
-            if order.order_type == "limit" and order.target_price:
-                tick_sz = get_contract_tick_sz_from_usdt_value(order.symbol)
-                order_data["px"] = str(round(order.target_price, tick_sz))
+            # 如果是限价单，添加调整后的价格
+            if order.order_type == "limit" and adjusted_price:
+                order_data["px"] = str(adjusted_price)
             
-            logger.info(f"📤 提交限价跟单订单到交易所: {order.order_uid}")
-            logger.debug(f"订单参数: {order_data}")
+            logger.info(f"√ 提交限价跟单订单到交易所: {order.order_uid}")
+            logger.info(f"订单参数: 数量={adjusted_size}, 价格={adjusted_price}, 合约={order.symbol}")
             
             # 提交订单
             result = await rest_client.place_order(**order_data)
@@ -908,6 +1062,7 @@ class EnhancedLimitFollowService:
                 pass
             
             return False
+
 
 # ==================== 向后兼容性 ====================
 
