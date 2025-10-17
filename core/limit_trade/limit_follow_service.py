@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from config.contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_tick_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_valuefrom exchange.okx.okx_rest_client import OKXRESTClient
+from config.contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_tick_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_value
+from exchange.okx.okx_rest_client import OKXRESTClient
 from utils.logger import logger
 from core.limit_trade.limit_follow_db import LimitFollowDB
 from core.limit_trade.limit_follow_models import LimitFollowOrder, LimitFollowStrategy, FollowOrderRequest, FollowOrderResponse
@@ -198,12 +199,13 @@ class EnhancedLimitFollowService:
     async def _check_live_orders_enhanced(self):
         """增强的活跃订单检查"""
         try:
-            live_orders = self.db.get_orders({'status': 'live'})
+            # 只查询限价单，跳过市价单（市价单应该直接为filled状态）
+            live_orders = self.db.get_orders({'status': 'live', 'order_type': 'limit'})
             
             if not live_orders:
                 return
             
-            logger.debug(f"🔍 检查 {len(live_orders)} 个活跃订单")
+            logger.debug(f"🔍 检查 {len(live_orders)} 个活跃限价订单")
             
             # 分批处理，避免API限制
             batch_size = self.config['batch_sync_size']
@@ -234,7 +236,7 @@ class EnhancedLimitFollowService:
                 return
             
             # 创建OKX客户端
-            from okx_rest_client import OKXRESTClient
+            from .exchange.okx.okx_rest_client import OKXRESTClient
             from trade_service import get_global_is_demo
             okx_client = OKXRESTClient(
                 customer['api_key'],
@@ -427,13 +429,13 @@ class EnhancedLimitFollowService:
                 for order in problematic_orders[:self.config['auto_repair_max_orders']]:
                     try:
                         # 检查订单是否超时（超过2小时）
-                        order_age = datetime.now() - order['created_at']
-                        if order_age.total_seconds() > 7200:  # 2小时
-                            logger.warning(f"订单超时，取消订单: {order['order_uid']}")
-                            # 取消超时订单
-                            await self._cancel_timeout_order(order)
-                        else:
-                            await self._sync_single_order_status(order)
+                        # order_age = datetime.now() - order['created_at']
+                        # if order_age.total_seconds() > 7200:  # 2小时
+                        #     logger.warning(f"订单超时，取消订单: {order['order_uid']}")
+                        #     # 取消超时订单
+                        #     await self._cancel_timeout_order(order)
+                        # else:
+                        await self._sync_single_order_status(order)
                         repaired_count += 1
                     except Exception as e:
                         logger.error(f"自动修复订单失败 {order.get('order_uid', 'unknown')}: {e}")
@@ -896,6 +898,35 @@ class EnhancedLimitFollowService:
             logger.error(f"获取客户账户信息失败: {e}")
             return None
 
+    async def _get_strategy_leverage(self, strategy_id: int, customer_uid: str) -> int:
+        """获取策略杠杆设置（支持客户自定义杠杆）"""
+        try:
+            # 首先查询客户是否有自定义杠杆设置
+            custom_leverage = self.db_pool.query(
+                """SELECT custom_leverage FROM limit_follow_strategy_customers 
+                   WHERE strategy_id=%s AND customer_uid=%s AND enabled=1""",
+                (strategy_id, customer_uid)
+            )
+            
+            if custom_leverage and custom_leverage[0]['custom_leverage']:
+                return int(custom_leverage[0]['custom_leverage'])
+            
+            # 如果没有自定义杠杆，使用策略默认杠杆
+            strategy_data = self.db_pool.query(
+                "SELECT leverage FROM limit_follow_strategies WHERE id=%s",
+                (strategy_id,)
+            )
+            
+            if strategy_data and strategy_data[0]['leverage']:
+                return int(strategy_data[0]['leverage'])
+            
+            # 默认杠杆
+            return 10
+            
+        except Exception as e:
+            logger.error(f"获取策略杠杆失败: {e}")
+            return 10
+
     # 为了兼容现有代码，保留一些原有方法的引用
     async def _submit_order_to_exchange_enhanced(self, order):
         """增强的订单提交方法"""
@@ -961,10 +992,15 @@ class EnhancedLimitFollowService:
                 elif tick_sz >= 0.000000001:
                     price_precision = 9
                 else:
-                    # 对于更小的tick size，使用科学计数法或字符串处理
-                    price_precision = 9
+                    # 对于更小的tick size，使用更高的精度
+                    price_precision = 12
                 
                 adjusted_price = round(adjusted_price, price_precision)
+                
+                # 确保价格不是科学计数法格式
+                if 'e' in str(adjusted_price).lower():
+                    # 将科学计数法转换为普通小数格式
+                    adjusted_price = float(f"{adjusted_price:.{price_precision}f}")
             
             # 生成符合OKX要求的客户端订单ID
             from trade_service import make_clOrdId
@@ -974,22 +1010,23 @@ class EnhancedLimitFollowService:
             order_hash = str(hash(order.order_uid))[-8:]
             client_order_id = f"LF{timestamp}{order_hash}"
             
-            # 设置杠杆
-            leverage = 10
-            logger.info(f"开始设置杠杆: {order.symbol} {leverage}倍")
+            # 获取策略杠杆设置
+            strategy_leverage = await self._get_strategy_leverage(order.strategy_id, order.customer_uid)
+            logger.info(f"开始设置杠杆: {order.symbol} {strategy_leverage}倍")
 
             try:
-                leverage_data = await rest_client.set_leverage(leverage, "cross", order.symbol)
+                leverage_data = await rest_client.set_leverage(strategy_leverage, "cross", order.symbol)
                 logger.info(f"🔧 杠杆设置响应: {leverage_data}")
                 
                 if leverage_data and leverage_data.get('code') == '0':
-                    logger.info(f"✅ 设置杠杆成功: {order.symbol} {leverage}倍")
+                    logger.info(f"✅ 设置杠杆成功: {order.symbol} {strategy_leverage}倍")
                 else:
                     error_msg = leverage_data.get('msg', '未知错误') if leverage_data else '请求失败'
-                    logger.error(f"❌ 设置杠杆失败: {order.symbol} {leverage}倍 - {error_msg}")
+                    logger.error(f"❌ 设置杠杆失败: {order.symbol} {strategy_leverage}倍 - {error_msg}")
                     
             except Exception as e:
-                logger.error(f"❌ 设置杠杆异常: {order.symbol} {leverage}倍 - {e}")
+                logger.error(f"❌ 设置杠杆异常: {order.symbol} {strategy_leverage}倍 - {e}")
+
 
             # 构建订单参数
             order_data = {
@@ -1004,10 +1041,15 @@ class EnhancedLimitFollowService:
             
             # 如果是限价单，添加调整后的价格
             if order.order_type == "limit" and adjusted_price:
-                order_data["px"] = str(adjusted_price)
+                # 确保价格格式正确，避免科学计数法
+                price_str = f"{adjusted_price:.{price_precision}f}" if 'price_precision' in locals() else f"{adjusted_price:.8f}"
+                order_data["px"] = price_str
             
             logger.info(f"√ 提交限价跟单订单到交易所: {order.order_uid}")
-            logger.info(f"订单参数: 数量={adjusted_size}, 价格={adjusted_price}, 合约={order.symbol}")
+            if order.order_type == "limit" and adjusted_price:
+                logger.info(f"订单参数: 数量={adjusted_size}, 价格={price_str}, 合约={order.symbol}")
+            else:
+                logger.info(f"订单参数: 数量={adjusted_size}, 合约={order.symbol}")
             
             # 提交订单
             result = await rest_client.place_order(**order_data)
@@ -1019,17 +1061,21 @@ class EnhancedLimitFollowService:
                 
                 if exchange_order_id:
                     # 更新数据库中的交易所订单ID
-                    success = self.db.db_pool.execute("""
-                        UPDATE limit_follow_orders 
-                        SET exchange_order_id=%s, status='live', updated_at=NOW()
-                        WHERE order_uid=%s
-                    """, (exchange_order_id, order.order_uid))
-                    
-                    if success:
-                        logger.info(f"✅ 限价跟单订单提交成功: {order.order_uid} -> {exchange_order_id}")
-                        return True
-                    else:
-                        logger.error(f"❌ 更新交易所订单ID失败: {order.order_uid}")
+                    try:
+                        success = self.db.db_pool.execute("""
+                            UPDATE limit_follow_orders 
+                            SET exchange_order_id=%s, status='live', updated_at=NOW()
+                            WHERE order_uid=%s
+                        """, (exchange_order_id, order.order_uid))
+                        
+                        if success:
+                            logger.info(f"✅ 限价跟单订单提交成功: {order.order_uid} -> {exchange_order_id}")
+                            return True
+                        else:
+                            logger.error(f"❌ 更新交易所订单ID失败: {order.order_uid}, exchange_order_id={exchange_order_id}")
+                            return False
+                    except Exception as e:
+                        logger.error(f"❌ 更新交易所订单ID异常: {order.order_uid}, error={e}")
                         return False
                 else:
                     logger.error(f"❌ 交易所未返回订单ID: {order.order_uid}")
@@ -1063,9 +1109,7 @@ class EnhancedLimitFollowService:
             
             return False
 
-
 # ==================== 向后兼容性 ====================
-
 # 为向后兼容，提供旧类名的别名
 LimitFollowService = EnhancedLimitFollowService
 

@@ -6,6 +6,8 @@ class OKXTradingApp {
         this.currentTradesPage = 1;
         this.tradesSearchParams = {};
         
+        // 防重复点击标志
+        this.isUpdatingAssets = false;
         // 系统日志分页
         this.systemLogsPage = 1;
         this.systemLogsPageSize = 10;
@@ -168,6 +170,14 @@ class OKXTradingApp {
 
         // 初始化限价跟单模块
         this.initLimitFollowModule();
+        
+        // 执行限价跟单按钮
+        const submitLimitFollowBtn = document.getElementById('submitLimitFollowExecution');
+        if (submitLimitFollowBtn) {
+            submitLimitFollowBtn.addEventListener('click', () => {
+                this.submitLimitFollowExecution();
+            });
+        }
 
         // 信号源搜索
         const signalSourceSearchBtn = document.getElementById('signalSourceSearchBtn');
@@ -401,6 +411,30 @@ class OKXTradingApp {
             });
         }
         
+        // 管理策略客户相关事件
+        const addCustomerToStrategyBtn = document.getElementById('addCustomerToStrategyBtn');
+        if (addCustomerToStrategyBtn) {
+            addCustomerToStrategyBtn.addEventListener('click', () => {
+                this.addCustomerToStrategy();
+            });
+        }
+        
+        // 编辑客户相关事件
+        const saveEditCustomerBtn = document.getElementById('saveEditCustomerBtn');
+        if (saveEditCustomerBtn) {
+            saveEditCustomerBtn.addEventListener('click', () => {
+                this.saveEditCustomer();
+            });
+        }
+        
+        // 编辑交易相关事件
+        const saveEditTradeBtn = document.getElementById('saveEditTradeBtn');
+        if (saveEditTradeBtn) {
+            saveEditTradeBtn.addEventListener('click', () => {
+                this.saveEditTrade();
+            });
+        }
+        
         const debugOrdersBtn = document.getElementById('debugOrdersBtn');
         if (debugOrdersBtn) {
             debugOrdersBtn.addEventListener('click', () => {
@@ -432,7 +466,8 @@ class OKXTradingApp {
             });
             // 添加显示事件，加载信号源和客户选项
             addStrategyModal.addEventListener('show.bs.modal', () => {
-                this.loadSignalSourcesOptions('create');
+                this.loadSignalSourcesOptions();
+                this.loadCustomersOptions();
             });
         }
 
@@ -551,6 +586,35 @@ class OKXTradingApp {
             }
         } catch (error) {
             console.error('加载信号源选项失败:', error);
+        }
+    }
+
+    // 加载客户选项
+    async loadCustomersOptions() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/customers`);
+            if (response.ok) {
+                const data = await response.json();
+                const select = document.getElementById('strategyCustomers');
+                if (select) {
+                    // 清空现有选项
+                    select.innerHTML = '';
+                    
+                    // 修复数据结构：客户API返回的是 {data: {customers: [...]}}
+                    const customers = data.data && data.data.customers ? data.data.customers : [];
+                    
+                    if (Array.isArray(customers)) {
+                        customers.forEach(customer => {
+                            const option = document.createElement('option');
+                            option.value = customer.customer_uid;
+                            option.textContent = customer.name || customer.customer_uid;
+                            select.appendChild(option);
+                        });
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('加载客户选项失败:', error);
         }
     }
 
@@ -1407,35 +1471,47 @@ class OKXTradingApp {
     }
 
     // 加载客户数据
-    async loadCustomersData() {
+    async loadCustomersData(page = 1, pageSize = 10) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/customers`);
+            const params = new URLSearchParams({
+                page: page,
+                page_size: pageSize
+            });
+            
+            const response = await fetch(`${this.apiBaseUrl}/customers?${params}`);
             if (response.ok) {
                 const data = await response.json();
+                
                 
                 // 检查数据结构
                 if (Array.isArray(data.data)) {
                     // 直接返回数组的情况
-                    this.renderCustomersTable(data.data);
+                    this.renderCustomersTable(data.data, data.pagination);
                 } else if (data.data && Array.isArray(data.data.customers)) {
-                    // 嵌套结构的情况
-                    this.renderCustomersTable(data.data.customers);
+                    // 嵌套结构的情况 - 从data中提取分页信息
+                    const pagination = {
+                        current_page: data.data.page || 1,
+                        total_pages: Math.ceil((data.data.total || 0) / (data.data.page_size || 10)),
+                        total_count: data.data.total || 0,
+                        page_size: data.data.page_size || 10
+                    };
+                    this.renderCustomersTable(data.data.customers, pagination);
                 } else {
                     console.error('客户数据格式错误:', data.data);
-                    this.renderCustomersTable([]);
+                    this.renderCustomersTable([], null);
                 }
             } else {
                 console.error('加载客户数据失败:', response.statusText);
-                this.renderCustomersTable([]);
+                this.renderCustomersTable([], null);
             }
         } catch (error) {
             console.error('加载客户数据失败:', error);
-            this.renderCustomersTable([]);
+            this.renderCustomersTable([], null);
         }
     }
 
     // 渲染客户表格
-    renderCustomersTable(customers) {
+    renderCustomersTable(customers, pagination = null) {
         const tbody = document.getElementById('customersTableBody');
         if (!tbody) {
             console.warn('未找到 customersTableBody 元素');
@@ -1451,6 +1527,7 @@ class OKXTradingApp {
 
         if (customers.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" class="text-center">暂无客户数据</td></tr>';
+            this.renderCustomersPagination(null);
             return;
         }
 
@@ -1466,6 +1543,9 @@ class OKXTradingApp {
                 <td>${customer.stop_loss_enabled ? '<span class="badge bg-warning">已设置</span>' : '<span class="badge bg-light text-dark">未设置</span>'}</td>
                 <td>
                     <div class="btn-group" role="group">
+                        <button class="btn btn-sm btn-outline-success update-asset-btn" data-customer-uid="${customer.customer_uid}" title="更新资产">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
                         <button class="btn btn-sm btn-outline-primary" onclick="app.editCustomer('${customer.customer_uid}')" title="编辑">
                             <i class="bi bi-pencil"></i>
                         </button>
@@ -1484,14 +1564,380 @@ class OKXTradingApp {
         `).join('');
 
         tbody.innerHTML = rowsHtml;
+        // 为资产更新按钮添加事件监听器
+        this.attachAssetUpdateListeners();
+        
+        // 渲染分页
+        this.renderCustomersPagination(pagination);
+        
+        // 渲染分页信息
+        this.renderCustomersPaginationInfo(pagination);
+    }
+
+    // 渲染客户分页
+    renderCustomersPagination(pagination) {
+        const paginationContainer = document.getElementById('customersPagination');
+        if (!paginationContainer) {
+            console.warn('未找到 customersPagination 元素');
+            return;
+        }
+
+
+        if (!pagination) {
+            paginationContainer.innerHTML = '';
+            return;
+        }
+
+        const { current_page, total_pages, total_count, page_size } = pagination;
+        
+        if (total_pages <= 1) {
+            paginationContainer.innerHTML = '';
+            return;
+        }
+
+        let paginationHtml = '';
+        
+        // 上一页按钮
+        if (current_page > 1) {
+            paginationHtml += `
+                <li class="page-item">
+                    <a class="page-link" href="#" data-page="${current_page - 1}">
+                        <i class="bi bi-chevron-left"></i> 上一页
+                    </a>
+                </li>
+            `;
+        } else {
+            paginationHtml += `
+                <li class="page-item disabled">
+                    <span class="page-link">
+                        <i class="bi bi-chevron-left"></i> 上一页
+                    </span>
+                </li>
+            `;
+        }
+
+        // 页码按钮
+        const startPage = Math.max(1, current_page - 2);
+        const endPage = Math.min(total_pages, current_page + 2);
+
+        if (startPage > 1) {
+            paginationHtml += `
+                <li class="page-item">
+                    <a class="page-link" href="#" data-page="1">1</a>
+                </li>
+            `;
+            if (startPage > 2) {
+                paginationHtml += `
+                    <li class="page-item disabled">
+                        <span class="page-link">...</span>
+                    </li>
+                `;
+            }
+        }
+
+        for (let i = startPage; i <= endPage; i++) {
+            if (i === current_page) {
+                paginationHtml += `
+                    <li class="page-item active">
+                        <span class="page-link">${i}</span>
+                    </li>
+                `;
+            } else {
+                paginationHtml += `
+                    <li class="page-item">
+                        <a class="page-link" href="#" data-page="${i}">${i}</a>
+                    </li>
+                `;
+            }
+        }
+
+        if (endPage < total_pages) {
+            if (endPage < total_pages - 1) {
+                paginationHtml += `
+                    <li class="page-item disabled">
+                        <span class="page-link">...</span>
+                    </li>
+                `;
+            }
+            paginationHtml += `
+                <li class="page-item">
+                    <a class="page-link" href="#" data-page="${total_pages}">${total_pages}</a>
+                </li>
+            `;
+        }
+
+        // 下一页按钮
+        if (current_page < total_pages) {
+            paginationHtml += `
+                <li class="page-item">
+                    <a class="page-link" href="#" data-page="${current_page + 1}">
+                        下一页 <i class="bi bi-chevron-right"></i>
+                    </a>
+                </li>
+            `;
+        } else {
+            paginationHtml += `
+                <li class="page-item disabled">
+                    <span class="page-link">
+                        下一页 <i class="bi bi-chevron-right"></i>
+                    </span>
+                </li>
+            `;
+        }
+
+        paginationContainer.innerHTML = paginationHtml;
+
+        // 添加分页事件监听器
+        paginationContainer.addEventListener('click', (e) => {
+            e.preventDefault();
+            const pageLink = e.target.closest('a[data-page]');
+            if (pageLink) {
+                const page = parseInt(pageLink.dataset.page);
+                
+                // 检查是否有搜索或筛选条件
+                const searchTerm = document.getElementById('customerSearch')?.value.trim() || '';
+                const currentFilter = document.querySelector('input[name="customerFilter"]:checked')?.value || 'all';
+                
+                if (searchTerm || currentFilter !== 'all') {
+                    // 有搜索或筛选条件，使用带参数的加载函数
+                    this.loadCustomersDataWithParams(searchTerm, currentFilter, page);
+                } else {
+                    // 没有搜索或筛选条件，使用普通加载函数
+                    this.loadCustomersData(page);
+                }
+            }
+        });
+    }
+
+    // 渲染客户分页信息
+    renderCustomersPaginationInfo(pagination) {
+        const infoContainer = document.getElementById('customersPaginationInfo');
+        if (!infoContainer) {
+            console.warn('未找到 customersPaginationInfo 元素');
+            return;
+        }
+
+        if (!pagination) {
+            infoContainer.innerHTML = '';
+            return;
+        }
+
+        const { current_page, total_pages, total_count, page_size } = pagination;
+        const startItem = (current_page - 1) * page_size + 1;
+        const endItem = Math.min(current_page * page_size, total_count);
+
+        infoContainer.innerHTML = `
+            显示第 ${startItem}-${endItem} 条，共 ${total_count} 条记录
+        `;
+    }
+
+    // 设置客户页面大小
+    setCustomersPageSize(pageSize) {
+        // 更新页面大小按钮状态
+        document.querySelectorAll('#customersPageSize10, #customersPageSize20, #customersPageSize50').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        
+        const activeBtn = document.getElementById(`customersPageSize${pageSize}`);
+        if (activeBtn) {
+            activeBtn.classList.add('active');
+        }
+        
+        // 重新加载数据
+        this.loadCustomersData(1, pageSize);
     }
 
     // 客户管理相关函数
-    editCustomer(customerUid) {
-        // TODO: 实现编辑客户功能
-        this.showToast('提示', '编辑客户功能开发中', 'info');
+    async editCustomer(customerUid) {
+        try {
+            // 获取客户详细信息
+            const response = await fetch(`${this.apiBaseUrl}/customers/${customerUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取客户信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取客户信息失败', 'danger');
+                return;
+            }
+            
+            const customer = result.data;
+            
+            // 填充表单数据
+            document.getElementById('editCustomerName').value = customer.name || '';
+            document.getElementById('editCustomerUid').value = customer.customer_uid || '';
+            document.getElementById('editApiKey').value = customer.api_key || '';
+            document.getElementById('editApiSecret').value = customer.api_secret || '';
+            document.getElementById('editPassphrase').value = customer.passphrase || '';
+            document.getElementById('editLeverage').value = customer.leverage || 1;
+            document.getElementById('editInitAsset').value = customer.init_asset || 0;
+            document.getElementById('editTradingAsset').value = customer.trading_asset || 0;
+            document.getElementById('editEnabled').checked = customer.enabled || false;
+            document.getElementById('editStopLossEnabled').checked = customer.stop_loss_enabled || false;
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('editCustomerModal'));
+            modal.show();
+            
+        } catch (error) {
+            console.error('编辑客户失败:', error);
+            this.showToast('错误', '编辑客户失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 保存编辑的客户
+    async saveEditCustomer() {
+        try {
+            const customerUid = document.getElementById('editCustomerUid').value;
+            if (!customerUid) {
+                this.showToast('错误', '客户UID不能为空', 'danger');
+                return;
+            }
+            
+            const formData = {
+                name: document.getElementById('editCustomerName').value,
+                api_key: document.getElementById('editApiKey').value,
+                api_secret: document.getElementById('editApiSecret').value,
+                passphrase: document.getElementById('editPassphrase').value,
+                leverage: parseInt(document.getElementById('editLeverage').value) || 1,
+                init_asset: parseFloat(document.getElementById('editInitAsset').value) || 0,
+                trading_asset: parseFloat(document.getElementById('editTradingAsset').value) || 0,
+                enabled: document.getElementById('editEnabled').checked,
+                stop_loss_enabled: document.getElementById('editStopLossEnabled').checked
+            };
+            
+            // 验证必填字段
+            if (!formData.name || !formData.api_key || !formData.api_secret || !formData.passphrase) {
+                this.showToast('错误', '请填写所有必填字段', 'danger');
+                return;
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/customers/${customerUid}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '客户信息更新成功', 'success');
+                    
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editCustomerModal'));
+                    modal.hide();
+                    
+                    // 重新加载客户列表
+                    this.loadCustomersData();
+                } else {
+                    this.showToast('错误', result.message || '更新客户信息失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('更新客户信息失败:', response.status, errorText);
+                this.showToast('错误', `更新客户信息失败: ${response.status}`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('保存编辑客户失败:', error);
+            this.showToast('错误', '保存客户信息失败，请检查网络连接', 'danger');
+        }
     }
 
+    // 为资产更新按钮添加事件监听器
+    attachAssetUpdateListeners() {
+        // 为每个客户的资产更新按钮添加事件监听器
+        const updateButtons = document.querySelectorAll('.update-asset-btn');
+        updateButtons.forEach(button => {
+            button.addEventListener('click', (e) => {
+                const customerUid = e.target.closest('.update-asset-btn').getAttribute('data-customer-uid');
+                this.forceUpdateCustomerAsset(customerUid);
+            });
+        });
+    }
+
+    // 强制更新所有客户资产
+    async forceUpdateAllCustomerAssets() {
+        // 防止重复点击
+        if (this.isUpdatingAssets) {
+            this.showToast('提示', '正在更新中，请稍候...', 'info');
+            return;
+        }
+        
+        try {
+            this.isUpdatingAssets = true;
+            this.showToast('提示', '正在更新所有客户资产...', 'info');
+            
+            const response = await fetch(`${this.apiBaseUrl}/force_update_customer_assets`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    is_demo: 1
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                this.showToast('成功', '所有客户资产更新完成', 'success');
+                // 刷新客户列表
+                await this.loadCustomersData();
+            } else {
+                const error = await response.json();
+                this.showToast('错误', `更新失败: ${error.message}`, 'danger');
+            }
+        } catch (error) {
+            console.error('更新客户资产失败:', error);
+            this.showToast('错误', '网络请求失败', 'danger');
+        } finally {
+            this.isUpdatingAssets = false;
+        }
+    }
+
+    // 强制更新指定客户资产
+    async forceUpdateCustomerAsset(customerUid) {
+        // 防止重复点击
+        if (this.isUpdatingAssets) {
+            this.showToast('提示', '正在更新中，请稍候...', 'info');
+            return;
+        }
+        
+        try {
+            this.isUpdatingAssets = true;
+            this.showToast('提示', `正在更新客户 ${customerUid} 的资产...`, 'info');
+            
+            const response = await fetch(`${this.apiBaseUrl}/force_update_customer_assets`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    customer_uid: customerUid,
+                    is_demo: 1
+                })
+            });
+
+            if (response.ok) {
+                const result = await response.json();
+                this.showToast('成功', `客户 ${customerUid} 资产更新完成`, 'success');
+                // 刷新客户列表
+                await this.loadCustomersData();
+            } else {
+                const error = await response.json();
+                this.showToast('错误', `更新失败: ${error.message}`, 'danger');
+            }
+        } catch (error) {
+            console.error('更新客户资产失败:', error);
+            this.showToast('错误', '网络请求失败', 'danger');
+        } finally {
+            this.isUpdatingAssets = false;
+        }
+    }
     async viewCustomerDetails(customerUid) {
         try {
             // 获取客户详情
@@ -1535,15 +1981,104 @@ class OKXTradingApp {
         
     }
 
-    toggleCustomerStatus(customerUid) {
-        // TODO: 实现切换客户状态功能
-        this.showToast('提示', '切换客户状态功能开发中', 'info');
+    async toggleCustomerStatus(customerUid) {
+        try {
+            // 获取当前客户信息
+            const response = await fetch(`${this.apiBaseUrl}/customers/${customerUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取客户信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取客户信息失败', 'danger');
+                return;
+            }
+            
+            const customer = result.data;
+            const newStatus = !customer.enabled;
+            const action = newStatus ? '启用' : '禁用';
+            
+            if (!confirm(`确定要${action}客户 "${customer.name || customer.customer_uid}" 吗？`)) {
+                return;
+            }
+            
+            // 更新客户状态
+            const updateResponse = await fetch(`${this.apiBaseUrl}/customers/${customerUid}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    enabled: newStatus
+                })
+            });
+            
+            if (updateResponse.ok) {
+                const updateResult = await updateResponse.json();
+                if (updateResult.success === 200) {
+                    this.showToast('成功', `客户${action}成功`, 'success');
+                    // 重新加载客户列表
+                    this.loadCustomersData();
+                } else {
+                    this.showToast('错误', updateResult.message || `${action}客户失败`, 'danger');
+                }
+            } else {
+                this.showToast('错误', `${action}客户失败`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('切换客户状态失败:', error);
+            this.showToast('错误', '切换客户状态失败，请检查网络连接', 'danger');
+        }
     }
 
-    deleteCustomer(customerUid) {
-        if (confirm('确定要删除这个客户吗？此操作不可恢复。')) {
-            // TODO: 实现删除客户功能
-            this.showToast('提示', '删除客户功能开发中', 'info');
+    async deleteCustomer(customerUid) {
+        try {
+            // 获取客户信息用于确认
+            const response = await fetch(`${this.apiBaseUrl}/customers/${customerUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取客户信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取客户信息失败', 'danger');
+                return;
+            }
+            
+            const customer = result.data;
+            const customerName = customer.name || customer.customer_uid;
+            
+            if (!confirm(`确定要删除客户 "${customerName}" 吗？\n\n此操作将：\n- 删除客户的所有数据\n- 删除相关的交易记录\n- 删除持仓信息\n- 此操作不可恢复！`)) {
+                return;
+            }
+            
+            // 执行删除操作
+            const deleteResponse = await fetch(`${this.apiBaseUrl}/customers/${customerUid}`, {
+                method: 'DELETE'
+            });
+            
+            if (deleteResponse.ok) {
+                const deleteResult = await deleteResponse.json();
+                if (deleteResult.success === 200) {
+                    this.showToast('成功', '客户删除成功', 'success');
+                    // 重新加载客户列表
+                    this.loadCustomersData();
+                } else {
+                    this.showToast('错误', deleteResult.message || '删除客户失败', 'danger');
+                }
+            } else {
+                const errorText = await deleteResponse.text();
+                console.error('删除客户失败:', deleteResponse.status, errorText);
+                this.showToast('错误', `删除客户失败: ${deleteResponse.status}`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('删除客户失败:', error);
+            this.showToast('错误', '删除客户失败，请检查网络连接', 'danger');
         }
     }
 
@@ -1577,66 +2112,157 @@ class OKXTradingApp {
         }
     }
 
-    viewSignalSourceDetails(sourceUid) {
-        // 这里可以实现查看详情的功能，比如显示一个只读的模态框
-        this.showToast('信息', `查看信号源详情: ${sourceUid}`, 'info');
+    async viewSignalSourceDetails(sourceUid) {
+        try {
+            // 获取信号源详细信息
+            const response = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取信号源信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取信号源信息失败', 'danger');
+                return;
+            }
+            
+            const source = result.data;
+            
+            // 填充详情数据
+            this.populateSignalSourceDetails(source);
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('signalSourceDetailModal'));
+            modal.show();
+            
+        } catch (error) {
+            console.error('查看信号源详情失败:', error);
+            this.showToast('错误', '查看信号源详情失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 填充信号源详情数据
+    populateSignalSourceDetails(source) {
+        // 基本信息
+        document.getElementById('signalSourceDetailUid').textContent = source.source_uid || '-';
+        document.getElementById('signalSourceDetailName').textContent = source.name || '-';
+        document.getElementById('signalSourceDetailExchange').textContent = source.exchange || 'OKX';
+        document.getElementById('signalSourceDetailInitAssets').textContent = this.formatNumber(source.init_assets || 0);
+        document.getElementById('signalSourceDetailCurrentAsset').textContent = this.formatNumber(source.current_asset || 0);
+        document.getElementById('signalSourceDetailLeverage').textContent = source.leverage || 1;
+        
+        // 配置信息
+        document.getElementById('signalSourceDetailStopLossPercent').textContent = 
+            source.stop_loss_percent ? `${source.stop_loss_percent}%` : '-';
+        document.getElementById('signalSourceDetailStopLossEnabled').innerHTML = 
+            source.stop_loss_enabled ? '<span class="badge bg-success">已启用</span>' : '<span class="badge bg-secondary">未启用</span>';
+        document.getElementById('signalSourceDetailStatus').innerHTML = 
+            source.enabled ? '<span class="badge bg-success">启用</span>' : '<span class="badge bg-secondary">禁用</span>';
+        document.getElementById('signalSourceDetailIsDemo').textContent = source.is_demo ? '模拟账户' : '实盘账户';
+        document.getElementById('signalSourceDetailCreatedAt').textContent = this.formatDateTime(source.created_at) || '-';
+        document.getElementById('signalSourceDetailLastAssetCheck').textContent = this.formatDateTime(source.last_asset_check) || '-';
     }
 
     async toggleSignalSourceStatus(sourceUid) {
         try {
             // 获取当前信号源信息
             const response = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`);
-            if (response.ok) {
-                const data = await response.json();
-                const signalSource = data.data;
-                const newStatus = !signalSource.enabled;
-                
-                // 更新状态
-                const updateResponse = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`, {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        enabled: newStatus
-                    })
-                });
-                
-                if (updateResponse.ok) {
-                    this.showToast('成功', `信号源状态已${newStatus ? '启用' : '禁用'}`, 'success');
+            if (!response.ok) {
+                this.showToast('错误', '获取信号源信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取信号源信息失败', 'danger');
+                return;
+            }
+            
+            const signalSource = result.data;
+            const newStatus = !signalSource.enabled;
+            const action = newStatus ? '启用' : '禁用';
+            const sourceName = signalSource.name || signalSource.source_uid;
+            
+            if (!confirm(`确定要${action}信号源 "${sourceName}" 吗？`)) {
+                return;
+            }
+            
+            // 更新状态
+            const updateResponse = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    enabled: newStatus
+                })
+            });
+            
+            if (updateResponse.ok) {
+                const updateResult = await updateResponse.json();
+                if (updateResult.success === 200) {
+                    this.showToast('成功', `信号源${action}成功`, 'success');
                     // 刷新数据
                     this.loadSignalSourcesData();
                 } else {
-                    this.showToast('错误', '状态更新失败', 'danger');
+                    this.showToast('错误', updateResult.message || `${action}信号源失败`, 'danger');
                 }
             } else {
-                this.showToast('错误', '获取信号源信息失败', 'danger');
+                this.showToast('错误', `${action}信号源失败`, 'danger');
             }
+            
         } catch (error) {
             console.error('切换信号源状态失败:', error);
-            this.showToast('错误', '网络请求失败', 'danger');
+            this.showToast('错误', '切换信号源状态失败，请检查网络连接', 'danger');
         }
     }
 
     async deleteSignalSource(sourceUid) {
-
-        if (confirm('确定要删除这个信号源吗？此操作不可恢复。')) {
-            try {
-                const response = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`, {
-                    method: 'DELETE'
-                });
-                
-                if (response.ok) {
+        try {
+            // 获取信号源信息用于确认
+            const response = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取信号源信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取信号源信息失败', 'danger');
+                return;
+            }
+            
+            const source = result.data;
+            const sourceName = source.name || source.source_uid;
+            
+            if (!confirm(`确定要删除信号源 "${sourceName}" 吗？\n\n此操作将：\n- 删除信号源的所有数据\n- 删除相关的交易记录\n- 删除持仓信息\n- 此操作不可恢复！`)) {
+                return;
+            }
+            
+            // 执行删除操作
+            const deleteResponse = await fetch(`${this.apiBaseUrl}/signal_sources/${sourceUid}`, {
+                method: 'DELETE'
+            });
+            
+            if (deleteResponse.ok) {
+                const deleteResult = await deleteResponse.json();
+                if (deleteResult.success === 200) {
                     this.showToast('成功', '信号源删除成功', 'success');
                     // 刷新数据
                     this.loadSignalSourcesData();
                 } else {
-                    this.showToast('错误', '删除失败', 'danger');
+                    this.showToast('错误', deleteResult.message || '删除信号源失败', 'danger');
                 }
-            } catch (error) {
-                console.error('删除信号源失败:', error);
-                this.showToast('错误', '网络请求失败', 'danger');
+            } else {
+                const errorText = await deleteResponse.text();
+                console.error('删除信号源失败:', deleteResponse.status, errorText);
+                this.showToast('错误', `删除信号源失败: ${deleteResponse.status}`, 'danger');
             }
+            
+        } catch (error) {
+            console.error('删除信号源失败:', error);
+            this.showToast('错误', '删除信号源失败，请检查网络连接', 'danger');
         }
     }
 
@@ -1671,10 +2297,64 @@ class OKXTradingApp {
         }
     }
 
-    viewStrategyDetails(strategyUid) {
-
-        // 这里可以实现查看详情的功能，比如显示一个只读的模态框
-        this.showToast('信息', `查看策略详情: ${strategyUid}`, 'info');
+    async viewStrategyDetails(strategyId) {
+        try {
+            this.showToast('加载中', '正在获取策略详情...', 'info');
+            
+            const response = await fetch(`${this.apiBaseUrl}/strategies/${strategyId}`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            const result = await response.json();
+            
+            if (result.success === 200) {
+                this.showStrategyDetailModal(result.data);
+            } else {
+                this.showToast('错误', result.message || '获取策略详情失败', 'error');
+            }
+        } catch (error) {
+            console.error('获取策略详情失败:', error);
+            this.showToast('错误', '获取策略详情失败: ' + error.message, 'error');
+        }
+    }
+    
+    showStrategyDetailModal(strategy) {
+        // 填充策略详情数据
+        document.getElementById('strategyDetailUid').textContent = strategy.strategy_uid || '-';
+        document.getElementById('strategyDetailName').textContent = strategy.name || '-';
+        document.getElementById('strategyDetailDescription').textContent = strategy.description || '-';
+        document.getElementById('strategyDetailType').textContent = '市价单策略';
+        document.getElementById('strategyDetailStatus').textContent = strategy.enabled ? '启用' : '禁用';
+        document.getElementById('strategyDetailIsDemo').textContent = strategy.is_demo ? '演示账户' : '实盘账户';
+        
+        // 填充更多详情 - 市价单策略特有字段
+        document.getElementById('strategyDetailTrader').textContent = strategy.signal_sources || '-';
+        document.getElementById('strategyDetailSymbol').textContent = strategy.rules || '-';
+        document.getElementById('strategyDetailPosSide').textContent = strategy.signal_source_count || '0';
+        document.getElementById('strategyDetailFollowValue').textContent = strategy.rule_count || '0';
+        document.getElementById('strategyDetailLeverage').textContent = '-';
+        document.getElementById('strategyDetailMaxLeverage').textContent = '-';
+        document.getElementById('strategyDetailMaxOrders').textContent = '-';
+        
+        // 填充客户列表 - 市价单策略的客户关联
+        const customerList = document.getElementById('strategyDetailCustomers');
+        if (strategy.customers && strategy.customers.length > 0) {
+            customerList.innerHTML = strategy.customers.map(customer => `
+                <div class="badge bg-primary me-1 mb-1">
+                    ${customer.customer_name || customer.customer_uid}
+                    ${customer.enabled ? '' : ' (禁用)'}
+                </div>
+            `).join('');
+        } else {
+            customerList.innerHTML = '<span class="text-muted">无关联客户</span>';
+        }
+        
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('strategyDetailModal'));
+        modal.show();
     }
 
     async toggleStrategyStatus(strategyUid) {
@@ -1964,15 +2644,146 @@ class OKXTradingApp {
     }
 
     // 交易记录管理相关函数
-    editTrade(tradeUid) {
-
-        this.showToast('提示', '编辑交易功能开发中', 'info');
+    async editTrade(tradeUid) {
+        try {
+            // 获取交易详细信息
+            const response = await fetch(`${this.apiBaseUrl}/trades/${tradeUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取交易信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取交易信息失败', 'danger');
+                return;
+            }
+            
+            const trade = result.data;
+            
+            // 填充表单数据
+            document.getElementById('editTradeUid').value = trade.trade_uid || '';
+            document.getElementById('editCustomerUid').value = trade.customer_uid || '';
+            document.getElementById('editSymbol').value = trade.symbol || '';
+            document.getElementById('editDirection').value = trade.direction || 'buy';
+            document.getElementById('editPosSide').value = trade.pos_side || 'long';
+            document.getElementById('editVolume').value = trade.volume_contract || trade.sz || 0;
+            document.getElementById('editOpenPx').value = trade.open_px || 0;
+            document.getElementById('editStatus').value = trade.status || 'open';
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('editTradeModal'));
+            modal.show();
+            
+        } catch (error) {
+            console.error('编辑交易失败:', error);
+            this.showToast('错误', '编辑交易失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 保存编辑的交易
+    async saveEditTrade() {
+        try {
+            const tradeUid = document.getElementById('editTradeUid').value;
+            if (!tradeUid) {
+                this.showToast('错误', '交易ID不能为空', 'danger');
+                return;
+            }
+            
+            const formData = {
+                symbol: document.getElementById('editSymbol').value,
+                direction: document.getElementById('editDirection').value,
+                pos_side: document.getElementById('editPosSide').value,
+                volume_contract: parseFloat(document.getElementById('editVolume').value) || 0,
+                open_px: parseFloat(document.getElementById('editOpenPx').value) || 0,
+                status: document.getElementById('editStatus').value
+            };
+            
+            // 验证必填字段
+            if (!formData.symbol || !formData.direction || !formData.pos_side) {
+                this.showToast('错误', '请填写所有必填字段', 'danger');
+                return;
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/trades/${tradeUid}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '交易记录更新成功', 'success');
+                    
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editTradeModal'));
+                    modal.hide();
+                    
+                    // 重新加载交易列表
+                    this.loadTradesData();
+                } else {
+                    this.showToast('错误', result.message || '更新交易记录失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('更新交易记录失败:', response.status, errorText);
+                this.showToast('错误', `更新交易记录失败: ${response.status}`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('保存编辑交易失败:', error);
+            this.showToast('错误', '保存交易记录失败，请检查网络连接', 'danger');
+        }
     }
 
-    deleteTrade(tradeUid) {
-
-        if (confirm('确定要删除这个交易记录吗？此操作不可恢复。')) {
-            this.showToast('提示', '删除交易功能开发中', 'info');
+    async deleteTrade(tradeUid) {
+        try {
+            // 获取交易信息用于确认
+            const response = await fetch(`${this.apiBaseUrl}/trades/${tradeUid}`);
+            if (!response.ok) {
+                this.showToast('错误', '获取交易信息失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取交易信息失败', 'danger');
+                return;
+            }
+            
+            const trade = result.data;
+            const tradeInfo = `${trade.symbol} - ${trade.direction === 'buy' ? '买入' : '卖出'} - ${trade.volume_contract || trade.sz}手`;
+            
+            if (!confirm(`确定要删除交易记录吗？\n\n交易信息: ${tradeInfo}\n\n此操作将：\n- 删除交易记录\n- 删除相关的持仓信息\n- 此操作不可恢复！`)) {
+                return;
+            }
+            
+            // 执行删除操作
+            const deleteResponse = await fetch(`${this.apiBaseUrl}/trades/${tradeUid}`, {
+                method: 'DELETE'
+            });
+            
+            if (deleteResponse.ok) {
+                const deleteResult = await deleteResponse.json();
+                if (deleteResult.success === 200) {
+                    this.showToast('成功', '交易记录删除成功', 'success');
+                    // 重新加载交易列表
+                    this.loadTradesData();
+                } else {
+                    this.showToast('错误', deleteResult.message || '删除交易记录失败', 'danger');
+                }
+            } else {
+                const errorText = await deleteResponse.text();
+                console.error('删除交易记录失败:', deleteResponse.status, errorText);
+                this.showToast('错误', `删除交易记录失败: ${deleteResponse.status}`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('删除交易记录失败:', error);
+            this.showToast('错误', '删除交易记录失败，请检查网络连接', 'danger');
         }
     }
 
@@ -3199,7 +4010,7 @@ class OKXTradingApp {
         const currentFilter = document.querySelector('input[name="customerFilter"]:checked').value;
         
         // 调用带参数的加载函数
-        this.loadCustomersDataWithParams(searchTerm, currentFilter);
+        this.loadCustomersDataWithParams(searchTerm, currentFilter, 1);
     }
 
     // 客户筛选功能
@@ -3208,15 +4019,18 @@ class OKXTradingApp {
         const searchTerm = document.getElementById('customerSearch').value.trim();
         
         // 调用带参数的加载函数
-        this.loadCustomersDataWithParams(searchTerm, filterValue);
+        this.loadCustomersDataWithParams(searchTerm, filterValue, 1);
     }
 
     // 带参数的客户数据加载
-    async loadCustomersDataWithParams(searchTerm = '', filterValue = 'all') {
+    async loadCustomersDataWithParams(searchTerm = '', filterValue = 'all', page = 1, pageSize = 10) {
         try {
             
             // 构建查询参数
-            const params = new URLSearchParams();
+            const params = new URLSearchParams({
+                page: page,
+                page_size: pageSize
+            });
             if (searchTerm) {
                 params.append('name', searchTerm);
             }
@@ -3224,30 +4038,37 @@ class OKXTradingApp {
                 params.append('enabled', filterValue === 'enabled' ? '1' : '0');
             }
 
-            const url = `${this.apiBaseUrl}/customers${params.toString() ? '?' + params.toString() : ''}`;
+            const url = `${this.apiBaseUrl}/customers?${params.toString()}`;
 
             const response = await fetch(url);
             if (response.ok) {
                 const data = await response.json();
                 
+                
                 // 检查数据结构
                 if (Array.isArray(data.data)) {
                     // 直接返回数组的情况
-                    this.renderCustomersTable(data.data);
+                    this.renderCustomersTable(data.data, data.pagination);
                 } else if (data.data && Array.isArray(data.data.customers)) {
-                    // 嵌套结构的情况
-                    this.renderCustomersTable(data.data.customers);
+                    // 嵌套结构的情况 - 从data中提取分页信息
+                    const pagination = {
+                        current_page: data.data.page || 1,
+                        total_pages: Math.ceil((data.data.total || 0) / (data.data.page_size || 10)),
+                        total_count: data.data.total || 0,
+                        page_size: data.data.page_size || 10
+                    };
+                    this.renderCustomersTable(data.data.customers, pagination);
                 } else {
                     console.error('客户数据格式错误:', data.data);
-                    this.renderCustomersTable([]);
+                    this.renderCustomersTable([], null);
                 }
             } else {
                 console.error('加载客户数据失败:', response.statusText);
-                this.renderCustomersTable([]);
+                this.renderCustomersTable([], null);
             }
         } catch (error) {
             console.error('加载客户数据失败:', error);
-            this.renderCustomersTable([]);
+            this.renderCustomersTable([], null);
         }
     }
 
@@ -3384,11 +4205,6 @@ class OKXTradingApp {
         this.currentEditCustomerUid = null;
     }
 
-    deleteCustomer(customerUid) {
-        if (confirm(`确定要删除客户 ${customerUid} 吗？`)) {
-            this.showToast('信息', `删除客户功能开发中...`, 'info');
-        }
-    }
 
     // 信号源搜索功能
     searchSignalSources() {
@@ -3456,14 +4272,25 @@ class OKXTradingApp {
         }
     }
 
+
     // 保存策略
     saveStrategyManagement() {
         const form = document.getElementById('addStrategyForm');
         if (form && form.checkValidity()) {
+            // 获取选中的信号源
+            const signalSourcesSelect = document.getElementById('signalSources');
+            const selectedSignalSources = Array.from(signalSourcesSelect.selectedOptions).map(option => option.value);
+            
+            // 获取选中的客户
+            const customersSelect = document.getElementById('strategyCustomers');
+            const selectedCustomers = Array.from(customersSelect.selectedOptions).map(option => option.value);
+            
             const strategyData = {
                 name: document.getElementById('strategyName').value,
-                description: document.getElementById('strategyDescription').value,
-                signal_source_uid: document.getElementById('signalSources').value,
+                // 移除描述字段
+                // description: document.getElementById('strategyDescription').value,
+                signal_source_uid: selectedSignalSources,
+                customer_uids: selectedCustomers,
                 strategy_type: document.getElementById('strategyType').value,
                 enabled: document.getElementById('strategyEnabled').checked
             };
@@ -3547,11 +4374,26 @@ class OKXTradingApp {
         // 先加载信号源选项
         await this.loadSignalSourcesOptions();
         
+        // 加载客户选项
+        await this.loadCustomersOptions();
+        
         document.getElementById('strategyName').value = strategy.name || '';
-        document.getElementById('strategyDescription').value = strategy.description || '';
-        document.getElementById('signalSources').value = strategy.signal_source_uid || '';
+        // 移除描述字段
+        // document.getElementById('strategyDescription').value = strategy.description || '';
+        
+        // 设置信号源选择
+        if (strategy.signal_source_uids && strategy.signal_source_uids.length > 0) {
+            document.getElementById('signalSources').value = strategy.signal_source_uids;
+        }
+        
         document.getElementById('strategyType').value = strategy.strategy_type || 'trend';
         document.getElementById('strategyEnabled').checked = strategy.enabled || false;
+        
+        // 设置客户选择
+        if (strategy.customers && strategy.customers.length > 0) {
+            const customerUids = strategy.customers.map(c => c.customer_uid);
+            document.getElementById('strategyCustomers').value = customerUids;
+        }
         
         // 如果是编辑模式，禁用某些字段
         if (isEdit) {
@@ -5908,21 +6750,45 @@ class OKXTradingApp {
         }
         
         strategies.forEach(strategy => {
+            // 判断跟单模式并显示相应信息
+            let followSourceDisplay = '';
+            if (strategy.follow_mode === 'follow_signal_source' || strategy.signal_source_uid) {
+                // 信号源模式
+                const signalSourceUid = strategy.signal_source_uid || strategy.trader_unique_name;
+                followSourceDisplay = `<span class="badge bg-info">信号源</span> ${strategy.signal_source_name || signalSourceUid}`;
+            } else {
+                // 跟单员模式
+                followSourceDisplay = `<span class="badge bg-primary">跟单员</span> ${strategy.trader_name || strategy.trader_unique_name || '未知跟单员'}`;
+            }
+            
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>${strategy.strategy_name || strategy.name || '未命名策略'}</td>
-                <td>${strategy.trader_name || strategy.trader_unique_name || '未知跟单员'}</td>
-                <td>${strategy.customer_name || strategy.customer_uid || '未知客户'}</td>
+                <td>${followSourceDisplay}</td>
+                <td>
+                    ${strategy.customers && strategy.customers.length > 0 
+                        ? strategy.customers.map(c => 
+                            `<span class="badge bg-primary me-1 mb-1">${c.customer_name || c.customer_uid}${c.custom_leverage ? ` (${c.custom_leverage}倍)` : ''}</span>`
+                          ).join('')
+                        : (strategy.customer_name || strategy.customer_uid || '未知客户')
+                    }
+                </td>
                 <td>${strategy.symbol}</td>
                 <td><span class="badge bg-${strategy.pos_side === 'both' ? 'info' : (strategy.pos_side === 'long' ? 'success' : 'danger')}">${strategy.pos_side === 'both' ? '双向' : (strategy.pos_side === 'long' ? '多仓' : '空仓')}</span></td>
                 <td>${strategy.follow_type === 'percentage' ? '价格偏移' : '固定价格'}</td>
                 <td>${strategy.follow_value}% (${strategy.min_follow_value}% - ${strategy.max_follow_value}%)</td>
+                <td>
+                    ${this.getFollowOrderTypeDisplay(strategy.follow_order_types)}
+                </td>
                 <td><span class="badge bg-${strategy.enabled ? 'success' : 'secondary'}">${strategy.enabled ? '启用' : '禁用'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-outline-primary" onclick="app.editLimitFollowStrategy(${strategy.id})">
+                    <button class="btn btn-sm btn-outline-primary" onclick="app.editLimitFollowStrategy(${strategy.id})" title="编辑策略">
                         <i class="bi bi-pencil"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="app.deleteLimitFollowStrategy(${strategy.id})">
+                    <button class="btn btn-sm btn-outline-info" onclick="app.manageStrategyCustomers(${strategy.id})" title="管理客户">
+                        <i class="bi bi-people"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="app.deleteLimitFollowStrategy(${strategy.id})" title="删除策略">
                         <i class="bi bi-trash"></i>
                     </button>
                 </td>
@@ -5931,6 +6797,24 @@ class OKXTradingApp {
         });
     }
     
+    // 获取跟单订单类型显示
+    getFollowOrderTypeDisplay(followOrderTypes) {
+        if (!followOrderTypes) {
+            return '<span class="badge bg-secondary">限价单</span>';
+        }
+        
+        switch (followOrderTypes) {
+            case 'limit_only':
+                return '<span class="badge bg-warning">限价单</span>';
+            case 'market_only':
+                return '<span class="badge bg-success">市价单</span>';
+            case 'both':
+                return '<span class="badge bg-info">限价+市价</span>';
+            default:
+                return '<span class="badge bg-secondary">限价单</span>';
+        }
+    }
+
     // 加载限价跟单订单列表
     async loadLimitFollowOrders() {
         try {
@@ -5999,13 +6883,14 @@ class OKXTradingApp {
                 console.warn('跟单员API请求失败:', tradersResponse.status);
             }
             
-            // 加载客户列表
-            const customersResponse = await fetch(`${this.apiBaseUrl}/customers`);
+            // 加载客户列表 - 用于跟单员模式下的跟单账户
+            // 获取所有客户数据（不分页）
+            const customersResponse = await fetch(`${this.apiBaseUrl}/customers?page_size=100`);
             if (customersResponse.ok) {
                 const result = await customersResponse.json();
                 if (result.success === 200 && result.data && result.data.customers) {
-                    // 先添加普通客户
-                    this.populateSelectOptions('limitFollowStrategyCustomer', result.data.customers, 'customer_uid', 'name');
+                    // 存储客户数据，稍后根据模式分配
+                    this.customersData = result.data.customers;
                 } else {
                     console.warn('客户API返回失败:', result);
                 }
@@ -6013,28 +6898,16 @@ class OKXTradingApp {
                 console.warn('客户API请求失败:', customersResponse.status);
             }
             
-            // 加载信号源列表并添加到客户选项中
+            // 加载信号源列表
             const signalSourcesResponse = await fetch(`${this.apiBaseUrl}/signal_sources`);
             if (signalSourcesResponse.ok) {
                 const result = await signalSourcesResponse.json();
                 if (result.success === 200 && result.data) {
-                    // 将信号源也添加到客户选项中
-                    const customerSelect = document.getElementById('limitFollowStrategyCustomer');
-                    if (customerSelect) {
-                        // 添加分隔符
-                        const separator = document.createElement('option');
-                        separator.disabled = true;
-                        separator.textContent = '--- 信号源 ---';
-                        customerSelect.appendChild(separator);
-                        
-                        // 添加信号源选项
-                        result.data.forEach(signalSource => {
-                            const option = document.createElement('option');
-                            option.value = signalSource.source_uid;  // 直接使用source_uid，不加signal_前缀
-                            option.textContent = `[信号源] ${signalSource.name}`;
-                            customerSelect.appendChild(option);
-                        });
-                    }
+                    // 存储信号源数据，稍后根据模式分配
+                    this.signalSourcesData = result.data;
+                    
+                    // 直接填充信号源选择框（用于信号源模式）
+                    this.populateSelectOptions('limitFollowStrategySignalSource', result.data, 'source_uid', 'name');
                 } else {
                     console.warn('信号源API返回失败:', result);
                 }
@@ -6106,7 +6979,8 @@ class OKXTradingApp {
                 url = `${this.apiBaseUrl}/limit-follow/strategies/${strategyId}`;
                 method = 'PUT';
             } else {
-                url = `${this.apiBaseUrl}/limit-follow/strategies`;
+                // 使用多客户API
+                url = `${this.apiBaseUrl}/limit-follow/strategies/multi-customer`;
                 method = 'POST';
             }
             
@@ -6173,67 +7047,6 @@ class OKXTradingApp {
         return `LIMIT_FOLLOW_${timestamp}_${random}`;
     }
     
-    // 获取表单数据
-    getLimitFollowFormData() {
-        const strategyName = document.getElementById('limitFollowStrategyName').value;
-        const traderUniqueName = document.getElementById('limitFollowStrategyTrader').value;
-        const customerUid = document.getElementById('limitFollowStrategyCustomer').value;
-        const symbol = document.getElementById('limitFollowStrategySymbol').value;
-        const posSide = document.getElementById('limitFollowStrategyPosSide').value;
-        const followType = document.getElementById('limitFollowStrategyFollowType').value;
-        const followValue = parseFloat(document.getElementById('limitFollowStrategyFollowValue').value);
-        const maxOrders = parseInt(document.getElementById('limitFollowStrategyMaxOrdersPerSignal').value);
-        const minValue = parseFloat(document.getElementById('limitFollowStrategyMinFollowValue').value);
-        const maxValue = parseFloat(document.getElementById('limitFollowStrategyMaxFollowValue').value);
-        const autoCancel = document.getElementById('limitFollowStrategyAutoCancelOnSignalClose').value === 'true';
-
-        // 验证必填字段
-        if (!strategyName || !traderUniqueName || !customerUid || !symbol || !posSide || !followType || !followValue) {
-            this.showToast('错误', '请填写所有必填字段', 'danger');
-            return null;
-        }
-
-        // 验证跟单值范围
-        if (followValue < 0.1 || followValue > 10) {
-            this.showToast('错误', '跟单值建议在 0.1% - 10% 之间', 'danger');
-            return null;
-        }
-
-        // 验证最小值和最大值
-        if (minValue < 0.1 || maxValue > 10) {
-            this.showToast('错误', '最小值和最大值建议在 0.1% - 10% 之间', 'danger');
-            return null;
-        }
-
-        // 验证跟单值必须在最小值和最大值之间
-        if (followValue < minValue || followValue > maxValue) {
-            this.showToast('错误', '跟单值必须在最小值和最大值之间', 'danger');
-            return null;
-        }
-
-        // 验证最大订单数量
-        if (maxOrders < 1 || maxOrders > 10) {
-            this.showToast('错误', '最大订单数量建议在 1 - 10 之间', 'danger');
-            return null;
-        }
-
-        const result = {
-            strategy_name: strategyName,
-            trader_unique_name: traderUniqueName,
-            customer_uid: customerUid,
-            symbol: symbol,
-            pos_side: posSide,
-            follow_type: followType,
-            follow_value: followValue,
-            max_orders_per_signal: maxOrders,
-            min_follow_value: minValue,
-            max_follow_value: maxValue,
-            auto_cancel_on_signal_close: autoCancel
-        };
-
-        return result;
-    }
-    
     // 清空表单
     clearLimitFollowForm() {
         document.getElementById('addLimitFollowStrategyForm').reset();
@@ -6271,8 +7084,47 @@ class OKXTradingApp {
             
             // 填充表单数据
             document.getElementById('limitFollowStrategyName').value = strategy.strategy_name || '';
-            document.getElementById('limitFollowStrategyTrader').value = strategy.trader_unique_name || '';
-            document.getElementById('limitFollowStrategyCustomer').value = strategy.customer_uid || '';
+            
+            // 设置跟单模式 - 将后端的模式值转换为前端值
+            let followMode = strategy.follow_mode;
+            if (followMode === 'follow_trader') {
+                followMode = 'trader';
+            } else if (followMode === 'follow_signal_source') {
+                followMode = 'signal';
+            } else if (!followMode) {
+                // 向后兼容：通过signal_source_uid字段判断模式
+                if (strategy.signal_source_uid) {
+                    followMode = 'signal';
+                } else if (strategy.trader_unique_name) {
+                    followMode = 'trader';
+                } else {
+                    followMode = 'trader'; // 默认为跟单员模式
+                }
+            }
+            
+            document.getElementById('limitFollowMode').value = followMode;
+            
+            // 触发模式切换处理
+            this.handleFollowModeChange();
+            
+            // 根据模式设置相应的字段
+            if (followMode === 'trader') {
+                document.getElementById('limitFollowStrategyTrader').value = strategy.trader_unique_name || '';
+                // 设置多客户选择
+                if (strategy.customers && strategy.customers.length > 0) {
+                    const customerUids = strategy.customers.map(c => c.customer_uid);
+                    document.getElementById('limitFollowStrategyCustomers').value = customerUids;
+                }
+            } else if (followMode === 'signal') {
+                // 直接使用signal_source_uid或trader_unique_name（它们现在是相同的）
+                const signalSourceUid = strategy.signal_source_uid || strategy.trader_unique_name;
+                document.getElementById('limitFollowStrategySignalSource').value = signalSourceUid || '';
+                // 设置多客户选择
+                if (strategy.customers && strategy.customers.length > 0) {
+                    const customerUids = strategy.customers.map(c => c.customer_uid);
+                    document.getElementById('limitFollowStrategyFollowCustomers').value = customerUids;
+                }
+            }
             if (strategy.symbol === 'ALL') {
                 document.getElementById('symbolTypeAll').checked = true;
                 document.getElementById('symbolTypeSpecific').checked = false;
@@ -6294,12 +7146,27 @@ class OKXTradingApp {
             document.getElementById('limitFollowStrategyFollowType').value = strategy.follow_type || 'percentage';
             document.getElementById('limitFollowStrategyFollowValue').value = strategy.follow_value || '';
             document.getElementById('limitFollowStrategyMaxOrdersPerSignal').value = strategy.max_orders_per_signal || 4;
+            document.getElementById('limitFollowStrategyLeverage').value = strategy.leverage || 10;
             document.getElementById('limitFollowStrategyMaxNetLeverage').value = strategy.max_net_leverage || 10.0;
             document.getElementById('limitFollowStrategyProportionalPosition').checked = strategy.proportional_position || false;
             document.getElementById('limitFollowStrategyMinFollowValue').value = strategy.min_follow_value || 0.5;
             document.getElementById('limitFollowStrategyMaxFollowValue').value = strategy.max_follow_value || 5.0;
             document.getElementById('limitFollowStrategyAutoCancelOnSignalClose').value = strategy.auto_cancel_on_signal_close ? 'true' : 'false';
             
+            // 设置跟单订单类型
+            document.getElementById('followOrderTypes').value = strategy.follow_order_types || 'limit_only';
+            
+            // 设置限价市价比例
+            document.getElementById('limitMarketRatio').value = strategy.limit_market_ratio || '1:1';
+            
+            // 根据订单类型显示/隐藏比例配置
+            const limitMarketRatioRow = document.getElementById('limitMarketRatioRow');
+            if (strategy.follow_order_types === 'both') {
+                limitMarketRatioRow.style.display = 'block';
+            } else {
+                limitMarketRatioRow.style.display = 'none';
+            }
+
             // 修改模态框标题
             document.querySelector('#addLimitFollowStrategyModal .modal-title').textContent = '编辑策略';
             
@@ -6415,7 +7282,90 @@ class OKXTradingApp {
     // 保存限价跟单配置
     async saveLimitFollowConfig() {
         try {
-            this.showToast('信息', '配置保存功能开发中...', 'info');
+            // 收集配置数据
+            const configData = {};
+            
+            // 从页面中收集配置项
+            const configElements = document.querySelectorAll('[data-config-key]');
+            configElements.forEach(element => {
+                const key = element.getAttribute('data-config-key');
+                let value = element.value;
+                
+                // 根据元素类型处理值
+                if (element.type === 'checkbox') {
+                    value = element.checked;
+                } else if (element.type === 'number') {
+                    value = parseFloat(value) || 0;
+                } else if (element.type === 'radio') {
+                    if (element.checked) {
+                        value = element.value;
+                    }
+                }
+                
+                if (key && value !== undefined && value !== '') {
+                    configData[key] = value;
+                }
+            });
+            
+            // 如果没有找到配置元素，使用默认配置
+            if (Object.keys(configData).length === 0) {
+                // 从表单中收集配置
+                const defaultConfig = {
+                    max_orders_per_signal: 4,
+                    default_follow_mode: 'follow_signal_source',
+                    auto_execute_orders: true,
+                    risk_control_enabled: true,
+                    max_position_ratio: 0.1,
+                    min_trade_interval: 60
+                };
+                
+                // 尝试从常见的配置元素获取值
+                const maxOrders = document.getElementById('maxOrdersPerSignal');
+                if (maxOrders) configData.max_orders_per_signal = parseInt(maxOrders.value) || 4;
+                
+                const followMode = document.querySelector('input[name="followMode"]:checked');
+                if (followMode) configData.default_follow_mode = followMode.value;
+                
+                const autoExecute = document.getElementById('autoExecuteOrders');
+                if (autoExecute) configData.auto_execute_orders = autoExecute.checked;
+                
+                const riskControl = document.getElementById('riskControlEnabled');
+                if (riskControl) configData.risk_control_enabled = riskControl.checked;
+                
+                const maxRatio = document.getElementById('maxPositionRatio');
+                if (maxRatio) configData.max_position_ratio = parseFloat(maxRatio.value) || 0.1;
+                
+                const minInterval = document.getElementById('minTradeInterval');
+                if (minInterval) configData.min_trade_interval = parseInt(minInterval.value) || 60;
+                
+                // 如果仍然没有配置，使用默认值
+                if (Object.keys(configData).length === 0) {
+                    Object.assign(configData, defaultConfig);
+                }
+            }
+            
+            // 发送配置到服务器
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/config`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(configData)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '限价跟单配置保存成功', 'success');
+                } else {
+                    this.showToast('错误', result.message || '保存配置失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('保存配置失败:', response.status, errorText);
+                this.showToast('错误', `保存配置失败: ${response.status}`, 'danger');
+            }
+            
         } catch (error) {
             console.error('保存配置失败:', error);
             this.showToast('错误', `保存配置失败: ${error.message}`, 'danger');
@@ -6423,41 +7373,240 @@ class OKXTradingApp {
     }
 
     // 重置限价跟单配置
-    resetLimitFollowConfig() {
+    async resetLimitFollowConfig() {
         try {
-            this.showToast('信息', '配置重置功能开发中...', 'info');
+            if (!confirm('确定要重置限价跟单配置吗？这将恢复所有配置到默认值。')) {
+                return;
+            }
+            
+            // 重置为默认配置
+            const defaultConfig = {
+                max_orders_per_signal: 4,
+                default_follow_mode: 'follow_signal_source',
+                auto_execute_orders: true,
+                risk_control_enabled: true,
+                max_position_ratio: 0.1,
+                min_trade_interval: 60
+            };
+            
+            // 发送重置配置到服务器
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/config`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(defaultConfig)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '限价跟单配置已重置为默认值', 'success');
+                    
+                    // 重新加载配置页面
+                    this.loadLimitFollowConfig();
+                } else {
+                    this.showToast('错误', result.message || '重置配置失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('重置配置失败:', response.status, errorText);
+                this.showToast('错误', `重置配置失败: ${response.status}`, 'danger');
+            }
+            
         } catch (error) {
             console.error('重置配置失败:', error);
             this.showToast('错误', `重置配置失败: ${error.message}`, 'danger');
         }
     }
+    
+    // 加载限价跟单配置
+    async loadLimitFollowConfig() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/config`);
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.populateLimitFollowConfig(result.data);
+                } else {
+                    console.error('加载配置失败:', result.message);
+                }
+            } else {
+                console.error('加载配置失败:', response.status);
+            }
+        } catch (error) {
+            console.error('加载限价跟单配置失败:', error);
+        }
+    }
+    
+    // 填充限价跟单配置到表单
+    populateLimitFollowConfig(config) {
+        // 填充配置到表单元素
+        Object.keys(config).forEach(key => {
+            const element = document.getElementById(key) || document.querySelector(`[data-config-key="${key}"]`);
+            if (element) {
+                if (element.type === 'checkbox') {
+                    element.checked = config[key];
+                } else if (element.type === 'radio') {
+                    element.checked = element.value === config[key];
+                } else {
+                    element.value = config[key];
+                }
+            }
+        });
+    }
 
     // 显示执行跟单模态框
-    showExecuteLimitFollowModal() {
+    async showExecuteLimitFollowModal() {
         try {
-            this.showToast('信息', '执行跟单功能开发中...', 'info');
+            // 加载客户列表
+            await this.loadExecutionCustomers();
+            
+            // 加载信号源列表
+            await this.loadExecutionSignalSources();
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('executeLimitFollowModal'));
+            modal.show();
+            
         } catch (error) {
             console.error('显示执行跟单模态框失败:', error);
             this.showToast('错误', `显示执行跟单模态框失败: ${error.message}`, 'danger');
+        }
+    }
+    
+    // 加载执行跟单的客户列表
+    async loadExecutionCustomers() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/customers`);
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    const customers = result.data.customers || result.data;
+                    const select = document.getElementById('executionCustomer');
+                    if (select) {
+                        select.innerHTML = '<option value="">选择客户</option>';
+                        customers.forEach(customer => {
+                            const option = document.createElement('option');
+                            option.value = customer.customer_uid;
+                            option.textContent = `${customer.name || customer.customer_uid} (${customer.customer_uid})`;
+                            select.appendChild(option);
+                        });
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('加载客户列表失败:', error);
+        }
+    }
+    
+    // 加载执行跟单的信号源列表
+    async loadExecutionSignalSources() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/signal_sources`);
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    const sources = result.data;
+                    const select = document.getElementById('executionSignalSource');
+                    if (select) {
+                        select.innerHTML = '<option value="">选择信号源</option>';
+                        sources.forEach(source => {
+                            const option = document.createElement('option');
+                            option.value = source.source_uid;
+                            option.textContent = `${source.name || source.source_uid} (${source.source_uid})`;
+                            select.appendChild(option);
+                        });
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('加载信号源列表失败:', error);
         }
     }
 
     // 提交执行跟单
     async submitLimitFollowExecution() {
         try {
-            this.showToast('信息', '执行跟单功能开发中...', 'info');
+            // 获取表单数据
+            const customerUid = document.getElementById('executionCustomer').value;
+            const signalSource = document.getElementById('executionSignalSource').value;
+            const symbol = document.getElementById('executionSymbol').value;
+            const posSide = document.getElementById('executionPosSide').value;
+            const signalPrice = document.getElementById('executionSignalPrice').value;
+            const signalVolume = document.getElementById('executionSignalVolume').value;
+            const followPercentages = document.getElementById('executionFollowPercentages').value;
+            
+            // 验证必填字段
+            if (!customerUid || !signalSource || !symbol || !posSide || !signalPrice || !signalVolume) {
+                this.showToast('错误', '请填写所有必填字段', 'danger');
+                return;
+            }
+            
+            // 解析跟单百分比
+            const percentages = followPercentages.split(',').map(p => parseFloat(p.trim())).filter(p => !isNaN(p));
+            if (percentages.length === 0) {
+                this.showToast('错误', '请输入有效的跟单百分比', 'danger');
+                return;
+            }
+            
+            // 准备请求数据
+            const requestData = {
+                trader_unique_name: signalSource, // 使用信号源作为跟单员
+                customer_uid: customerUid,
+                symbol: symbol,
+                pos_side: posSide,
+                signal_price: parseFloat(signalPrice),
+                signal_volume: parseFloat(signalVolume),
+                follow_percentages: percentages
+            };
+            
+            // 显示加载状态
+            this.showToast('信息', '正在执行限价跟单...', 'info');
+            
+            // 发送请求
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/execute`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestData)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', `成功创建 ${result.data.orders.length} 个跟单订单`, 'success');
+                    
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('executeLimitFollowModal'));
+                    modal.hide();
+                    
+                    // 清空表单
+                    document.getElementById('executeLimitFollowForm').reset();
+                    
+                    // 刷新相关数据
+                    this.loadLimitFollowOrders();
+                } else {
+                    this.showToast('错误', result.message || '执行跟单失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('执行跟单失败:', response.status, errorText);
+                this.showToast('错误', `执行跟单失败: ${response.status}`, 'danger');
+            }
+            
         } catch (error) {
             console.error('提交执行跟单失败:', error);
             this.showToast('错误', `提交执行跟单失败: ${error.message}`, 'danger');
         }
-
     }
 
     // ==================== 跟单员管理 ====================
     
     async loadLimitFollowTraders() {
         try {
-            const response = await fetch('/api/v1/limit-follow/traders');
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/traders`);
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
@@ -6519,6 +7668,12 @@ class OKXTradingApp {
         // 清空表单
         document.getElementById('addLimitFollowTraderForm').reset();
         
+        // 重置编辑状态
+        this.editingTraderId = null;
+        
+        // 修改模态框标题
+        document.querySelector('#addLimitFollowTraderModal .modal-title').textContent = '新建跟单员';
+        
         // 显示模态框
         const modal = new bootstrap.Modal(document.getElementById('addLimitFollowTraderModal'));
         modal.show();
@@ -6528,22 +7683,39 @@ class OKXTradingApp {
         try {
             const formData = this.getLimitFollowTraderFormData();
             
-            const response = await fetch('/api/v1/limit-follow/traders', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(formData)
-            });
+            let response;
+            if (this.editingTraderId) {
+                // 编辑模式
+                response = await fetch(`${this.apiBaseUrl}/limit-follow/traders/${this.editingTraderId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+            } else {
+                // 创建模式
+                response = await fetch(`${this.apiBaseUrl}/limit-follow/traders`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+            }
             
             if (response.ok) {
                 const result = await response.json();
-                if (result.success) {
-                    this.showToast('成功', '跟单员创建成功', 'success');
+                if (result.success || result.success === 200) {
+                    const message = this.editingTraderId ? '跟单员更新成功' : '跟单员创建成功';
+                    this.showToast('成功', message, 'success');
                     
                     // 关闭模态框
                     const modal = bootstrap.Modal.getInstance(document.getElementById('addLimitFollowTraderModal'));
                     modal.hide();
+                    
+                    // 重置编辑状态
+                    this.editingTraderId = null;
                     
                     // 重新加载数据
                     this.loadLimitFollowTraders();
@@ -6551,7 +7723,8 @@ class OKXTradingApp {
                     this.showToast('错误', result.message, 'error');
                 }
             } else {
-                this.showToast('错误', '创建跟单员失败', 'error');
+                const errorData = await response.json();
+                this.showToast('错误', errorData.message || '操作失败', 'error');
             }
         } catch (error) {
             console.error('保存跟单员失败:', error);
@@ -6568,6 +7741,374 @@ class OKXTradingApp {
         };
     }
     
+    // 编辑限价跟单员
+    async editLimitFollowTrader(traderId) {
+        // 防止重复点击
+        if (this.isEditingTrader) {
+            this.showToast('提示', '正在处理中，请稍候...', 'info');
+            return;
+        }
+        
+        this.isEditingTrader = true;
+        
+        try {
+            // 显示加载状态
+            this.showToast('信息', '正在加载跟单员数据...', 'info');
+            
+            // 添加超时控制
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+            
+            // 获取跟单员数据
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/traders/${traderId}`, {
+                signal: controller.signal,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                this.showToast('错误', '获取跟单员数据失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取跟单员数据失败', 'danger');
+                return;
+            }
+            
+            const trader = result.data;
+            
+            // 填充表单数据
+            document.getElementById('traderUniqueName').value = trader.unique_name || '';
+            document.getElementById('traderName').value = trader.name || '';
+            document.getElementById('traderDescription').value = trader.description || '';
+            document.getElementById('traderEnabled').checked = trader.enabled || false;
+            
+            // 修改模态框标题
+            document.querySelector('#addLimitFollowTraderModal .modal-title').textContent = '编辑跟单员';
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('addLimitFollowTraderModal'));
+            modal.show();
+            
+            // 存储编辑的ID
+            this.editingTraderId = traderId;
+            
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                this.showToast('错误', '请求超时，请重试', 'error');
+            } else {
+                console.error('编辑跟单员失败:', error);
+                this.showToast('错误', '编辑跟单员失败', 'error');
+            }
+        } finally {
+            // 重置编辑状态
+            this.isEditingTrader = false;
+        }
+    }
+    
+    // 切换限价跟单员启用状态
+    async toggleLimitFollowTrader(traderId) {
+        // 防止重复点击
+        if (this.isTogglingTrader) {
+            this.showToast('提示', '正在处理中，请稍候...', 'info');
+            return;
+        }
+        
+        this.isTogglingTrader = true;
+        
+        try {
+            // 显示加载状态
+            this.showToast('信息', '正在切换状态...', 'info');
+            
+            // 添加超时控制
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+            
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/traders/${traderId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    enabled: 'toggle' // 特殊值，后端会切换状态
+                }),
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '跟单员状态切换成功', 'success');
+                    // 重新加载跟单员列表
+                    this.loadLimitFollowTraders();
+                } else {
+                    console.error('切换跟单员状态失败:', result.message);
+                    this.showToast('错误', result.message, 'error');
+                }
+            } else {
+                const errorData = await response.json();
+                console.error('切换跟单员状态失败:', errorData.message);
+                this.showToast('错误', errorData.message, 'error');
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                this.showToast('错误', '请求超时，请重试', 'error');
+            } else {
+                console.error('切换跟单员状态异常:', error);
+                this.showToast('错误', '切换跟单员状态失败', 'error');
+            }
+        } finally {
+            // 重置切换状态
+            this.isTogglingTrader = false;
+        }
+    }
+
+    // ==================== 限价跟单监控功能 ====================
+    
+    async loadLimitFollowHealth() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/health`);
+            const result = await response.json();
+            
+            if (result.success === 200) {
+                this.updateLimitFollowHealthStatus(result.data);
+            } else {
+                console.error('获取健康状态失败:', result.message);
+            }
+            
+        } catch (error) {
+            console.error('获取限价跟单健康状态失败:', error);
+        }
+    }
+
+    updateLimitFollowHealthStatus(health) {
+        // 更新健康状态显示
+        const statusElement = document.getElementById('limitFollowHealthStatus');
+        if (statusElement) {
+            let statusClass = '';
+            let statusIcon = '';
+            
+            switch (health.overall_status) {
+                case 'healthy':
+                    statusClass = 'text-success';
+                    statusIcon = 'fas fa-check-circle';
+                    break;
+                case 'warning':
+                    statusClass = 'text-warning';
+                    statusIcon = 'fas fa-exclamation-triangle';
+                    break;
+                case 'error':
+                    statusClass = 'text-danger';
+                    statusIcon = 'fas fa-times-circle';
+                    break;
+                default:
+                    statusClass = 'text-secondary';
+                    statusIcon = 'fas fa-question-circle';
+            }
+            
+            statusElement.innerHTML = `
+                <div class="d-flex align-items-center">
+                    <i class="${statusIcon} ${statusClass} me-2"></i>
+                    <div>
+                        <span class="${statusClass} fw-bold">${health.overall_status.toUpperCase()}</span>
+                        <small class="d-block text-muted">
+                            健康评分: ${health.health_score}/100 | 
+                            异常订单: ${health.problematic_orders} | 
+                            最近更新: ${health.recent_updates}
+                        </small>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 更新监控指标
+        this.updateLimitFollowMetrics(health);
+        
+        // 显示建议
+        this.showLimitFollowRecommendations(health.recommendations);
+    }
+
+    updateLimitFollowMetrics(health) {
+        // 更新服务状态
+        const serviceStatusElement = document.getElementById('limitFollowServiceStatus');
+        if (serviceStatusElement) {
+            const statusText = health.service_running ? '运行中' : '已停止';
+            const statusClass = health.service_running ? 'text-success' : 'text-danger';
+            serviceStatusElement.innerHTML = `<span class="${statusClass}">${statusText}</span>`;
+        }
+        
+        // 更新订单统计
+        if (health.orders_summary) {
+            this.updateElement('limitFollowTotal24h', health.orders_summary.total_24h || 0);
+            this.updateElement('limitFollowLiveCount', health.orders_summary.live || 0);
+            this.updateElement('limitFollowFilledCount', health.orders_summary.filled || 0);
+            this.updateElement('limitFollowPendingCount', health.orders_summary.pending || 0);
+        }
+        
+        // 更新监控指标
+        if (health.metrics) {
+            this.updateElement('limitFollowSuccessRate', `${health.metrics.success_rate.toFixed(1)}%`);
+            this.updateElement('limitFollowOrdersChecked', health.metrics.orders_checked || 0);
+            this.updateElement('limitFollowOrdersUpdated', health.metrics.orders_updated || 0);
+            this.updateElement('limitFollowConsecutiveFailures', health.metrics.consecutive_failures || 0);
+        }
+    }
+
+    showLimitFollowRecommendations(recommendations) {
+        const recommendationsElement = document.getElementById('limitFollowRecommendations');
+        if (recommendationsElement && recommendations && recommendations.length > 0) {
+            const recommendationsList = recommendations.map(rec => 
+                `<li class="list-group-item"><i class="fas fa-lightbulb text-warning me-2"></i>${rec}</li>`
+            ).join('');
+            
+            recommendationsElement.innerHTML = `
+                <div class="alert alert-warning">
+                    <h6><i class="fas fa-exclamation-triangle me-2"></i>系统建议</h6>
+                    <ul class="list-group list-group-flush">
+                        ${recommendationsList}
+                    </ul>
+                </div>
+            `;
+            recommendationsElement.style.display = 'block';
+        } else if (recommendationsElement) {
+            recommendationsElement.style.display = 'none';
+        }
+    }
+
+    async syncLimitFollowStatus(forceSync = false) {
+        try {
+            this.showToast('信息', '正在同步订单状态...', 'info');
+            
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/sync-status`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    force_sync: forceSync,
+                    max_orders: 100
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success === 200) {
+                const data = result.data;
+                this.showToast('成功', 
+                    `订单状态同步完成！检查: ${data.total_checked}, 更新: ${data.updated_count}, 错误: ${data.error_count}, 耗时: ${data.duration.toFixed(2)}秒`, 
+                    'success'
+                );
+                
+                // 刷新相关数据
+                await this.loadLimitFollowOrders();
+                await this.loadLimitFollowHealth();
+                
+            } else {
+                this.showToast('错误', result.message || '同步失败', 'error');
+            }
+            
+        } catch (error) {
+            console.error('同步订单状态失败:', error);
+            this.showToast('错误', '同步订单状态失败', 'error');
+        }
+    }
+
+    async loadLimitFollowMetrics() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/metrics`);
+            const result = await response.json();
+            
+            if (result.success === 200) {
+                this.displayLimitFollowMetrics(result.data);
+            } else {
+                console.error('获取监控指标失败:', result.message);
+            }
+            
+        } catch (error) {
+            console.error('获取限价跟单监控指标失败:', error);
+        }
+    }
+
+    displayLimitFollowMetrics(metrics) {
+        // 显示详细的监控指标
+        if (metrics.order_statistics) {
+            const stats = metrics.order_statistics;
+            
+            // 更新订单统计图表（如果有的话）
+            if (window.limitFollowChart) {
+                window.limitFollowChart.data.datasets[0].data = [
+                    stats.filled_orders,
+                    stats.canceled_orders,
+                    stats.rejected_orders,
+                    stats.live_orders,
+                    stats.pending_orders
+                ];
+                window.limitFollowChart.update();
+            }
+            
+            // 更新统计数据显示
+            this.updateElement('metricsSuccessRate', `${stats.success_rate}%`);
+            this.updateElement('metricsAvgFillPrice', `$${stats.average_fill_price.toFixed(2)}`);
+            this.updateElement('metricsTotalVolume', stats.total_filled_volume.toFixed(4));
+        }
+        
+        if (metrics.strategy_statistics) {
+            const strategyStats = metrics.strategy_statistics;
+            this.updateElement('metricsTotalStrategies', strategyStats.total_strategies);
+            this.updateElement('metricsActiveStrategies', strategyStats.active_strategies);
+        }
+    }
+
+    updateElement(elementId, value) {
+        const element = document.getElementById(elementId);
+        if (element) {
+            element.textContent = value;
+        }
+    }
+
+    initLimitFollowMonitoringChart() {
+        // 初始化监控图表
+        const chartCanvas = document.getElementById('limitFollowOrderChart');
+        if (chartCanvas) {
+            const ctx = chartCanvas.getContext('2d');
+            window.limitFollowChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['已成交', '已取消', '已拒绝', '活跃中', '待处理'],
+                    datasets: [{
+                        data: [0, 0, 0, 0, 0],
+                        backgroundColor: [
+                            '#28a745',
+                            '#dc3545',
+                            '#fd7e14',
+                            '#007bff',
+                            '#6c757d'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        },
+                        title: {
+                            display: true,
+                            text: '订单状态分布'
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     // ==================== 交易对设置处理 ====================
     
     handleSymbolTypeChange() {
@@ -6581,22 +8122,144 @@ class OKXTradingApp {
         }
     }
     
+    // 处理跟单模式切换
+    handleFollowModeChange() {
+        const followMode = document.getElementById('limitFollowMode').value;
+        const traderModeConfig = document.getElementById('traderModeConfig');
+        const signalModeConfig = document.getElementById('signalModeConfig');
+        
+        // 隐藏所有配置
+        traderModeConfig.style.display = 'none';
+        signalModeConfig.style.display = 'none';
+        
+        if (followMode === 'trader') {
+            // 跟单员模式
+            traderModeConfig.style.display = 'block';
+            this.populateTraderModeOptions();
+        } else if (followMode === 'signal') {
+            // 信号源模式
+            signalModeConfig.style.display = 'block';
+            this.populateSignalModeOptions();
+        }
+    }
+    
+    // 填充跟单员模式的选项
+    populateTraderModeOptions() {
+        // 客户选择框：包含普通客户和信号源
+        const customerSelect = document.getElementById('limitFollowStrategyCustomers');
+        if (customerSelect) {
+            // 清空现有选项
+            customerSelect.innerHTML = '';
+            
+            // 添加普通客户
+            if (this.customersData && this.customersData.length > 0) {
+                // 添加分隔符
+                const separator1 = document.createElement('option');
+                separator1.disabled = true;
+                separator1.textContent = '--- 普通客户账户 ---';
+                customerSelect.appendChild(separator1);
+                
+                this.customersData.forEach(customer => {
+                    const option = document.createElement('option');
+                    option.value = customer.customer_uid;
+                    option.textContent = `[客户] ${customer.name}`;
+                    customerSelect.appendChild(option);
+                });
+            }
+            
+            // 添加信号源
+            if (this.signalSourcesData && this.signalSourcesData.length > 0) {
+                // 添加分隔符
+                const separator2 = document.createElement('option');
+                separator2.disabled = true;
+                separator2.textContent = '--- 信号源账户 ---';
+                customerSelect.appendChild(separator2);
+                
+                this.signalSourcesData.forEach(signalSource => {
+                    const option = document.createElement('option');
+                    option.value = signalSource.source_uid;
+                    option.textContent = `[信号源] ${signalSource.name}`;
+                    customerSelect.appendChild(option);
+                });
+            }
+        }
+    }
+    
+    // 填充信号源模式的选项
+    populateSignalModeOptions() {
+        // 跟单账户选择框：只包含普通客户
+        const followCustomerSelect = document.getElementById('limitFollowStrategyFollowCustomers');
+        if (followCustomerSelect && this.customersData) {
+            followCustomerSelect.innerHTML = '';
+            
+            this.customersData.forEach(customer => {
+                const option = document.createElement('option');
+                option.value = customer.customer_uid;
+                option.textContent = customer.name;
+                followCustomerSelect.appendChild(option);
+            });
+        }
+    }
+    
     getLimitFollowFormData() {
+        const followMode = document.getElementById('limitFollowMode').value;
+        
+        // 验证跟单模式
+        if (!followMode) {
+            this.showToast('错误', '请选择跟单模式', 'danger');
+            return null;
+        }
+        
+        // 将前端的模式值转换为后端期望的值
+        const backendFollowMode = followMode === 'trader' ? 'follow_trader' : 'follow_signal_source';
+        
         const formData = {
             strategy_name: document.getElementById('limitFollowStrategyName').value,
-            customer_uid: document.getElementById('limitFollowStrategyCustomer').value,
-            trader_unique_name: document.getElementById('limitFollowStrategyTrader').value,
+            follow_mode: backendFollowMode,
+            follow_order_types: document.getElementById('followOrderTypes').value,
+            limit_market_ratio: document.getElementById('limitMarketRatio').value,
             pos_side: document.getElementById('limitFollowStrategyPosSide').value,
             follow_type: document.getElementById('limitFollowStrategyFollowType').value,
             follow_value: parseFloat(document.getElementById('limitFollowStrategyFollowValue').value),
             min_follow_value: parseFloat(document.getElementById('limitFollowStrategyMinFollowValue').value),
             max_follow_value: parseFloat(document.getElementById('limitFollowStrategyMaxFollowValue').value),
             max_orders_per_signal: parseInt(document.getElementById('limitFollowStrategyMaxOrdersPerSignal').value),
+            leverage: parseInt(document.getElementById('limitFollowStrategyLeverage').value),
             max_net_leverage: parseFloat(document.getElementById('limitFollowStrategyMaxNetLeverage').value),
             proportional_position: document.getElementById('limitFollowStrategyProportionalPosition').checked,
-            auto_cancel_on_signal_close: document.getElementById('limitFollowStrategyAutoCancelOnSignalClose').checked,
-            enabled: document.getElementById('limitFollowStrategyEnabled').checked
+            auto_cancel_on_signal_close: document.getElementById('limitFollowStrategyAutoCancelOnSignalClose').value === 'true',
+            enabled: document.getElementById('limitFollowStrategyEnabled').checked ?? true
         };
+        
+        // 根据跟单模式设置不同的字段
+        if (followMode === 'trader') {
+            // 跟单员模式
+            formData.trader_unique_name = document.getElementById('limitFollowStrategyTrader').value;
+            const customerSelect = document.getElementById('limitFollowStrategyCustomers');
+            const selectedCustomers = Array.from(customerSelect.selectedOptions).map(option => option.value);
+            
+            if (!formData.trader_unique_name || selectedCustomers.length === 0) {
+                this.showToast('错误', '跟单员模式下请选择跟单员和跟单账户', 'danger');
+                return null;
+            }
+            
+            formData.customer_uids = selectedCustomers;
+        } else if (followMode === 'signal') {
+            // 信号源模式 - 直接使用信号源UID作为trader_unique_name
+            const signalSourceUid = document.getElementById('limitFollowStrategySignalSource').value;
+            const customerSelect = document.getElementById('limitFollowStrategyFollowCustomers');
+            const selectedCustomers = Array.from(customerSelect.selectedOptions).map(option => option.value);
+            
+            if (!signalSourceUid || selectedCustomers.length === 0) {
+                this.showToast('错误', '信号源模式下请选择信号源和跟单账户', 'danger');
+                return null;
+            }
+            
+            // 直接使用信号源UID作为trader_unique_name，不添加前缀
+            formData.trader_unique_name = signalSourceUid;
+            formData.signal_source_uid = signalSourceUid; // 保留原始信号源UID用于前端识别
+            formData.customer_uids = selectedCustomers;
+        }
         
         // 处理交易对设置
         const symbolTypeAll = document.getElementById('symbolTypeAll');
@@ -6611,7 +8274,339 @@ class OKXTradingApp {
         
         return formData;
     }
-
+    
+    // 管理策略客户
+    async manageStrategyCustomers(strategyId) {
+        try {
+            this.currentStrategyId = strategyId;
+            
+            // 获取策略信息
+            const strategyResponse = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${strategyId}`);
+            if (!strategyResponse.ok) {
+                console.error('[客户管理] 获取策略信息失败:', strategyResponse.status);
+                this.showToast('错误', '获取策略信息失败', 'danger');
+                return;
+            }
+            
+            const strategyResult = await strategyResponse.json();
+            
+            if (strategyResult.success !== 200) {
+                this.showToast('错误', strategyResult.message || '获取策略信息失败', 'danger');
+                return;
+            }
+            
+            const strategy = strategyResult.data;
+            
+            // 更新模态框标题
+            document.querySelector('#manageStrategyCustomersModal .modal-title').textContent = 
+                `管理策略客户 - ${strategy.strategy_name}`;
+            
+            // 加载策略客户列表
+            await this.loadStrategyCustomers(strategyId);
+            
+            // 加载可添加的客户列表
+            await this.loadAvailableCustomers(strategyId);
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('manageStrategyCustomersModal'));
+            modal.show();
+            
+        } catch (error) {
+            console.error('管理策略客户失败:', error);
+            this.showToast('错误', '管理策略客户失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 加载策略客户列表
+    async loadStrategyCustomers(strategyId) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${strategyId}/customers`);
+            if (!response.ok) {
+                console.error('获取策略客户列表失败:', response.status);
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success === 200) {
+                this.renderStrategyCustomersTable(result.data);
+            } else {
+                console.error('获取策略客户列表失败:', result.message);
+            }
+        } catch (error) {
+            console.error('加载策略客户列表失败:', error);
+        }
+    }
+    
+    // 渲染策略客户表格
+    renderStrategyCustomersTable(customers) {
+        const tbody = document.querySelector('#strategyCustomersTable tbody');
+        if (!tbody) return;
+        
+        tbody.innerHTML = '';
+        
+        if (!customers || customers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">暂无客户</td></tr>';
+            return;
+        }
+        
+        customers.forEach(customer => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${customer.customer_name || customer.customer_uid}</td>
+                <td>
+                    <span class="badge bg-${customer.enabled ? 'success' : 'secondary'}">
+                        ${customer.enabled ? '启用' : '禁用'}
+                    </span>
+                </td>
+                <td>${customer.custom_leverage || '使用默认'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" onclick="app.editStrategyCustomer(${this.currentStrategyId}, '${customer.customer_uid}')" title="编辑设置">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="app.removeCustomerFromStrategy(${this.currentStrategyId}, '${customer.customer_uid}')" title="移除客户">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+    
+    // 加载可添加的客户列表
+    async loadAvailableCustomers(strategyId) {
+        try {
+            
+            // 获取所有客户
+            const customersResponse = await fetch(`${this.apiBaseUrl}/customers`);
+            if (!customersResponse.ok) {
+                console.error('获取客户列表失败:', customersResponse.status);
+                this.showToast('错误', '获取客户列表失败', 'danger');
+                return;
+            }
+            
+            const customersResult = await customersResponse.json();
+            
+            if (customersResult.success !== 200) {
+                console.error('获取客户列表失败:', customersResult.message);
+                this.showToast('错误', customersResult.message || '获取客户列表失败', 'danger');
+                return;
+            }
+            
+            // 修复：客户数据在data.customers中
+            const allCustomers = customersResult.data.customers || customersResult.data;
+            
+            if (!Array.isArray(allCustomers)) {
+                console.error('[客户管理] 客户数据格式错误:', allCustomers);
+                this.showToast('错误', '客户数据格式错误', 'danger');
+                return;
+            }
+            
+            // 获取策略已有客户
+            const strategyCustomersResponse = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${strategyId}/customers`);
+            if (!strategyCustomersResponse.ok) {
+                console.error('获取策略客户失败:', strategyCustomersResponse.status);
+                this.showToast('错误', '获取策略客户失败', 'danger');
+                return;
+            }
+            
+            const strategyCustomersResult = await strategyCustomersResponse.json();
+            
+            const existingCustomerUids = strategyCustomersResult.success === 200 
+                ? strategyCustomersResult.data.map(c => c.customer_uid)
+                : [];
+            
+            // 过滤掉已添加的客户
+            const availableCustomers = allCustomers.filter(customer => 
+                !existingCustomerUids.includes(customer.customer_uid)
+            );
+            
+            
+            // 填充下拉框
+            const select = document.getElementById('addCustomerSelect');
+            if (!select) {
+                console.error('[客户管理] 找不到addCustomerSelect元素');
+                return;
+            }
+            
+            select.innerHTML = '<option value="">选择要添加的客户</option>';
+            
+            if (availableCustomers.length === 0) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = '没有可添加的客户';
+                option.disabled = true;
+                select.appendChild(option);
+            } else {
+                availableCustomers.forEach(customer => {
+                    const option = document.createElement('option');
+                    option.value = customer.customer_uid;
+                    option.textContent = customer.name || customer.customer_uid;
+                    select.appendChild(option);
+                });
+            }
+            
+        } catch (error) {
+            console.error('加载可添加客户列表失败:', error);
+            this.showToast('错误', '加载客户列表失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 添加客户到策略
+    async addCustomerToStrategy() {
+        try {
+            const customerUid = document.getElementById('addCustomerSelect').value;
+            const customLeverage = document.getElementById('addCustomerLeverage').value;
+            const customFollowValue = document.getElementById('addCustomerFollowValue').value;
+            
+            if (!customerUid) {
+                this.showToast('错误', '请选择要添加的客户', 'danger');
+                return;
+            }
+            
+            const data = {
+                customer_uid: customerUid
+            };
+            
+            if (customLeverage) {
+                data.custom_leverage = parseInt(customLeverage);
+            }
+            
+            if (customFollowValue) {
+                data.custom_follow_value = parseFloat(customFollowValue);
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${this.currentStrategyId}/customers`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data)
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '客户添加成功', 'success');
+                    
+                    // 重新加载数据
+                    await this.loadStrategyCustomers(this.currentStrategyId);
+                    await this.loadAvailableCustomers(this.currentStrategyId);
+                    
+                    // 清空表单
+                    document.getElementById('addCustomerSelect').value = '';
+                    document.getElementById('addCustomerLeverage').value = '';
+                    document.getElementById('addCustomerFollowValue').value = '';
+                } else {
+                    this.showToast('错误', result.message || '添加客户失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                console.error('添加客户失败:', response.status, errorText);
+                this.showToast('错误', `添加客户失败: ${response.status}`, 'danger');
+            }
+            
+        } catch (error) {
+            console.error('添加客户到策略失败:', error);
+            this.showToast('错误', '添加客户失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 编辑策略客户设置
+    async editStrategyCustomer(strategyId, customerUid) {
+        try {
+            // 获取当前客户设置
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${strategyId}/customers`);
+            if (!response.ok) {
+                this.showToast('错误', '获取客户设置失败', 'danger');
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success !== 200) {
+                this.showToast('错误', result.message || '获取客户设置失败', 'danger');
+                return;
+            }
+            
+            const customer = result.data.find(c => c.customer_uid === customerUid);
+            if (!customer) {
+                this.showToast('错误', '客户不存在', 'danger');
+                return;
+            }
+            
+            // 显示编辑对话框
+            const enabled = confirm('是否启用此客户？');
+            const customLeverage = prompt('自定义杠杆倍数（留空使用默认）:', customer.custom_leverage || '');
+            const customFollowValue = prompt('自定义跟单值（留空使用默认）:', customer.custom_follow_value || '');
+            
+            const data = {
+                enabled: enabled ? 1 : 0
+            };
+            
+            if (customLeverage && customLeverage.trim() !== '') {
+                data.custom_leverage = parseInt(customLeverage);
+            }
+            
+            if (customFollowValue && customFollowValue.trim() !== '') {
+                data.custom_follow_value = parseFloat(customFollowValue);
+            }
+            
+            const updateResponse = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${strategyId}/customers/${customerUid}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(data)
+            });
+            
+            if (updateResponse.ok) {
+                const updateResult = await updateResponse.json();
+                if (updateResult.success === 200) {
+                    this.showToast('成功', '客户设置更新成功', 'success');
+                    // 重新加载数据
+                    await this.loadStrategyCustomers(strategyId);
+                } else {
+                    this.showToast('错误', updateResult.message || '更新客户设置失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '更新客户设置失败', 'danger');
+            }
+            
+        } catch (error) {
+            console.error('编辑策略客户设置失败:', error);
+            this.showToast('错误', '编辑客户设置失败，请检查网络连接', 'danger');
+        }
+    }
+    
+    // 从策略中移除客户
+    async removeCustomerFromStrategy(strategyId, customerUid) {
+        try {
+            if (!confirm('确定要从此策略中移除该客户吗？')) {
+                return;
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/strategies/${strategyId}/customers/${customerUid}`, {
+                method: 'DELETE'
+            });
+            
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success === 200) {
+                    this.showToast('成功', '客户移除成功', 'success');
+                    // 重新加载数据
+                    await this.loadStrategyCustomers(strategyId);
+                    await this.loadAvailableCustomers(strategyId);
+                } else {
+                    this.showToast('错误', result.message || '移除客户失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '移除客户失败', 'danger');
+            }
+            
+        } catch (error) {
+            console.error('从策略中移除客户失败:', error);
+            this.showToast('错误', '移除客户失败，请检查网络连接', 'danger');
+        }
+    }
     // ==================== 策略交易模块 ====================
     
     // 加载策略交易数据
@@ -6831,9 +8826,14 @@ class OKXTradingApp {
                     </span>
                 </td>
                 <td>
-                    <button class="btn btn-outline-primary btn-sm" onclick="app.viewBacktestDetail('${backtest.id}')">
-                        <i class="bi bi-eye"></i> 详情
-                    </button>
+                    <div class="btn-group" role="group">
+                        <button class="btn btn-outline-primary btn-sm" onclick="app.viewBacktestDetail('${backtest.id}')" title="查看详情">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                        <button class="btn btn-outline-danger btn-sm" onclick="app.deleteBacktest('${backtest.id}')" title="删除回测">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
                 </td>
             </tr>
         `).join('');
@@ -6858,6 +8858,62 @@ class OKXTradingApp {
             default: return '未知';
         }
     }
+    
+        // 删除回测
+        async deleteBacktest(backtestId) {
+            try {
+                if (!confirm('确定要删除这个回测记录吗？此操作不可撤销。')) {
+                    return;
+                }
+                
+                const response = await fetch(`${this.apiBaseUrl}/strategy/backtests/${backtestId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showToast('成功', '回测记录已删除', 'success');
+                        this.loadBacktestHistory(); // 重新加载回测列表
+                    } else {
+                        this.showToast('错误', result.message || '删除失败', 'danger');
+                    }
+                } else {
+                    this.showToast('错误', '删除回测记录失败', 'danger');
+                }
+            } catch (error) {
+                console.error('删除回测失败:', error);
+                this.showToast('错误', `删除回测失败: ${error.message}`, 'danger');
+            }
+        }
+
+        // 清空所有回测记录
+        async clearAllBacktests() {
+            try {
+                if (!confirm('确定要清空所有回测记录吗？此操作不可撤销，将删除所有历史回测数据。')) {
+                    return;
+                }
+                
+                const response = await fetch(`${this.apiBaseUrl}/strategy/backtests/clear`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showToast('成功', '所有回测记录已清空', 'success');
+                        this.loadBacktestHistory(); // 重新加载回测列表
+                    } else {
+                        this.showToast('错误', result.message || '清空失败', 'danger');
+                    }
+                } else {
+                    this.showToast('错误', '清空回测记录失败', 'danger');
+                }
+            } catch (error) {
+                console.error('清空回测失败:', error);
+                this.showToast('错误', `清空回测失败: ${error.message}`, 'danger');
+            }
+        }
     
     // 查看策略详情
     async viewStrategyTradeDetail(strategyName) {
@@ -7250,12 +9306,12 @@ class OKXTradingApp {
                     <div class="row">
                         <div class="col-md-6">
                             <label for="backtest_short_period" class="form-label">短期均线周期</label>
-                            <input type="number" class="form-control" id="backtest_short_period" value="10" min="5" max="50" required>
+                            <input type="number" class="form-control" id="backtest_short_period" name="short_period" value="10" min="5" max="50" required>
                             <div class="form-text">短期移动平均线的计算周期</div>
                         </div>
                         <div class="col-md-6">
                             <label for="backtest_long_period" class="form-label">长期均线周期</label>
-                            <input type="number" class="form-control" id="backtest_long_period" value="20" min="10" max="100" required>
+                            <input type="number" class="form-control" id="backtest_long_period" name="long_period" value="20" min="10" max="100" required>
                             <div class="form-text">长期移动平均线的计算周期</div>
                         </div>
                     </div>
@@ -7267,15 +9323,15 @@ class OKXTradingApp {
                     <div class="row">
                         <div class="col-md-4">
                             <label for="backtest_rsi_period" class="form-label">RSI周期</label>
-                            <input type="number" class="form-control" id="backtest_rsi_period" value="14" min="5" max="30" required>
+                            <input type="number" class="form-control" id="backtest_rsi_period" name="rsi_period" value="14" min="5" max="30" required>
                         </div>
                         <div class="col-md-4">
                             <label for="backtest_oversold" class="form-label">超卖线</label>
-                            <input type="number" class="form-control" id="backtest_oversold" value="30" min="10" max="40" required>
+                            <input type="number" class="form-control" id="backtest_oversold" name="rsi_oversold" value="30" min="10" max="40" required>
                         </div>
                         <div class="col-md-4">
                             <label for="backtest_overbought" class="form-label">超买线</label>
-                            <input type="number" class="form-control" id="backtest_overbought" value="70" min="60" max="90" required>
+                            <input type="number" class="form-control" id="backtest_overbought" name="rsi_overbought" value="70" min="60" max="90" required>
                         </div>
                     </div>
                 `;
@@ -7286,15 +9342,15 @@ class OKXTradingApp {
                     <div class="row">
                         <div class="col-md-4">
                             <label for="backtest_fast_period" class="form-label">快速EMA周期</label>
-                            <input type="number" class="form-control" id="backtest_fast_period" value="12" min="5" max="20" required>
+                            <input type="number" class="form-control" id="backtest_fast_period" name="fast_period" value="12" min="5" max="20" required>
                         </div>
                         <div class="col-md-4">
                             <label for="backtest_slow_period" class="form-label">慢速EMA周期</label>
-                            <input type="number" class="form-control" id="backtest_slow_period" value="26" min="20" max="50" required>
+                            <input type="number" class="form-control" id="backtest_slow_period" name="slow_period" value="26" min="20" max="50" required>
                         </div>
                         <div class="col-md-4">
                             <label for="backtest_signal_period" class="form-label">信号线周期</label>
-                            <input type="number" class="form-control" id="backtest_signal_period" value="9" min="5" max="15" required>
+                            <input type="number" class="form-control" id="backtest_signal_period" name="signal_period" value="9" min="5" max="15" required>
                         </div>
                     </div>
                 `;
@@ -7305,11 +9361,11 @@ class OKXTradingApp {
                     <div class="row">
                         <div class="col-md-6">
                             <label for="backtest_bb_period" class="form-label">布林带周期</label>
-                            <input type="number" class="form-control" id="backtest_bb_period" value="20" min="10" max="50" required>
+                            <input type="number" class="form-control" id="backtest_bb_period" name="bb_period" value="20" min="10" max="50" required>
                         </div>
                         <div class="col-md-6">
                             <label for="backtest_bb_std" class="form-label">标准差倍数</label>
-                            <input type="number" class="form-control" id="backtest_bb_std" value="2" min="1" max="3" step="0.1" required>
+                            <input type="number" class="form-control" id="backtest_bb_std" name="bb_std" value="2" min="1" max="3" step="0.1" required>
                         </div>
                     </div>
                 `;
@@ -7320,15 +9376,15 @@ class OKXTradingApp {
                     <div class="row">
                         <div class="col-md-4">
                             <label for="backtest_grid_size" class="form-label">网格大小 (%)</label>
-                            <input type="number" class="form-control" id="backtest_grid_size" value="1" min="0.1" max="5" step="0.1" required>
+                            <input type="number" class="form-control" id="backtest_grid_size" name="grid_spacing" value="1" min="0.1" max="5" step="0.1" required>
                         </div>
                         <div class="col-md-4">
                             <label for="backtest_max_grids" class="form-label">最大网格数</label>
-                            <input type="number" class="form-control" id="backtest_max_grids" value="10" min="3" max="20" required>
+                            <input type="number" class="form-control" id="backtest_max_grids" name="grid_levels" value="10" min="3" max="20" required>
                         </div>
                         <div class="col-md-4">
                             <label for="backtest_base_amount" class="form-label">基础下单金额</label>
-                            <input type="number" class="form-control" id="backtest_base_amount" value="100" min="10" max="1000" required>
+                            <input type="number" class="form-control" id="backtest_base_amount" name="investment_per_grid" value="100" min="10" max="1000" required>
                         </div>
                     </div>
                 `;
@@ -7432,6 +9488,9 @@ class OKXTradingApp {
         } else if (totalReturnValue < 0) {
             totalReturnElement.classList.add('negative');
         }
+        
+        // 显示策略参数
+        this.displayStrategyParams(backtestData.config_json);
         document.getElementById('detailMaxDrawdown').textContent = 
             `${(backtestData.max_drawdown * 100).toFixed(2)}%`;
         document.getElementById('detailSharpeRatio').textContent = 
@@ -7447,6 +9506,67 @@ class OKXTradingApp {
         modal._element.addEventListener('shown.bs.modal', () => {
             this.initBacktestCharts(backtestData);
         }, { once: true });
+    }
+
+    // 显示策略参数
+    displayStrategyParams(configJson) {
+        const tableBody = document.getElementById('strategyParamsTableBody');
+        if (!tableBody) return;
+        
+        tableBody.innerHTML = ''; // 清空现有内容
+        
+        if (!configJson) {
+            tableBody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">无策略参数</td></tr>';
+            return;
+        }
+        
+        try {
+            const config = JSON.parse(configJson);
+            
+            for (const key in config) {
+                if (Object.hasOwnProperty.call(config, key)) {
+                    const value = config[key];
+                    let displayValue = value;
+                    let valueType = typeof value;
+                    let description = ''; // 可以从后端获取更详细的参数说明
+                    
+                    // 尝试更友好的显示
+                    if (typeof value === 'number') {
+                        if (key.includes('pct') || key.includes('ratio') || key.includes('rate')) {
+                            displayValue = `${(value * 100).toFixed(2)}%`;
+                            valueType = '百分比';
+                        } else if (Number.isInteger(value)) {
+                            valueType = '整数';
+                        } else {
+                            displayValue = value.toFixed(4); // 浮点数保留4位
+                            valueType = '浮点数';
+                        }
+                    } else if (typeof value === 'boolean') {
+                        displayValue = value ? '是' : '否';
+                        valueType = '布尔值';
+                    } else if (Array.isArray(value)) {
+                        displayValue = `[${value.join(', ')}]`;
+                        valueType = '数组';
+                    } else if (typeof value === 'object' && value !== null) {
+                        displayValue = JSON.stringify(value);
+                        valueType = '对象';
+                    }
+                    
+                    const row = `
+                        <tr>
+                            <td>${key}</td>
+                            <td>${displayValue}</td>
+                            <td>${valueType}</td>
+                            <td>${description}</td>
+                        </tr>
+                    `;
+                    tableBody.innerHTML += row;
+                }
+            }
+        } catch (error) {
+            console.error('解析策略参数失败:', error);
+            tableBody.innerHTML = '<tr><td colspan="4" class="text-center text-danger">解析策略参数失败</td></tr>';
+        }
     }
 
     // 初始化回测图表
@@ -7921,7 +10041,8 @@ class OKXTradingApp {
         let cumulativePnl = 0;
         
         tradeHistory.forEach(trade => {
-            if (trade.pnl) {
+            // 只计算平仓记录的PnL
+            if (trade.pnl && trade.type === 'CLOSE') {
                 cumulativePnl += trade.pnl;
             }
             
@@ -8634,9 +10755,12 @@ class OKXTradingApp {
     
     // 收集回测策略参数
     collectBacktestStrategyParams(strategyType, symbol) {
+        // 获取时间周期
+        const timeframe = document.getElementById('backtestTimeframe')?.value || '1h';
+        
         const config = {
             symbol: symbol,
-            timeframe: '1h'
+            timeframe: timeframe
         };
         
         try {
@@ -8652,14 +10776,30 @@ class OKXTradingApp {
                     const paramName = input.name;
                     let value = input.value;
                     
+                    // 跳过空值
+                    if (!value || value.trim() === '') {
+                        return;
+                    }
+                    
                     if (input.type === 'number') {
                         // 根据参数名判断是整数还是浮点数
                         if (paramName.includes('period') || paramName.includes('levels') || 
                             paramName.includes('oversold') || paramName.includes('overbought') ||
                             paramName.includes('threshold') && !paramName.includes('adjustment')) {
                             value = parseInt(value);
-                        } else {
+                        } else if (paramName.includes('std') || paramName.includes('spacing') || 
+                                   paramName.includes('amount') || paramName.includes('investment')) {
+                            // 标准差、间距、金额等应该是浮点数
                             value = parseFloat(value);
+                        } else {
+                            // 默认尝试浮点数转换
+                            value = parseFloat(value);
+                        }
+                        
+                        // 检查转换结果
+                        if (isNaN(value)) {
+                            console.warn(`参数 ${paramName} 转换失败，跳过: ${input.value}`);
+                            return;
                         }
                     } else if (input.type === 'checkbox') {
                         value = input.checked;
@@ -8667,6 +10807,11 @@ class OKXTradingApp {
                     
                     config[paramName] = value;
                     console.log(`📝 动态参数: ${paramName} = ${value} (${typeof value})`);
+                    
+                    // 特别检查bb_std参数
+                    if (paramName === 'bb_std') {
+                        console.log(`🔍 bb_std 参数详情: 原始值="${input.value}", 转换后=${value}, 类型=${typeof value}`);
+                    }
                 });
             } else {
                 console.warn('⚠️ 未找到动态参数容器，使用默认值');
@@ -8773,10 +10918,13 @@ class OKXTradingApp {
             
             this.showToast('信息', `正在运行回测 (${isTemplate ? '策略模板' : '策略实例'})，请稍候...`, 'info');
             
+            // 获取时间周期
+            const timeframe = document.getElementById('backtestTimeframe')?.value || '1h';
+            
             // 收集策略参数
             let strategyConfig = {
                 symbol: symbol,
-                timeframe: '1h'
+                timeframe: timeframe
             };
             
             // 如果是策略模板，需要收集用户输入的参数
@@ -8801,6 +10949,10 @@ class OKXTradingApp {
             };
             
             console.log('开始回测，参数:', requestData);
+            console.log('🔍 策略配置详情:', strategyConfig);
+            if (strategyConfig.bb_std !== undefined) {
+                console.log(`🔍 bb_std 最终值: ${strategyConfig.bb_std} (${typeof strategyConfig.bb_std})`);
+            }
             
             const response = await fetch(`${this.apiBaseUrl}/strategy/backtests`, {
                 method: 'POST',
@@ -8853,6 +11005,48 @@ class OKXTradingApp {
 // 页面加载完成后初始化应用
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new OKXTradingApp();
+    
+        // 为全局资产更新按钮添加事件监听器
+        const updateAllAssetsBtn = document.getElementById('updateAllAssetsBtn');
+        if (updateAllAssetsBtn) {
+            updateAllAssetsBtn.addEventListener('click', () => {
+                window.app.forceUpdateAllCustomerAssets();
+            });
+        }
+        // 跟单订单类型变化事件监听器
+        const followOrderTypesSelect = document.getElementById('followOrderTypes');
+        const limitMarketRatioRow = document.getElementById('limitMarketRatioRow');
+        
+        if (followOrderTypesSelect && limitMarketRatioRow) {
+            followOrderTypesSelect.addEventListener('change', function() {
+                if (this.value === 'both') {
+                    limitMarketRatioRow.style.display = 'block';
+                } else {
+                    limitMarketRatioRow.style.display = 'none';
+                }
+            });
+        }
+
+        // 客户页面大小选择事件监听器
+        const pageSize10Btn = document.getElementById('customersPageSize10');
+        const pageSize20Btn = document.getElementById('customersPageSize20');
+        const pageSize50Btn = document.getElementById('customersPageSize50');
+        
+        if (pageSize10Btn) {
+            pageSize10Btn.addEventListener('click', () => {
+                window.app.setCustomersPageSize(10);
+            });
+        }
+        if (pageSize20Btn) {
+            pageSize20Btn.addEventListener('click', () => {
+                window.app.setCustomersPageSize(20);
+            });
+        }
+        if (pageSize50Btn) {
+            pageSize50Btn.addEventListener('click', () => {
+                window.app.setCustomersPageSize(50);
+            });
+        }
 });
 
 // 全局错误处理
@@ -8862,6 +11056,14 @@ window.addEventListener('error', (event) => {
         window.app.showToast('错误', '系统发生错误，请查看控制台', 'danger');
     }
 });
+
+// 未处理的Promise拒绝
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('未处理的Promise拒绝:', event.reason);
+    if (window.app) {
+        window.app.showToast('错误', '网络请求失败，请检查网络连接', 'danger');
+    }
+}); 
 
 // ==================== 策略交易事件处理 ====================
 

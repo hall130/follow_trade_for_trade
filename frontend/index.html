@@ -238,9 +238,14 @@
                     <div class="col-12">
                         <div class="d-flex justify-content-between align-items-center mb-4">
                             <h2><i class="bi bi-people"></i> 客户管理</h2>
+                            <div class="btn-group">
+                                <button class="btn btn-success" id="updateAllAssetsBtn" title="强制更新所有客户资产">
+                                    <i class="bi bi-arrow-clockwise"></i> 更新资产
+                                </button>
                             <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addCustomerModal">
                                 <i class="bi bi-plus"></i> 添加客户
                             </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -558,8 +563,11 @@
                 <div class="row">
                     <div class="col-12">
                         <div class="card">
-                            <div class="card-header">
+                            <div class="card-header d-flex justify-content-between align-items-center">
                                 <h5 class="mb-0">回测历史</h5>
+                                <button class="btn btn-outline-danger btn-sm" onclick="app.clearAllBacktests()">
+                                    <i class="bi bi-trash"></i> 清空所有记录
+                                </button>
                             </div>
                             <div class="card-body">
                                 <div class="table-responsive">
@@ -841,6 +849,93 @@
             </div>
         </div>
 
+        <!-- 编辑交易模态框 -->
+        <div class="modal fade" id="editTradeModal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">编辑交易记录</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="editTradeForm">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editTradeUid" class="form-label">交易ID</label>
+                                        <input type="text" class="form-control" id="editTradeUid" readonly>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editCustomerUid" class="form-label">客户ID</label>
+                                        <input type="text" class="form-control" id="editCustomerUid" readonly>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editSymbol" class="form-label">交易对</label>
+                                        <input type="text" class="form-control" id="editSymbol" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editDirection" class="form-label">交易方向</label>
+                                        <select class="form-select" id="editDirection" required>
+                                            <option value="buy">买入</option>
+                                            <option value="sell">卖出</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editPosSide" class="form-label">持仓方向</label>
+                                        <select class="form-select" id="editPosSide" required>
+                                            <option value="long">多头</option>
+                                            <option value="short">空头</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editVolume" class="form-label">数量</label>
+                                        <input type="number" class="form-control" id="editVolume" step="0.00000001" min="0" required>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editOpenPx" class="form-label">开仓价格</label>
+                                        <input type="number" class="form-control" id="editOpenPx" step="0.00000001" min="0" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="editStatus" class="form-label">状态</label>
+                                        <select class="form-select" id="editStatus" required>
+                                            <option value="open">开仓中</option>
+                                            <option value="closed">已平仓</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary" id="saveEditTradeBtn">
+                            <i class="bi bi-check"></i> 保存
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 风控管理页面 -->
         <div id="risk-control-page" class="page-content">
             <div class="container-fluid">
@@ -1012,6 +1107,7 @@
                                                 <th>方向</th>
                                                 <th>跟单类型</th>
                                                 <th>跟单值</th>
+                                                <th>订单类型</th>
                                                 <th>状态</th>
                                                 <th>操作</th>
                                             </tr>
@@ -1674,6 +1770,106 @@
         </div>
     </div>
 
+    <!-- 编辑客户模态框 -->
+    <div class="modal fade" id="editCustomerModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">编辑客户</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editCustomerForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editCustomerName" class="form-label">客户名称 *</label>
+                                    <input type="text" class="form-control" id="editCustomerName" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editCustomerUid" class="form-label">客户UID *</label>
+                                    <input type="text" class="form-control" id="editCustomerUid" readonly>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editApiKey" class="form-label">API Key *</label>
+                                    <input type="text" class="form-control" id="editApiKey" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editApiSecret" class="form-label">API Secret *</label>
+                                    <input type="password" class="form-control" id="editApiSecret" required>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editPassphrase" class="form-label">Passphrase *</label>
+                                    <input type="password" class="form-control" id="editPassphrase" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editLeverage" class="form-label">杠杆倍数</label>
+                                    <input type="number" class="form-control" id="editLeverage" min="1" max="125" value="1">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editInitAsset" class="form-label">初始资产</label>
+                                    <input type="number" class="form-control" id="editInitAsset" min="0" step="0.01">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="editTradingAsset" class="form-label">交易资产</label>
+                                    <input type="number" class="form-control" id="editTradingAsset" min="0" step="0.01">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="editEnabled">
+                                        <label class="form-check-label" for="editEnabled">
+                                            启用客户
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="editStopLossEnabled">
+                                        <label class="form-check-label" for="editStopLossEnabled">
+                                            启用止损
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveEditCustomerBtn">
+                        <i class="bi bi-check"></i> 保存
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 添加策略模态框 -->
     <div class="modal fade" id="addStrategyModal" tabindex="-1" aria-labelledby="addStrategyModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
@@ -1691,12 +1887,7 @@
                                     <input type="text" class="form-control" id="strategyName" required>
                                 </div>
                             </div>
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label for="strategyDescription" class="form-label">策略描述</label>
-                                    <input type="text" class="form-control" id="strategyDescription">
-                                </div>
-                            </div>
+                            
                         </div>
                         <div class="row">
                             <div class="col-md-6">
@@ -1705,9 +1896,18 @@
                                     <select class="form-select" id="signalSources" multiple required size="4">
                                         <!-- 动态加载信号源列表 -->
                                     </select>
-                                    <div class="form-text">按住Ctrl可多选</div>
                                 </div>
                             </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="strategyCustomers" class="form-label">跟随客户 *</label>
+                                    <select class="form-select" id="strategyCustomers" multiple required>
+                                        <option value="">请选择客户</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="customers" class="form-label">客户</label>
@@ -1812,21 +2012,101 @@
                                 </div>
                             </div>
                         </div>
+                        
+                        <!-- 跟单模式选择 -->
                         <div class="row">
-                            <div class="col-md-6">
+                            <div class="col-md-12">
                                 <div class="mb-3">
-                                    <label for="limitFollowStrategyCustomer" class="form-label">客户</label>
-                                    <select class="form-select" id="limitFollowStrategyCustomer" required>
-                                        <option value="">选择客户</option>
+                                    <label for="limitFollowMode" class="form-label">跟单模式</label>
+                                    <select class="form-select" id="limitFollowMode" required>
+                                        <option value="">选择跟单模式</option>
+                                        <option value="trader">跟单员模式 - 跟随OKX社区跟单员</option>
+                                        <option value="signal">信号源模式 - 跟随系统信号源</option>
                                     </select>
-                                    <div class="form-text">客户可以是普通客户或信号源</div>
+                                    <div class="form-text">
+                                        <strong>跟单员模式：</strong>跟随OKX社区的优秀跟单员，客户可以是信号源账户或普通客户账户<br>
+                                        <strong>信号源模式：</strong>跟随系统内的信号源账户，跟单账户只能是普通客户账户
+                                    </div>
                                 </div>
+                            </div>
+                        </div>
+                        <!-- 跟单订单类型选择 -->
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="mb-3">
+                                    <label for="followOrderTypes" class="form-label">跟单订单类型</label>
+                                    <select class="form-select" id="followOrderTypes" required>
+                                        <option value="limit_only">只跟限价单 - 以限价单形式跟随，价格更优但可能不成交</option>
+                                        <option value="market_only">只跟市价单 - 以市价单形式跟随，立即成交但价格可能不利</option>
+                                        <option value="both">限价+市价 - 同时下限价单和市价单，确保成交</option>
+                                    </select>
+                                    <div class="form-text">
+                                        <strong>只跟限价单：</strong>以限价单形式跟随，价格更优但可能不成交<br>
+                                        <strong>只跟市价单：</strong>以市价单形式跟随，立即成交但价格可能不利<br>
+                                        <strong>限价+市价：</strong>同时下限价单和市价单，确保成交
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 限价市价比例配置 -->
+                        <div class="row" id="limitMarketRatioRow" style="display: none;">
+                            <div class="col-md-12">
+                                <div class="mb-3">
+                                    <label for="limitMarketRatio" class="form-label">限价市价比例</label>
+                                    <select class="form-select" id="limitMarketRatio">
+                                        <option value="1:1">1:1 - 限价和市价各占50%</option>
+                                        <option value="2:1">2:1 - 限价占67%，市价占33%</option>
+                                        <option value="3:1">3:1 - 限价占75%，市价占25%</option>
+                                        <option value="4:1">4:1 - 限价占80%，市价占20%</option>
+                                        <option value="1:2">1:2 - 限价占33%，市价占67%</option>
+                                        <option value="1:3">1:3 - 限价占25%，市价占75%</option>
+                                    </select>
+                                    <div class="form-text">
+                                        <strong>比例说明：</strong>当选择"限价+市价"模式时，可以设置限价单和市价单的开仓比例<br>
+                                        <strong>示例：</strong>总开仓0.4，选择3:1比例，则限价开仓0.3，市价开仓0.1
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <!-- 跟单员模式配置 -->
+                            <div class="col-md-6" id="traderModeConfig" style="display: none;">
                                 <div class="mb-3">
                                     <label for="limitFollowStrategyTrader" class="form-label">跟单员</label>
-                                    <select class="form-select" id="limitFollowStrategyTrader" required>
+                                    <select class="form-select" id="limitFollowStrategyTrader">
                                         <option value="">选择跟单员</option>
                                     </select>
+                                    <div class="form-text">选择要跟随的OKX社区跟单员</div>
                                 </div>
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyCustomers" class="form-label">跟单账户 *</label>
+                                    <select class="form-select" id="limitFollowStrategyCustomers" multiple required>
+                                        <option value="">选择跟单账户</option>
+                                    </select>
+                                    <div class="form-text">可以选择多个信号源账户或普通客户账户进行跟单</div>
+                                </div>
+                            </div>
+                            
+                            <!-- 信号源模式配置 -->
+                            <div class="col-md-6" id="signalModeConfig" style="display: none;">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategySignalSource" class="form-label">信号源</label>
+                                    <select class="form-select" id="limitFollowStrategySignalSource">
+                                        <option value="">选择信号源</option>
+                                    </select>
+                                    <div class="form-text">选择要跟随的系统信号源</div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyFollowCustomers" class="form-label">跟单账户 *</label>
+                                    <select class="form-select" id="limitFollowStrategyFollowCustomers" multiple required>
+                                        <option value="">选择跟单账户</option>
+                                    </select>
+                                    <div class="form-text">可以选择多个普通客户账户进行跟单</div>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="limitFollowStrategySymbol" class="form-label">交易对设置</label>
                                     <div class="form-check mb-2">
@@ -1862,6 +2142,19 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="limitFollowStrategyEnabled" checked>
+                                <label class="form-check-label" for="limitFollowStrategyEnabled">
+                                    启用策略
+                                </label>
+                                <div class="form-text">启用后策略将开始执行跟单操作</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 策略参数配置 -->
+                        <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="limitFollowStrategyPosSide" class="form-label">持仓方向</label>
@@ -1892,30 +2185,38 @@
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                        <!-- 最小跟单值 -->
-                        <div class="mb-3">
-                            <label for="limitFollowStrategyMinFollowValue" class="form-label">最小跟单值 (%)</label>
-                            <input type="number" class="form-control" id="limitFollowStrategyMinFollowValue" 
-                                   step="0.1" min="0.1" max="5" value="0.5" required>
-                            <div class="form-text">
-                                <strong>最小价格偏移：</strong>防止价格偏移太小，建议 0.5%
-                            </div>
-                        </div>
-                        <!-- 最大跟单值 -->
-                        <div class="mb-3">
-                            <label for="limitFollowStrategyMaxFollowValue" class="form-label">最大跟单值 (%)</label>
-                            <input type="number" class="form-control" id="limitFollowStrategyMaxFollowValue" 
-                                   step="0.1" min="1" max="10" value="4" required>
-                            <div class="form-text">
-                                <strong>最大价格偏移：</strong>控制风险上限，建议 4%
-                            </div>
-                        </div>
-                        <div class="row">
                             <div class="col-md-6">
+                                <!-- 最小跟单值 -->
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyMinFollowValue" class="form-label">最小跟单值 (%)</label>
+                                    <input type="number" class="form-control" id="limitFollowStrategyMinFollowValue" 
+                                           step="0.1" min="0.1" max="5" value="0.5" required>
+                                    <div class="form-text">
+                                        <strong>最小价格偏移：</strong>防止价格偏移太小，建议 0.5%
+                                    </div>
+                                </div>
+                                <!-- 最大跟单值 -->
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyMaxFollowValue" class="form-label">最大跟单值 (%)</label>
+                                    <input type="number" class="form-control" id="limitFollowStrategyMaxFollowValue" 
+                                           step="0.1" min="1" max="10" value="4" required>
+                                    <div class="form-text">
+                                        <strong>最大价格偏移：</strong>控制风险上限，建议 4%
+                                    </div>
+                                </div>
                                 <div class="mb-3">
                                     <label for="limitFollowStrategyMaxOrdersPerSignal" class="form-label">每个信号源最大跟单数量</label>
                                     <input type="number" class="form-control" id="limitFollowStrategyMaxOrdersPerSignal" min="1" max="10" value="4">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyLeverage" class="form-label">开仓杠杆倍数</label>
+                                    <input type="number" class="form-control" id="limitFollowStrategyLeverage" value="10" min="1" max="125" step="1">
+                                    <div class="form-text">策略默认的开仓杠杆倍数</div>
                                 </div>
                             </div>
                             <div class="col-md-6">
@@ -1926,6 +2227,19 @@
                                 </div>
                             </div>
                         </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="limitFollowStrategyAutoCancelOnSignalClose" class="form-label">信号源平仓时自动撤单</label>
+                                    <select class="form-select" id="limitFollowStrategyAutoCancelOnSignalClose">
+                                        <option value="true">是</option>
+                                        <option value="false">否</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
@@ -1940,11 +2254,13 @@
                             </div>
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="limitFollowStrategyAutoCancelOnSignalClose" class="form-label">信号源平仓时自动撤单</label>
-                                    <select class="form-select" id="limitFollowStrategyAutoCancelOnSignalClose">
-                                        <option value="true">是</option>
-                                        <option value="false">否</option>
-                                    </select>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="limitFollowStrategyEnabled" checked>
+                                        <label class="form-check-label" for="limitFollowStrategyEnabled">
+                                            启用策略
+                                        </label>
+                                        <div class="form-text">启用后策略将开始执行跟单操作</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1953,6 +2269,63 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-primary" id="saveLimitFollowModalStrategy">保存策略</button>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 策略客户管理模态框 -->
+    <div class="modal fade" id="manageStrategyCustomersModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">管理策略客户</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>当前策略客户</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="strategyCustomersTable">
+                                    <thead>
+                                        <tr>
+                                            <th>客户名称</th>
+                                            <th>状态</th>
+                                            <th>自定义杠杆</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>添加新客户</h6>
+                            <div class="mb-3">
+                                <label for="addCustomerSelect" class="form-label">选择客户</label>
+                                <select class="form-select" id="addCustomerSelect">
+                                    <option value="">选择要添加的客户</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="addCustomerLeverage" class="form-label">自定义杠杆倍数</label>
+                                <input type="number" class="form-control" id="addCustomerLeverage" 
+                                       placeholder="留空使用策略默认杠杆" min="1" max="125">
+                            </div>
+                            <div class="mb-3">
+                                <label for="addCustomerFollowValue" class="form-label">自定义跟单值 (%)</label>
+                                <input type="number" class="form-control" id="addCustomerFollowValue" 
+                                       placeholder="留空使用策略默认跟单值" step="0.1" min="0.1" max="500">
+                            </div>
+                            <button type="button" class="btn btn-primary" id="addCustomerToStrategyBtn">
+                                <i class="bi bi-plus"></i> 添加客户
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
                 </div>
             </div>
         </div>
@@ -2569,15 +2942,24 @@
                             </table>
                         </div>
                         <div class="col-md-6">
-                            <h6>关联信息</h6>
+                            <h6>策略设置</h6>
                             <table class="table table-borderless">
-                                <tr><td><strong>关联信号源:</strong></td><td id="strategyDetailSignalSources">-</td></tr>
-                                <tr><td><strong>信号源数量:</strong></td><td id="strategyDetailSignalSourceCount">-</td></tr>
-                                <tr><td><strong>关联规则:</strong></td><td id="strategyDetailRules">-</td></tr>
-                                <tr><td><strong>规则数量:</strong></td><td id="strategyDetailRuleCount">-</td></tr>
-                                <tr><td><strong>创建时间:</strong></td><td id="strategyDetailCreatedAt">-</td></tr>
-                                <tr><td><strong>更新时间:</strong></td><td id="strategyDetailUpdatedAt">-</td></tr>
+                                <tr><td><strong>信号源:</strong></td><td id="strategyDetailTrader">-</td></tr>
+                                <tr><td><strong>规则:</strong></td><td id="strategyDetailSymbol">-</td></tr>
+                                <tr><td><strong>信号源数量:</strong></td><td id="strategyDetailPosSide">-</td></tr>
+                                <tr><td><strong>规则数量:</strong></td><td id="strategyDetailFollowValue">-</td></tr>
+                                <tr><td><strong>杠杆倍数:</strong></td><td id="strategyDetailLeverage">-</td></tr>
+                                <tr><td><strong>最大净杠杆:</strong></td><td id="strategyDetailMaxLeverage">-</td></tr>
+                                <tr><td><strong>最大订单数:</strong></td><td id="strategyDetailMaxOrders">-</td></tr>
                             </table>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-12">
+                            <h6>关联客户</h6>
+                            <div id="strategyDetailCustomers" class="d-flex flex-wrap">
+                                <!-- 客户列表将在这里动态填充 -->
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2993,6 +3375,20 @@
                                 </select>
                             </div>
                         </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="backtestTimeframe" class="form-label">时间周期</label>
+                                <select class="form-select" id="backtestTimeframe" required>
+                                    <option value="1m">1分钟</option>
+                                    <option value="5m">5分钟</option>
+                                    <option value="15m">15分钟</option>
+                                    <option value="30m">30分钟</option>
+                                    <option value="1h" selected>1小时</option>
+                                    <option value="4h">4小时</option>
+                                    <option value="1d">1天</option>
+                                </select>
+                            </div>
+                        </div>
                         
                         <!-- 策略特定参数区域 -->
                         <div id="backtestStrategyParams" class="mt-3" style="display: none;">
@@ -3048,6 +3444,32 @@
                                             <tr><td><strong>最大回撤:</strong></td><td id="detailMaxDrawdown" class="text-end">-</td></tr>
                                             <tr><td><strong>夏普比率:</strong></td><td id="detailSharpeRatio" class="text-end">-</td></tr>
                                             <tr><td><strong>胜率:</strong></td><td id="detailWinRate" class="text-end">-</td></tr>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 策略参数 -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6><i class="bi bi-gear"></i> 策略参数</h6>
+                            <div class="card">
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-striped table-sm" id="strategyParamsTable">
+                                            <thead class="table-dark">
+                                                <tr>
+                                                    <th>参数名称</th>
+                                                    <th>参数值</th>
+                                                    <th>参数类型</th>
+                                                    <th>说明</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="strategyParamsTableBody">
+                                                <!-- 策略参数将在这里动态加载 -->
+                                            </tbody>
                                         </table>
                                     </div>
                                 </div>

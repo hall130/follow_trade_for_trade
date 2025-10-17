@@ -931,8 +931,10 @@ class SignalService:
         try:
             logger.info(f"[限价跟单] 信号源 {signal_source_uid} 平仓，处理限价跟单: {symbol} {pos_side}")
             trade_uid = signal_trade_uid
-            if type(signal_trade_uid) != str:
+            if signal_trade_uid is not None and type(signal_trade_uid) != str:
                 trade_uid = signal_trade_uid.get('ordId', '')
+            elif signal_trade_uid is None:
+                trade_uid = None
             # 调用 trade_service 处理平仓，传递减仓比例
             await self.trade_service.handle_signal_close(
                 signal_source_uid,
@@ -944,3 +946,5 @@ class SignalService:
             
         except Exception as e:
             logger.error(f"处理限价跟单平仓失败: {e}")
+            import traceback
+            logger.error(f"[限价跟单平仓] 异常堆栈: {traceback.format_exc()}")

@@ -25,6 +25,11 @@ class MySQLPool:
             cursor.execute(sql, args or ())
             return cursor.lastrowid
 
+    def execute_with_rowcount(self, sql, args=None):
+        with self.get_conn().cursor() as cursor:
+            cursor.execute(sql, args or ())
+            return cursor.rowcount
+
     def executemany(self, sql, args_list):
         with self.get_conn().cursor() as cursor:
             cursor.executemany(sql, args_list)

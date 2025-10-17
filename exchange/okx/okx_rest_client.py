@@ -94,13 +94,19 @@ class OKXRESTClient:
         else:
             request_path = f"/api/v5{endpoint}"
         
+        # 对于公共接口，不需要签名
+        if endpoint.startswith('/market/'):
+            headers = {
+                'Content-Type': 'application/json'
+            }
+        else:
+            headers = self._get_headers(method, request_path, json.dumps(data) if data else '')
+        
         # 确保body格式正确
         if data and method != 'GET':
             body = json.dumps(data, separators=(',', ':'))
         else:
             body = ''
-        
-        headers = self._get_headers(method, request_path, body)
         
         logger.debug(f"发送请求: {method} {url}")
         logger.debug(f"签名路径: {request_path}")
@@ -214,9 +220,9 @@ class OKXRESTClient:
             }
             
             if start_time:
-                params['before'] = str(start_time)
+                params['before'] = str(start_time)  # 获取start_time之后的数据
             if end_time:
-                params['after'] = str(end_time)
+                params['after'] = str(end_time)    # 获取end_time之前的数据
             
             response = await self._request('GET', endpoint, params=params)
             
