@@ -54,8 +54,7 @@ class StrategyManager:
             strategy_class = getattr(module, class_name)
             
             # 创建策略实例
-            strategy = strategy_class(config)
-            strategy.name = name
+            strategy = strategy_class(name, config)
             
             # 添加到引擎 (同步版本，暂时只保存配置)
             self.strategy_engine.strategies[name] = strategy

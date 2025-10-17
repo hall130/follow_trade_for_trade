@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 from datetime import datetime
-from ..base_strategy import BaseStrategy, TradingSignal
+from ..base_strategy import BaseStrategy, TradingSignal, Position
 from ..utils.indicators import TechnicalIndicators
 pd.options.mode.chained_assignment = None  # 忽略链式赋值警告
 
@@ -43,7 +43,7 @@ class MACDStrategy(BaseStrategy):
                 action='BUY',
                 price=latest['close'],
                 quantity=1.0,
-                timestamp=datetime.now(),
+                timestamp=data.index[-1],  # 使用数据的时间戳而不是当前时间
                 confidence=0.8,
                 strategy_name=self.name,
                 metadata={
@@ -63,7 +63,7 @@ class MACDStrategy(BaseStrategy):
                 action='SELL',
                 price=latest['close'],
                 quantity=1.0,
-                timestamp=datetime.now(),
+                timestamp=data.index[-1],  # 使用数据的时间戳而不是当前时间
                 confidence=0.8,
                 strategy_name=self.name,
                 metadata={
@@ -75,3 +75,49 @@ class MACDStrategy(BaseStrategy):
             signals.append(signal)
         
         return signals
+    
+    def should_exit_position(self, position: Position, current_data: pd.DataFrame) -> bool:
+        """判断是否应该退出持仓"""
+        if len(current_data) < self.slow_period + self.signal_period:
+            return False
+        
+        current_price = current_data.iloc[-1]['close']
+        
+        # 检查止损
+        if position.stop_loss and (
+            (position.side == 'LONG' and current_price <= position.stop_loss) or
+            (position.side == 'SHORT' and current_price >= position.stop_loss)
+        ):
+            return True
+        
+        # 检查止盈
+        if position.take_profit and (
+            (position.side == 'LONG' and current_price >= position.take_profit) or
+            (position.side == 'SHORT' and current_price <= position.take_profit)
+        ):
+            return True
+        
+        # 检查MACD反转信号
+        try:
+            # 计算MACD
+            macd_line, signal_line, histogram = TechnicalIndicators.macd(
+                current_data['close'], self.fast_period, self.slow_period, self.signal_period
+            )
+            
+            # 检查MACD反转
+            if position.side == 'LONG':
+                # 多头持仓，检查死叉
+                if (macd_line.iloc[-1] < signal_line.iloc[-1] and 
+                    macd_line.iloc[-2] >= signal_line.iloc[-2]):
+                    return True
+            else:  # SHORT
+                # 空头持仓，检查金叉
+                if (macd_line.iloc[-1] > signal_line.iloc[-1] and 
+                    macd_line.iloc[-2] <= signal_line.iloc[-2]):
+                    return True
+                    
+        except Exception as e:
+            # 如果计算MACD失败，不退出持仓
+            pass
+        
+        return False

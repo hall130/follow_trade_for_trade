@@ -97,10 +97,16 @@ class BacktestEngine:
                 try:
                     signals = self.strategy.generate_signals(current_data)
                     
+                    if signals:
+                        logger.info(f"生成 {len(signals)} 个信号: {[s.action for s in signals]}")
+                    
                     # 处理信号
                     for signal in signals:
                         if self._validate_signal(signal):
+                            logger.info(f"执行信号: {signal.action} {signal.symbol} @ {signal.price}")
                             await self._execute_signal(signal, historical_data.iloc[i], current_time)
+                        else:
+                            logger.debug(f"信号验证失败: {signal.action} {signal.symbol}")
                             
                 except Exception as e:
                     logger.warning(f"信号生成失败 {current_time}: {e}")
@@ -162,13 +168,30 @@ class BacktestEngine:
     
     async def _get_historical_data(self, symbol: str, timeframe: str, 
                              start_date: str, end_date: str) -> pd.DataFrame:
-        """获取历史数据"""
+        """获取历史数据（支持长时间范围分片获取）"""
         try:
             logger.info(f"获取历史数据: {symbol} {timeframe} {start_date} -> {end_date}")
             
             # 转换时间格式
             start_dt = datetime.strptime(start_date, '%Y-%m-%d')
             end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            # 如果时间范围不合理，使用默认范围（最近90天）
+            if start_dt >= end_dt:
+                logger.warning(f"时间范围不合理，使用默认范围（最近90天）")
+                end_dt = datetime.now()
+                start_dt = end_dt - timedelta(days=90)
+            
+            # 确保不是未来时间
+            now = datetime.now()
+            if start_dt > now:
+                logger.error(f"开始时间 {start_date} 不能是未来时间")
+                return pd.DataFrame()
+            
+            # 如果结束时间是未来，使用当前时间
+            if end_dt > now:
+                end_dt = now
+                logger.warning(f"结束时间调整为当前时间: {end_dt.strftime('%Y-%m-%d')}")
             
             # 转换时间框架为OKX格式
             timeframe_map = {
@@ -182,32 +205,144 @@ class BacktestEngine:
             
             okx_timeframe = timeframe_map.get(timeframe, '1H')
             
-            # 使用OKX REST客户端获取历史数据
-            from exchange.okx.okx_rest_client import OKXRESTClient
+            # 计算时间范围（天）
+            total_days = (end_dt - start_dt).days
+            logger.info(f"总时间范围: {total_days} 天")
             
-            # 这里需要配置API密钥，或者使用公共接口
-            # 对于历史数据，通常可以使用公共接口
+            # 如果时间范围超过3个月（90天），需要分片获取
+            if total_days > 90:
+                logger.info(f"时间范围超过3个月，启用分片获取模式")
+                return await self._get_historical_data_chunked(symbol, okx_timeframe, start_dt, end_dt)
+            else:
+                # 时间范围在3个月内，直接获取
+                return await self._get_historical_data_single(symbol, okx_timeframe, start_dt, end_dt)
+            
+        except Exception as e:
+            logger.error(f"获取历史数据失败: {e}")
+            # 如果API调用失败，使用模拟数据
+            return self._generate_mock_data(symbol, start_dt, end_dt, okx_timeframe)
+    
+    async def _get_historical_data_single(self, symbol: str, okx_timeframe: str, 
+                                        start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """获取单次历史数据（3个月内）"""
+        try:
+            start_timestamp = int(start_dt.timestamp() * 1000)
+            end_timestamp = int(end_dt.timestamp() * 1000)
+            
+            logger.info(f"单次请求历史数据: {symbol} {start_dt} -> {end_dt}")
+            
+            from exchange.okx.okx_rest_client import OKXRESTClient
             client = OKXRESTClient(
-                api_key="",  # 可以为空，使用公共接口
+                api_key="",
                 api_secret="",
                 passphrase="",
                 is_demo=False
             )
             
-            # 获取K线数据
             kline_data = await client.get_historical_klines(
                 symbol=symbol,
                 interval=okx_timeframe,
-                start_time=int(start_dt.timestamp() * 1000),
-                end_time=int(end_dt.timestamp() * 1000),
-                limit=1000  # 每次最多1000条
+                start_time=start_timestamp,
+                end_time=end_timestamp,
+                limit=1000
             )
             
             if not kline_data:
-                logger.warning(f"未获取到 {symbol} 的历史数据")
-                return pd.DataFrame()
+                logger.warning(f"未获取到 {symbol} 的历史数据，使用模拟数据")
+                return self._generate_mock_data(symbol, start_dt, end_dt, okx_timeframe)
             
-            # 转换为DataFrame
+            return self._convert_kline_to_dataframe(kline_data)
+            
+        except Exception as e:
+            logger.error(f"单次获取历史数据失败: {e}")
+            return self._generate_mock_data(symbol, start_dt, end_dt, okx_timeframe)
+    
+    async def _get_historical_data_chunked(self, symbol: str, okx_timeframe: str, 
+                                         start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """分片获取历史数据（超过3个月）"""
+        try:
+            logger.info(f"开始分片获取历史数据: {symbol} {start_dt} -> {end_dt}")
+            
+            from exchange.okx.okx_rest_client import OKXRESTClient
+            client = OKXRESTClient(
+                api_key="",
+                api_secret="",
+                passphrase="",
+                is_demo=False
+            )
+            
+            all_data = []
+            current_end = end_dt
+            chunk_count = 0
+            max_chunks = 20  # 防止无限循环
+            
+            while current_end > start_dt and chunk_count < max_chunks:
+                # 计算当前片段的开始时间（往前推90天）
+                current_start = current_end - timedelta(days=90)
+                if current_start < start_dt:
+                    current_start = start_dt
+                
+                start_timestamp = int(current_start.timestamp() * 1000)
+                end_timestamp = int(current_end.timestamp() * 1000)
+                
+                logger.info(f"获取数据片段 {chunk_count + 1}: {current_start} -> {current_end}")
+                
+                # 获取当前片段的数据
+                kline_data = await client.get_historical_klines(
+                    symbol=symbol,
+                    interval=okx_timeframe,
+                    start_time=start_timestamp,
+                    end_time=end_timestamp,
+                    limit=1000
+                )
+                
+                if kline_data:
+                    all_data.extend(kline_data)
+                    logger.info(f"片段 {chunk_count + 1} 获取到 {len(kline_data)} 条数据")
+                else:
+                    logger.warning(f"片段 {chunk_count + 1} 未获取到数据")
+                
+                # 更新下一个片段的结束时间
+                current_end = current_start
+                chunk_count += 1
+                
+                # 添加延迟避免API限制
+                await asyncio.sleep(0.1)
+            
+            if not all_data:
+                logger.warning(f"分片获取未获取到任何数据，使用模拟数据")
+                return self._generate_mock_data(symbol, start_dt, end_dt, okx_timeframe)
+            
+            # 去重并排序
+            unique_data = self._deduplicate_kline_data(all_data)
+            df = self._convert_kline_to_dataframe(unique_data)
+            
+            # 过滤到指定时间范围
+            df = df[(df.index >= start_dt) & (df.index <= end_dt)]
+            
+            logger.info(f"分片获取完成，总共 {len(df)} 条数据")
+            return df
+            
+        except Exception as e:
+            logger.error(f"分片获取历史数据失败: {e}")
+            return self._generate_mock_data(symbol, start_dt, end_dt, okx_timeframe)
+    
+    def _deduplicate_kline_data(self, kline_data: list) -> list:
+        """去重K线数据"""
+        seen_timestamps = set()
+        unique_data = []
+        
+        for kline in kline_data:
+            timestamp = kline[0]
+            if timestamp not in seen_timestamps:
+                seen_timestamps.add(timestamp)
+                unique_data.append(kline)
+        
+        return unique_data
+    
+    def _convert_kline_to_dataframe(self, kline_data: list) -> pd.DataFrame:
+        """转换K线数据为DataFrame"""
+        try:
             data = []
             for kline in kline_data:
                 data.append({
@@ -223,12 +358,81 @@ class BacktestEngine:
             df.set_index('timestamp', inplace=True)
             df.sort_index(inplace=True)
             
-            logger.info(f"成功获取 {len(df)} 条历史数据")
             return df
             
         except Exception as e:
-            logger.error(f"获取历史数据失败: {e}")
-            # 如果API调用失败，返回空DataFrame或使用备用数据源
+            logger.error(f"转换K线数据失败: {e}")
+            return pd.DataFrame()
+    
+    def _generate_mock_data(self, symbol: str, start_dt: datetime, end_dt: datetime, timeframe: str) -> pd.DataFrame:
+        """生成模拟历史数据用于回测"""
+        try:
+            logger.info(f"生成模拟数据: {symbol} {start_dt} -> {end_dt}")
+            
+            # 根据时间框架确定频率
+            freq_map = {
+                '1m': '1min',
+                '5m': '5min', 
+                '15m': '15min',
+                '1H': '1h',
+                '4H': '4h',
+                '1D': '1D'
+            }
+            
+            freq = freq_map.get(timeframe, '1h')
+            
+            # 生成时间序列
+            time_range = pd.date_range(start=start_dt, end=end_dt, freq=freq)
+            
+            # 基础价格（根据交易对设置）
+            base_prices = {
+                'BTC-USDT': 50000,
+                'ETH-USDT': 3000,
+                'BNB-USDT': 300,
+                'ADA-USDT': 0.5,
+                'SOL-USDT': 100
+            }
+            
+            base_price = base_prices.get(symbol, 100)
+            
+            # 生成价格数据（随机游走）
+            np.random.seed(42)  # 固定种子确保可重复性
+            returns = np.random.normal(0, 0.02, len(time_range))  # 2%标准差
+            prices = [base_price]
+            
+            for ret in returns[1:]:
+                new_price = prices[-1] * (1 + ret)
+                prices.append(max(new_price, base_price * 0.1))  # 防止价格过低
+            
+            # 生成OHLCV数据
+            data = []
+            for i, (timestamp, price) in enumerate(zip(time_range, prices)):
+                # 生成高低价
+                volatility = price * 0.01  # 1%波动
+                high = price + np.random.uniform(0, volatility)
+                low = price - np.random.uniform(0, volatility)
+                open_price = prices[i-1] if i > 0 else price
+                close = price
+                volume = np.random.uniform(1000, 10000)
+                
+                data.append({
+                    'timestamp': timestamp,
+                    'open': open_price,
+                    'high': high,
+                    'low': low,
+                    'close': close,
+                    'volume': volume
+                })
+            
+            df = pd.DataFrame(data)
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+            
+            logger.info(f"生成了 {len(df)} 条模拟数据")
+            return df
+            
+        except Exception as e:
+            logger.error(f"生成模拟数据失败: {e}")
             return pd.DataFrame()
     
     async def _get_historical_data_with_fallback(self, symbol: str, timeframe: str, 
@@ -243,7 +447,23 @@ class BacktestEngine:
             
             # 如果获取失败，使用模拟数据作为备用
             logger.warning("真实数据获取失败，使用模拟数据...")
-            return await self._get_historical_data(symbol, timeframe, start_date, end_date)
+            
+            # 转换时间格式用于模拟数据生成
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            # 转换时间框架为OKX格式
+            timeframe_map = {
+                '1m': '1m',
+                '5m': '5m', 
+                '15m': '15m',
+                '1h': '1H',
+                '4h': '4H',
+                '1d': '1D'
+            }
+            okx_timeframe = timeframe_map.get(timeframe, '1H')
+            
+            return self._generate_mock_data(symbol, start_dt, end_dt, okx_timeframe)
             
         except Exception as e:
             logger.error(f"获取历史数据失败: {e}")
@@ -287,17 +507,15 @@ class BacktestEngine:
     def _validate_signal(self, signal: TradingSignal) -> bool:
         """验证信号是否可执行"""
         try:
-            # 检查资金是否充足
-            required_cash = signal.price * signal.quantity
-            if signal.action in ['BUY'] and required_cash > self.available_cash:
-                return False
-            
-            # 检查是否已有相同方向的持仓
-            if signal.symbol in self.positions:
-                existing_side = self.positions[signal.symbol]['side']
-                if (signal.action == 'BUY' and existing_side == 'LONG') or \
-                   (signal.action == 'SELL' and existing_side == 'SHORT'):
+            # 检查资金是否充足（只对开仓检查）
+            if signal.action in ['BUY']:
+                required_cash = signal.price * signal.quantity
+                if required_cash > self.available_cash:
+                    logger.debug(f"资金不足，无法执行买入信号: 需要${required_cash:.2f}, 可用${self.available_cash:.2f}")
                     return False
+            
+            # 对于合约交易，允许反向开仓（先平仓再开仓）
+            # 这个逻辑在_execute_signal中处理
             
             return True
             
@@ -345,6 +563,10 @@ class BacktestEngine:
             
             # 更新可用资金
             if signal.action == 'BUY':
+                # 做多：扣除资金 + 手续费
+                self.available_cash -= (position_value + commission)
+            else:
+                # 做空：扣除保证金 + 手续费
                 self.available_cash -= (position_value + commission)
             
             # 创建持仓记录
@@ -374,7 +596,7 @@ class BacktestEngine:
                 'slippage': slippage,
                 'timestamp': timestamp,
                 'type': 'OPEN',
-                'pnl': -commission  # 开仓时的成本
+                'pnl': 0.0  # 开仓时无PnL
             }
             
             self.trade_history.append(trade_record)
@@ -417,9 +639,10 @@ class BacktestEngine:
             
             # 更新可用资金
             if position['side'] == 'LONG':
-                self.available_cash += position_value - commission
+                # 做多平仓：收回资金 + 盈亏 - 手续费
+                self.available_cash += position_value + pnl - commission
             else:
-                # 做空平仓
+                # 做空平仓：收回保证金 + 盈亏 - 手续费
                 self.available_cash += position['entry_price'] * position['quantity'] + pnl - commission
             
             # 记录交易
@@ -520,10 +743,10 @@ class BacktestEngine:
                         quantity=position['quantity'],
                         entry_price=position['entry_price'],
                         current_price=current_price,
-                        unrealized_pnl=position.get('unrealized_pnl', 0.0),
                         stop_loss=position.get('stop_loss'),
                         take_profit=position.get('take_profit'),
-                        entry_time=position.get('entry_time')
+                        entry_time=position.get('entry_time'),
+                        metadata=position.get('metadata', {})
                     )
                     
                     # 调用策略的退出判断逻辑

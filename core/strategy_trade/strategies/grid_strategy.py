@@ -18,7 +18,7 @@ class GridStrategy(BaseStrategy):
         # 网格参数
         self.grid_levels = config.get('grid_levels', 10)  # 网格层数
         self.grid_spacing = config.get('grid_spacing', 0.02)  # 网格间距2%
-        self.base_price = config.get('base_price', 50000)  # 基准价格
+        self.base_price = config.get('base_price', 3000)  # 基准价格（ETH价格）
         self.investment_per_grid = config.get('investment_per_grid', 1000)  # 每格投资金额
         
         # 动态网格参数
@@ -60,7 +60,15 @@ class GridStrategy(BaseStrategy):
         if len(data) < 1:
             return signals
         
+        # 保存当前数据用于时间戳
+        self._current_data = data
+        
         current_price = data.iloc[-1]['close']
+        
+        # 如果基准价格未设置或为默认值，使用当前价格
+        if self.base_price == 3000 and current_price > 0:
+            self.base_price = current_price
+            self._initialize_grid()
         
         # 检查是否需要调整网格
         if self.dynamic_grid and self._should_adjust_grid(current_price):
@@ -101,7 +109,7 @@ class GridStrategy(BaseStrategy):
             self._update_grid_positions()
             
             self.grid_adjustment_count += 1
-            self.last_grid_adjustment = datetime.now()
+            self.last_grid_adjustment = data.index[-1] if hasattr(self, '_current_data') and not self._current_data.empty else datetime.now()
             
             logger.info(f"网格已调整，新基准价格: {self.base_price}")
             
@@ -170,7 +178,7 @@ class GridStrategy(BaseStrategy):
                 action=action,
                 price=current_price,
                 quantity=quantity,
-                timestamp=datetime.now(),
+                timestamp=data.index[-1],
                 confidence=confidence,
                 strategy_name=self.name,
                 metadata={
@@ -221,7 +229,7 @@ class GridStrategy(BaseStrategy):
                 action='BUY',
                 price=current_price,
                 quantity=self.investment_per_grid / current_price,
-                timestamp=datetime.now(),
+                timestamp=data.index[-1],
                 confidence=0.7,
                 strategy_name=self.name,
                 metadata={'grid_type': 'trend_following', 'trend': 'uptrend'}
@@ -235,7 +243,7 @@ class GridStrategy(BaseStrategy):
                 action='SELL',
                 price=current_price,
                 quantity=self.investment_per_grid / current_price,
-                timestamp=datetime.now(),
+                timestamp=data.index[-1],
                 confidence=0.7,
                 strategy_name=self.name,
                 metadata={'grid_type': 'trend_following', 'trend': 'downtrend'}

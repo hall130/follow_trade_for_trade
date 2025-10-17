@@ -36,6 +36,22 @@ class Position:
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     entry_time: datetime = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    def __init__(self, symbol: str, side: str, quantity: float, entry_price: float, 
+                 current_price: float = None, stop_loss: float = None, 
+                 take_profit: float = None, entry_time: datetime = None, 
+                 metadata: Dict[str, Any] = None):
+        self.symbol = symbol
+        self.side = side
+        self.quantity = quantity
+        self.entry_price = entry_price
+        self.current_price = current_price or entry_price
+        self.unrealized_pnl = 0.0
+        self.stop_loss = stop_loss
+        self.take_profit = take_profit
+        self.entry_time = entry_time or datetime.now()
+        self.metadata = metadata or {}
 
 class BaseStrategy(ABC):
     """策略基类"""
@@ -159,10 +175,10 @@ class BaseStrategy(ABC):
             quantity=signal.quantity,
             entry_price=current_price,
             current_price=current_price,
-            unrealized_pnl=0.0,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
-            entry_time=datetime.now()
+            entry_time=datetime.now(),
+            metadata=signal.metadata or {}
         )
         
         self.positions[signal.symbol] = position

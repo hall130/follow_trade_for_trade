@@ -11,8 +11,9 @@ class BollingerStrategy(BaseStrategy):
         if config is None:
             config = {}
         super().__init__(name, config)
-        self.period = config.get('period', 20)
-        self.std_dev = config.get('std_dev', 2)
+        # 支持两种参数名称
+        self.period = config.get('bb_period', config.get('period', 20))
+        self.std_dev = config.get('bb_std', config.get('std_dev', 2))
         self.symbol = config.get('symbol', 'BTC-USDT')
         
     def calculate_bollinger_bands(self, prices: pd.Series, period: int, std_dev: float):
