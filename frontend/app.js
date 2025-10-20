@@ -8217,7 +8217,7 @@ class OKXTradingApp {
             strategy_name: document.getElementById('limitFollowStrategyName').value,
             follow_mode: backendFollowMode,
             follow_order_types: document.getElementById('followOrderTypes').value,
-            limit_market_ratio: document.getElementById('limitMarketRatio').value,
+            limit_market_ratio: getLimitMarketRatio(), // 使用自定义函数获取比例
             pos_side: document.getElementById('limitFollowStrategyPosSide').value,
             follow_type: document.getElementById('limitFollowStrategyFollowType').value,
             follow_value: parseFloat(document.getElementById('limitFollowStrategyFollowValue').value),
@@ -8267,18 +8267,9 @@ class OKXTradingApp {
             formData.symbol = 'ALL'; // 跟随全部交易对
             formData.symbols = []; // 空数组表示全部
         } else {
+            formData.symbol = 'SPECIFIC'; // 指定交易对
             const symbolsSelect = document.getElementById('limitFollowStrategySymbols');
-            const selectedSymbols = Array.from(symbolsSelect.selectedOptions).map(option => option.value);
-            if (selectedSymbols.length > 0) {
-                // 多交易对情况：使用第一个作为主交易对，其他作为跟随交易对
-                formData.symbol = selectedSymbols[0]; // 主交易对（用于策略标识）
-                formData.symbols = selectedSymbols; // 所有选择的交易对
-                formData.symbol_count = selectedSymbols.length; // 交易对数量
-            } else {
-                formData.symbol = 'BTC-USDT-SWAP'; // 默认交易对
-                formData.symbols = ['BTC-USDT-SWAP'];
-                formData.symbol_count = 1;
-            }
+            formData.symbols = Array.from(symbolsSelect.selectedOptions).map(option => option.value);
         }
         
         return formData;
@@ -11120,6 +11111,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+        
+        // 自定义比例输入框变化事件监听器
+        const customLimitRatio = document.getElementById('customLimitRatio');
+        const customMarketRatio = document.getElementById('customMarketRatio');
+        
+        if (customLimitRatio && customMarketRatio) {
+            customLimitRatio.addEventListener('input', updateRatioPreview);
+            customMarketRatio.addEventListener('input', updateRatioPreview);
+        }
 
         // 客户页面大小选择事件监听器
         const pageSize10Btn = document.getElementById('customersPageSize10');
@@ -11158,6 +11158,59 @@ window.addEventListener('unhandledrejection', (event) => {
         window.app.showToast('错误', '网络请求失败，请检查网络连接', 'danger');
     }
 }); 
+
+// 自定义比例相关函数
+function toggleCustomRatio() {
+    const ratioSelect = document.getElementById('limitMarketRatio');
+    const customInput = document.getElementById('customRatioInput');
+    
+    if (ratioSelect && customInput) {
+        if (ratioSelect.value === 'custom') {
+            customInput.style.display = 'block';
+            updateRatioPreview(); // 初始化预览
+        } else {
+            customInput.style.display = 'none';
+        }
+    }
+}
+
+function updateRatioPreview() {
+    const limitRatio = document.getElementById('customLimitRatio');
+    const marketRatio = document.getElementById('customMarketRatio');
+    const preview = document.getElementById('ratioPreview');
+    
+    if (limitRatio && marketRatio && preview) {
+        const limit = parseInt(limitRatio.value) || 1;
+        const market = parseInt(marketRatio.value) || 1;
+        
+        if (limit > 0 && market > 0) {
+            const total = limit + market;
+            const limitPercent = Math.round((limit / total) * 100);
+            const marketPercent = Math.round((market / total) * 100);
+            
+            preview.textContent = `限价占${limitPercent}%，市价占${marketPercent}%`;
+        } else {
+            preview.textContent = '请输入有效的比例';
+        }
+    }
+}
+
+function getLimitMarketRatio() {
+    const ratioSelect = document.getElementById('limitMarketRatio');
+    
+    if (ratioSelect && ratioSelect.value === 'custom') {
+        const limitRatio = document.getElementById('customLimitRatio');
+        const marketRatio = document.getElementById('customMarketRatio');
+        
+        if (limitRatio && marketRatio) {
+            const limit = parseInt(limitRatio.value) || 1;
+            const market = parseInt(marketRatio.value) || 1;
+            return `${limit}:${market}`;
+        }
+    }
+    
+    return ratioSelect ? ratioSelect.value : '1:1';
+} 
 
 // ==================== 策略交易事件处理 ====================
 
