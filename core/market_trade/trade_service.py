@@ -7099,12 +7099,17 @@ class TradeService:
                 logger.warning(f"[限价跟单] 减仓比例无效: {reduce_ratio}")
                 return
             
-            # 查询相关策略
+            # 查询相关策略（支持SPECIFIC模式）
             strategies = self.db_pool.query(
                 """SELECT * FROM limit_follow_strategies 
-                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
-                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
-                (signal_source_uid, symbol, pos_side)
+                WHERE trader_unique_name=%s AND enabled=1 
+                AND (
+                    symbol='ALL' 
+                    OR symbol=%s 
+                    OR (symbol='SPECIFIC' AND JSON_CONTAINS(symbols, %s))
+                )
+                AND (pos_side='both' OR pos_side=%s)""",
+                (signal_source_uid, symbol, f'"{symbol}"', pos_side)
             )
             
             for strategy in strategies:
@@ -7248,12 +7253,17 @@ class TradeService:
         try:
             logger.info(f"[限价跟单] 按信号源交易进行精确减仓: signal_trade_uid={signal_trade_uid}, reduce_ratio={reduce_ratio}")
             
-            # 查询相关策略
+            # 查询相关策略（支持SPECIFIC模式）
             strategies = self.db_pool.query(
                 """SELECT * FROM limit_follow_strategies 
-                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
-                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
-                (signal_source_uid, symbol, pos_side)
+                WHERE trader_unique_name=%s AND enabled=1 
+                AND (
+                    symbol='ALL' 
+                    OR symbol=%s 
+                    OR (symbol='SPECIFIC' AND JSON_CONTAINS(symbols, %s))
+                )
+                AND (pos_side='both' OR pos_side=%s)""",
+                (signal_source_uid, symbol, f'"{symbol}"', pos_side)
             )
             
             for strategy in strategies:
@@ -7684,12 +7694,17 @@ class TradeService:
         try:
             logger.info(f"[限价跟单] 开始平仓所有已成交订单: {signal_source_uid} {symbol} {pos_side}")
             
-            # 查询相关策略
+            # 查询相关策略（支持SPECIFIC模式）
             strategies = self.db_pool.query(
                 """SELECT * FROM limit_follow_strategies
-                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL')
-                AND (pos_side='both' OR pos_side=%s) AND enabled=1""",
-                (signal_source_uid, symbol, pos_side)
+                WHERE trader_unique_name=%s AND enabled=1 
+                AND (
+                    symbol='ALL' 
+                    OR symbol=%s 
+                    OR (symbol='SPECIFIC' AND JSON_CONTAINS(symbols, %s))
+                )
+                AND (pos_side='both' OR pos_side=%s)""",
+                (signal_source_uid, symbol, f'"{symbol}"', pos_side)
             )
             
             total_closed = 0.0

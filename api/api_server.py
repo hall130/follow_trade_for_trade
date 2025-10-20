@@ -31,7 +31,7 @@ from exchange.okx.okx_ws_client import OKXWebSocketClient, get_global_client_man
 from exchange.okx.okx_rest_client import OKXRESTClient
 from core.limit_trade.limit_follow_models import LimitFollowLog
 from core.limit_trade.limit_follow_service import get_limit_follow_service
-from core.market_trade.trade_service import TradeService, get_client, safe_float, get_price_on_demand
+from core.market_trade.trade_service import TradeService, safe_float, get_price_on_demand
 
 # 策略交易相关导入
 try:
@@ -2842,10 +2842,12 @@ def update_customer_assets():
         
         # 从交易所获取最新资产
         customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
-        client = get_client(customer)
+        trade_service = get_trade_service()
+        import asyncio
+        client = asyncio.run(trade_service.get_client(customer))
         
         # 获取账户信息
-        account_info = client.get_account_info()
+        account_info = asyncio.run(client.get_account_info())
         if 'data' in account_info and account_info['data']:
             asset = safe_float(account_info['data'][0].get('totalEq', 0))
             
@@ -4072,10 +4074,14 @@ def sync_positions():
         
         # 从交易所获取持仓信息
         customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
-        client = get_client(customer)
+        trade_service = get_trade_service()
+        customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
+        
+        # 使用 asyncio.run 来运行异步代码
+        import asyncio
+        client = asyncio.run(trade_service.get_client(customer))
         
         # 获取持仓信息
-        import asyncio
         positions = asyncio.run(client.get_positions())
         
         if 'data' in positions and positions['data']:
@@ -4314,9 +4320,13 @@ def sync_positions_internal(customer_uid, is_demo):
     """内部同步持仓函数"""
     try:
         customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
-        client = get_client(customer)
+        trade_service = get_trade_service()
+        customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
         
+        # 使用 asyncio.run 来运行异步代码
         import asyncio
+        client = asyncio.run(trade_service.get_client(customer))
+        
         positions = asyncio.run(client.get_positions())
         
         if 'data' in positions and positions['data']:
