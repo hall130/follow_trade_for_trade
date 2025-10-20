@@ -16,7 +16,7 @@ import traceback
 from database.db import MySQLPool
 from model.models import SignalAccount, Strategy, Rule, Customer
 from config.config import get_mysql_config
-from config.contract_config import get_contract_min_sz
+from config.contract_config import get_contract_min_sz, get_contract_multiplier, get_contract_value_in_usdt
 from utils.logger import logger
 from utils.dingtalk_bot import init_dingtalk_bot
 from config.dingtalk_config import get_dingtalk_config
@@ -31,6 +31,8 @@ from exchange.okx.okx_ws_client import OKXWebSocketClient, get_global_client_man
 from exchange.okx.okx_rest_client import OKXRESTClient
 from core.limit_trade.limit_follow_models import LimitFollowLog
 from core.limit_trade.limit_follow_service import get_limit_follow_service
+from core.market_trade.trade_service import TradeService, get_client, safe_float, get_price_on_demand
+
 # 策略交易相关导入
 try:
     from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
@@ -86,6 +88,27 @@ def convert_strategy_config_types(config, strategy_type):
             converted['grid_spacing'] = float(converted['grid_spacing'])
         if 'investment_per_grid' in converted and isinstance(converted['investment_per_grid'], str):
             converted['investment_per_grid'] = float(converted['investment_per_grid'])
+    
+    elif strategy_type == 'HighFrequency_Strategy' or strategy_type == 'High_Frequency_Strategy':
+        # 高频策略参数转换
+        if 'fast_ema_period' in converted and isinstance(converted['fast_ema_period'], str):
+            converted['fast_ema_period'] = int(converted['fast_ema_period'])
+        if 'slow_ema_period' in converted and isinstance(converted['slow_ema_period'], str):
+            converted['slow_ema_period'] = int(converted['slow_ema_period'])
+        if 'rsi_period' in converted and isinstance(converted['rsi_period'], str):
+            converted['rsi_period'] = int(converted['rsi_period'])
+        if 'rsi_oversold' in converted and isinstance(converted['rsi_oversold'], str):
+            converted['rsi_oversold'] = int(converted['rsi_oversold'])
+        if 'rsi_overbought' in converted and isinstance(converted['rsi_overbought'], str):
+            converted['rsi_overbought'] = int(converted['rsi_overbought'])
+        if 'volume_threshold' in converted and isinstance(converted['volume_threshold'], str):
+            converted['volume_threshold'] = float(converted['volume_threshold'])
+        if 'price_change_threshold' in converted and isinstance(converted['price_change_threshold'], str):
+            converted['price_change_threshold'] = float(converted['price_change_threshold'])
+        if 'min_trade_interval' in converted and isinstance(converted['min_trade_interval'], str):
+            converted['min_trade_interval'] = int(converted['min_trade_interval'])
+        if 'max_trades_per_day' in converted and isinstance(converted['max_trades_per_day'], str):
+            converted['max_trades_per_day'] = int(converted['max_trades_per_day'])
     
     else:
         # 未知策略类型，记录日志但不报错
@@ -2818,7 +2841,6 @@ def update_customer_assets():
             return jsonify({'success': 404, 'data': None, 'message': f'Customer {customer_uid} not found'}), 404
         
         # 从交易所获取最新资产
-        from trade_service import get_client, safe_float
         customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
         client = get_client(customer)
         
@@ -3079,7 +3101,6 @@ def manual_close_position_internal(account_type):
         close_side = 'sell' if pos_side == 'long' else 'buy'
         
         # 执行平仓
-        from trade_service import TradeService
         trade_service = TradeService(db_pool)
         
         # 创建账户对象 - 使用完整的账户数据
@@ -3378,7 +3399,7 @@ def manual_open_position_internal(account_type):
         open_side = 'buy' if pos_side == 'long' else 'sell'
         
         # 执行开仓
-        from trade_service import TradeService
+        
         trade_service = TradeService(db_pool)
         
         # 创建账户对象 - 使用完整的账户数据
@@ -3483,7 +3504,6 @@ def manual_open_position_internal(account_type):
                     trade_uid = f'MANUAL{clean_account_uid}{clean_symbol}{timestamp}{random_suffix}'[:128]
 
                     # 计算名义价值
-                    from trade_service import get_contract_multiplier, get_price_on_demand
                     import asyncio
                     multiplier = get_contract_multiplier(symbol)
                     latest_px = asyncio.run(get_price_on_demand(symbol)) or 1
@@ -4051,7 +4071,6 @@ def sync_positions():
             return jsonify({'success': 404, 'data': None, 'message': f'Customer {customer_uid} not found'}), 404
         
         # 从交易所获取持仓信息
-        from trade_service import get_client
         customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
         client = get_client(customer)
         
@@ -4082,7 +4101,6 @@ def sync_positions():
                         trade_uid = f'SYNC{customer_uid}{symbol}{timestamp}{random_suffix}'[:128]
                         
                         # 计算名义价值
-                        from trade_service import get_contract_multiplier, get_price_on_demand
                         import asyncio
                         multiplier = get_contract_multiplier(symbol)
                         latest_px = asyncio.run(get_price_on_demand(symbol)) or 1
@@ -4115,7 +4133,7 @@ def get_position_anomalies():
         limit = request.args.get('limit', 50, type=int)
         
         # 获取异常记录
-        from trade_service import TradeService
+        
         trade_service = TradeService(db_pool)
         
         import asyncio
@@ -4190,7 +4208,7 @@ def fix_position_anomaly():
 def manual_close_position_internal_helper(customer_uid, symbol, pos_side, close_sz, is_demo, reason):
     """内部手动平仓函数"""
     try:
-        from trade_service import TradeService
+        
         
         trade_service = TradeService(db_pool)
         
@@ -4243,7 +4261,7 @@ def manual_close_position_internal_helper(customer_uid, symbol, pos_side, close_
 def manual_open_position_internal_helper(customer_uid, symbol, pos_side, open_sz, is_demo, reason):
     """内部手动开仓函数 - 用于异常修复"""
     try:
-        from trade_service import TradeService
+        
         
         trade_service = TradeService(db_pool)
         
@@ -4295,7 +4313,6 @@ def manual_open_position_internal_helper(customer_uid, symbol, pos_side, open_sz
 def sync_positions_internal(customer_uid, is_demo):
     """内部同步持仓函数"""
     try:
-        from trade_service import get_client
         customer = {'customer_uid': customer_uid, 'is_demo': is_demo}
         client = get_client(customer)
         
@@ -4383,7 +4400,7 @@ def get_customer_trades():
 def check_order_status_consistency():
     """手动触发订单状态一致性检查"""
     try:
-        from trade_service import TradeService
+        
         from config import get_mysql_config
         
         # 创建临时数据库连接
@@ -4526,7 +4543,7 @@ def update_risk_config():
                 }), 400
         
         # 更新配置
-        from trade_service import TradeService
+        
         trade_service = TradeService(None)  # 临时实例
         trade_service.update_risk_config(**data)
         
@@ -4553,7 +4570,7 @@ def update_risk_config():
 def reset_risk_config():
     """重置风控配置为默认值"""
     try:
-        from trade_service import TradeService
+        
         trade_service = TradeService(None)  # 临时实例
         
         # 重置为默认配置
@@ -4610,7 +4627,7 @@ def check_risk_control():
             }), 400
         
         # 执行风控检查
-        from trade_service import TradeService
+        
         trade_service = TradeService(None)  # 临时实例
         
         # 设置数据库连接
@@ -5382,14 +5399,27 @@ def create_limit_follow_strategy():
             if not signal_source_exists:
                 raise APIError(f"信号源 {data['trader_unique_name']} 不存在")
         
+        # 处理symbols字段
+        symbols_json = None
+        if data['symbol'] == 'SPECIFIC':
+            # 指定交易对模式：验证并处理symbols字段
+            symbols = data.get('symbols', [])
+            if not symbols:
+                raise APIError("指定交易对模式下必须选择至少一个交易对")
+            
+            # 将交易对列表转换为JSON字符串
+            import json
+            symbols_json = json.dumps(symbols)
+            logger.info(f"[限价跟单] 创建多币种策略: {len(symbols)} 个交易对: {symbols}")
+        
         # 插入策略
         strategy_id = db_pool.execute(
             """INSERT INTO limit_follow_strategies 
-               (strategy_name, trader_unique_name, customer_uid, symbol, pos_side, follow_type, follow_mode, follow_value, 
+               (strategy_name, trader_unique_name, customer_uid, symbol, symbols, pos_side, follow_type, follow_mode, follow_value, 
                 min_follow_value, max_follow_value, max_orders_per_signal, leverage, max_net_leverage, proportional_position,
                 auto_cancel_on_signal_close, enabled) 
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (data['strategy_name'], data['trader_unique_name'], data['customer_uid'], data['symbol'], pos_side,
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (data['strategy_name'], data['trader_unique_name'], data['customer_uid'], data['symbol'], symbols_json, pos_side,
              data['follow_type'], follow_mode, data['follow_value'], data.get('min_follow_value', 0.5), 
              data.get('max_follow_value', 5.0), data.get('max_orders_per_signal', 4),
              data.get('leverage', 10), data.get('max_net_leverage', 1.5), data.get('proportional_position', False),
@@ -5455,15 +5485,28 @@ def create_multi_customer_limit_follow_strategy():
             if not signal_source_exists:
                 raise APIError(f"跟单员或信号源 {data['trader_unique_name']} 不存在")
         
+        # 处理symbols字段
+        symbols_json = None
+        if data['symbol'] == 'SPECIFIC':
+            # 指定交易对模式：验证并处理symbols字段
+            symbols = data.get('symbols', [])
+            if not symbols:
+                raise APIError("指定交易对模式下必须选择至少一个交易对")
+            
+            # 将交易对列表转换为JSON字符串
+            import json
+            symbols_json = json.dumps(symbols)
+            logger.info(f"[多客户策略] 创建多币种策略: {len(symbols)} 个交易对: {symbols}")
+        
         # 创建策略（为向后兼容，使用第一个客户作为customer_uid）
         first_customer_uid = customer_uids[0] if customer_uids else None
         strategy_id = db_pool.execute(
             """INSERT INTO limit_follow_strategies 
-               (strategy_name, trader_unique_name, customer_uid, symbol, pos_side, follow_type, follow_mode, follow_order_types, limit_market_ratio, follow_value, 
-                min_follow_value, max_follow_value, max_orders_per_sifgnal, leverage, max_net_leverage, 
+               (strategy_name, trader_unique_name, customer_uid, symbol, symbols, pos_side, follow_type, follow_mode, follow_order_types, limit_market_ratio, follow_value, 
+                min_follow_value, max_follow_value, max_orders_per_signal, leverage, max_net_leverage, 
                 proportional_position, auto_cancel_on_signal_close, enabled) 
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (data['strategy_name'], data['trader_unique_name'], first_customer_uid, data['symbol'], 
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (data['strategy_name'], data['trader_unique_name'], first_customer_uid, data['symbol'], symbols_json,
              data.get('pos_side', 'both'), data.get('follow_type', 'percentage'),
              data.get('follow_mode', 'follow_signal_source'), data.get('follow_order_types', 'limit_only'),
              data.get('limit_market_ratio', '1:1'),
@@ -5684,7 +5727,47 @@ def update_limit_follow_strategy(strategy_id):
                 raise APIError("持仓方向必须是long、short或both")
             update_fields.append("pos_side=%s")
             params.append(data['pos_side'])
+                        
+            # 如果symbol字段更新，同时处理symbols字段
+            if data['symbol'] == 'SPECIFIC':
+                # 指定交易对模式：验证并处理symbols字段
+                symbols = data.get('symbols', [])
+                if not symbols:
+                    raise APIError("指定交易对模式下必须选择至少一个交易对")
+                
+                # 将交易对列表转换为JSON字符串
+                import json
+                symbols_json = json.dumps(symbols)
+                update_fields.append("symbols=%s")
+                params.append(symbols_json)
+                logger.info(f"[限价跟单] 更新多币种策略: {len(symbols)} 个交易对: {symbols}")
+            else:
+                # 非SPECIFIC模式，清空symbols字段
+                update_fields.append("symbols=NULL")
+                logger.info(f"[限价跟单] 更新策略为非多币种模式，清空symbols字段")
         
+        # 单独处理symbols字段（当symbol字段没有更新但symbols字段有更新时）
+        if 'symbols' in data and 'symbol' not in data:
+            # 先查询当前策略的symbol字段
+            current_strategy = db_pool.query(
+                "SELECT symbol FROM limit_follow_strategies WHERE id=%s",
+                (strategy_id,)
+            )
+            
+            if current_strategy and current_strategy[0]['symbol'] == 'SPECIFIC':
+                symbols = data['symbols']
+                if not symbols:
+                    raise APIError("指定交易对模式下必须选择至少一个交易对")
+                
+                # 将交易对列表转换为JSON字符串
+                import json
+                symbols_json = json.dumps(symbols)
+                update_fields.append("symbols=%s")
+                params.append(symbols_json)
+                logger.info(f"[限价跟单] 更新多币种策略symbols: {len(symbols)} 个交易对: {symbols}")
+            else:
+                logger.warning(f"[限价跟单] 策略当前不是SPECIFIC模式，忽略symbols字段更新")
+
         if 'follow_type' in data:
             update_fields.append("follow_type=%s")
             params.append(data['follow_type'])
@@ -6231,7 +6314,6 @@ def _calculate_net_leverage_with_pending_orders(customer_uid, symbol, pos_side, 
     """
     try:
         import asyncio
-        from contract_config import get_contract_value_in_usdt
         
         # 1. 获取账户信息
         account_info = asyncio.run(rest_client.get_account_info())
@@ -8086,9 +8168,12 @@ def get_strategy_manager():
             strategy_manager = AsyncStrategyManager(db_pool)
             # 异步初始化引擎
             run_async_in_thread(strategy_manager.start_engine())
+            logger.info("策略管理器已初始化并启动引擎")
         except Exception as e:
             logger.error(f"创建策略管理器失败: {e}")
             strategy_manager = None
+    elif strategy_manager is not None:
+        logger.debug("复用现有策略管理器实例")
     return strategy_manager
 
 # 策略实例管理API
@@ -8325,7 +8410,7 @@ def update_strategy_instance(strategy_name):
             })
         
         # 更新策略配置
-        success = run_async_in_thread(manager.update_strategy_config(
+        success = run_async_in_thread(manager.update_strategy_full_config(
             strategy_name, new_name, config, signal_sources, customers
         ))
         
@@ -8548,7 +8633,7 @@ def get_backtest_detail(backtest_id):
                     'status': row.get('status', 'COMPLETED'),
                     'started_at': row.get('started_at'),
                     'completed_at': row.get('completed_at'),
-                    'config': config_json,
+                    'config_json': json.dumps(config_json),
                     'results_json': results_json,
                     'symbol': config_json.get('symbol', 'BTC-USDT'),
                     'timeframe': config_json.get('timeframe', '1h')
@@ -8680,59 +8765,89 @@ def get_strategy_template_configs():
                 'message': '策略交易模块不可用'
             })
         
-        # 使用策略扫描器动态发现策略
+        # 优先使用策略配置管理器，然后补充策略扫描器发现的策略
+        from config.strategy_config import strategy_config_manager
         from core.strategy_trade.strategy_scanner import strategy_scanner
         
-        # 扫描所有策略
-        discovered_strategies = strategy_scanner.scan_all_strategies()
-        
-        # 只返回完整的策略（有必需方法实现）
-        complete_strategies = strategy_scanner.get_complete_strategies()
-        incomplete_strategies = strategy_scanner.get_incomplete_strategies()
-        
-        # 记录不完整的策略
-        if incomplete_strategies:
-            logger.warning(f"发现不完整的策略: {list(incomplete_strategies.keys())}")
-            for name, info in incomplete_strategies.items():
-                logger.warning(f"策略 {name} 缺少方法: {info['missing_methods']}")
-        
-        # 转换为前端期望的格式
         templates = {}
-        for class_name, strategy_info in complete_strategies.items():
-            # 将参数转换为前端期望的格式
-            default_config = {}
-            validation_rules = {}
-            
-            for param_name, param_info in strategy_info['parameters'].items():
-                default_config[param_name] = param_info['default']
-                validation_rules[param_name] = {
-                    'type': param_info['type'],
-                    'min': param_info.get('min'),
-                    'max': param_info.get('max')
-                }
-            
-            # 使用策略类名作为key
-            strategy_id = strategy_info['class_name'].replace('Strategy', '_Strategy')
+        
+        # 1. 从策略配置管理器获取预定义的策略模板
+        for strategy_id, template in strategy_config_manager.templates.items():
             templates[strategy_id] = {
                 'id': strategy_id,
-                'name': strategy_info['display_name'],
-                'display_name': strategy_info['display_name'], 
-                'description': strategy_info['description'],
-                'category': strategy_info['category'],
-                'risk_profile': strategy_info['risk_profile'],
-                'complexity': strategy_info['complexity'],
-                'default_config': default_config,
-                'required_fields': list(strategy_info['parameters'].keys()),
-                'validation_rules': validation_rules,
-                'is_complete': strategy_info['is_complete'],
-                'module_path': strategy_info['full_module_path']
+                'name': template.display_name,
+                'display_name': template.display_name,
+                'description': template.description,
+                'category': template.category,
+                'risk_profile': template.risk_profile,
+                'complexity': template.complexity,
+                'default_config': template.default_config,
+                'required_fields': template.required_fields,
+                'validation_rules': template.validation_rules,
+                'is_complete': True,
+                'source': 'config_manager'
             }
+            logger.info(f"✅ 从配置管理器加载策略: {strategy_id}")
+        
+        # 2. 使用策略扫描器动态发现策略（补充配置管理器没有的策略）
+        try:
+            discovered_strategies = strategy_scanner.scan_all_strategies()
+            complete_strategies = strategy_scanner.get_complete_strategies()
+            incomplete_strategies = strategy_scanner.get_incomplete_strategies()
+            
+            # 记录不完整的策略
+            if incomplete_strategies:
+                logger.warning(f"发现不完整的策略: {list(incomplete_strategies.keys())}")
+                for name, info in incomplete_strategies.items():
+                    logger.warning(f"策略 {name} 缺少方法: {info['missing_methods']}")
+            
+            # 添加扫描器发现的策略（如果配置管理器中没有）
+            for class_name, strategy_info in complete_strategies.items():
+                strategy_id = strategy_info['class_name'].replace('Strategy', '_Strategy')
+                
+                # 如果配置管理器中已有，跳过
+                if strategy_id in templates:
+                    logger.info(f"策略 {strategy_id} 已在配置管理器中定义，跳过扫描器版本")
+                    continue
+                
+                # 将参数转换为前端期望的格式
+                default_config = {}
+                validation_rules = {}
+                
+                for param_name, param_info in strategy_info['parameters'].items():
+                    default_config[param_name] = param_info['default']
+                    validation_rules[param_name] = {
+                        'type': param_info['type'],
+                        'min': param_info.get('min'),
+                        'max': param_info.get('max')
+                    }
+                
+                templates[strategy_id] = {
+                    'id': strategy_id,
+                    'name': strategy_info['display_name'],
+                    'display_name': strategy_info['display_name'], 
+                    'description': strategy_info['description'],
+                    'category': strategy_info['category'],
+                    'risk_profile': strategy_info['risk_profile'],
+                    'complexity': strategy_info['complexity'],
+                    'default_config': default_config,
+                    'required_fields': list(strategy_info['parameters'].keys()),
+                    'validation_rules': validation_rules,
+                    'is_complete': strategy_info['is_complete'],
+                    'module_path': strategy_info['full_module_path'],
+                    'source': 'scanner'
+                }
+                logger.info(f"✅ 从扫描器加载策略: {strategy_id}")
+                
+        except Exception as scanner_error:
+            logger.warning(f"策略扫描器执行失败，仅使用配置管理器: {scanner_error}")
+        
+        logger.info(f"总共加载了 {len(templates)} 个策略模板")
         
         return jsonify({
             'success': True,
-            'message': f'发现 {len(complete_strategies)} 个完整策略，{len(incomplete_strategies)} 个不完整策略',
-            'data': templates,
-            'incomplete_strategies': list(incomplete_strategies.keys()) if incomplete_strategies else []
+            'message': f'成功加载 {len(templates)} 个策略模板',
+            'data': templates
         })
         
     except Exception as e:
@@ -8752,19 +8867,57 @@ def get_strategy_template_config(strategy_type):
                 'message': '策略交易模块不可用'
             })
         
+        # 优先使用策略配置管理器
+        from config.strategy_config import strategy_config_manager
         from core.strategy_trade.strategy_scanner import strategy_scanner
         
-        # 扫描策略
-        discovered_strategies = strategy_scanner.scan_all_strategies()
-        complete_strategies = strategy_scanner.get_complete_strategies()
-        
-        # 查找策略（支持多种格式）
         strategy_info = None
-        for class_name, info in complete_strategies.items():
-            strategy_id = class_name.replace('Strategy', '_Strategy')
-            if strategy_type == strategy_id or strategy_type == class_name:
-                strategy_info = info
-                break
+        template = None
+        
+        # 1. 首先从配置管理器查找
+        if strategy_type in strategy_config_manager.templates:
+            template = strategy_config_manager.templates[strategy_type]
+            strategy_info = {
+                'display_name': template.display_name,
+                'description': template.description,
+                'category': template.category,
+                'risk_profile': template.risk_profile,
+                'complexity': template.complexity,
+                'parameters': {}
+            }
+            
+            # 从模板配置中提取参数信息
+            for param_name, default_value in template.default_config.items():
+                if param_name in ['symbol', 'timeframe']:  # 跳过基础参数
+                    continue
+                    
+                validation = template.validation_rules.get(param_name, {})
+                strategy_info['parameters'][param_name] = {
+                    'default': default_value,
+                    'type': validation.get('type', 'float'),
+                    'min': validation.get('min'),
+                    'max': validation.get('max')
+                }
+            
+            logger.info(f"✅ 从配置管理器获取策略模板: {strategy_type}")
+        
+        # 2. 如果配置管理器中没有，使用策略扫描器
+        if not strategy_info:
+            try:
+                discovered_strategies = strategy_scanner.scan_all_strategies()
+                complete_strategies = strategy_scanner.get_complete_strategies()
+                
+                # 查找策略（支持多种格式）
+                for class_name, info in complete_strategies.items():
+                    strategy_id = class_name.replace('Strategy', '_Strategy')
+                    if strategy_type == strategy_id or strategy_type == class_name:
+                        strategy_info = info
+                        break
+                        
+                if strategy_info:
+                    logger.info(f"✅ 从扫描器获取策略模板: {strategy_type}")
+            except Exception as scanner_error:
+                logger.warning(f"策略扫描器执行失败: {scanner_error}")
         
         if not strategy_info:
             return jsonify({
@@ -8844,44 +8997,75 @@ def run_backtest():
                 'message': '策略管理器初始化失败'
             })
         
-        # 如果是策略模板，需要先创建临时策略实例
+        # 策略类型映射（前端 -> 后端）
+        strategy_type_mapping = {
+            'HighFrequency_Strategy': 'High_Frequency_Strategy',
+            'MA_Cross_Strategy': 'MA_Cross_Strategy',
+            'RSI_Strategy': 'RSI_Strategy',
+            'Bollinger_Strategy': 'Bollinger_Strategy',
+            'MACD_Strategy': 'MACD_Strategy',
+            'Grid_Strategy': 'Grid_Strategy'
+        }
+        
+        # 映射策略类型
+        actual_strategy_type = strategy_type_mapping.get(strategy_name, strategy_name)
+        logger.info(f"策略类型映射: {strategy_name} -> {actual_strategy_type}")
+        
+        # 转换策略配置中的数值类型参数
+        converted_config = convert_strategy_config_types(strategy_config, strategy_name)
+        logger.info(f"转换后的策略配置: {converted_config}")
+        
+        # 如果是策略模板，需要先创建策略实例（支持复用）
         if is_template:
-            # 为回测创建临时策略名称
-            temp_strategy_name = f"temp_{strategy_name}_{int(time.time())}"
+            # 使用固定的策略名称，支持参数更新
+            template_strategy_name = f"template_{strategy_name}"
             
-            logger.info(f"正在创建临时策略实例: {temp_strategy_name}")
+            logger.info(f"使用策略模板: {template_strategy_name}")
             logger.info(f"策略类型: {strategy_name}")
             logger.info(f"策略配置: {strategy_config}")
             
-            # 转换策略配置中的数值类型参数
-            converted_config = convert_strategy_config_types(strategy_config, strategy_name)
-            logger.info(f"转换后的策略配置: {converted_config}")
-            
-            # 创建临时策略实例
+            # 检查策略是否已存在，如果不存在则创建
             try:
-                creation_success = run_async_in_thread(manager.create_strategy(
-                    strategy_type=strategy_name,
-                    name=temp_strategy_name,
-                    config=converted_config  # 使用转换后的配置
-                ))
+                # 尝试获取现有策略
+                existing_strategy = run_async_in_thread(manager.get_strategy_info(template_strategy_name))
                 
-                if not creation_success:
-                    logger.error(f"临时策略创建失败: {temp_strategy_name}")
-                    return jsonify({
-                        'success': False,
-                        'message': f'无法创建临时策略实例: {strategy_name}，请检查策略配置参数'
-                    })
+                if not existing_strategy:
+                    # 策略不存在，创建新策略
+                    logger.info(f"创建新策略模板: {template_strategy_name}")
+                    creation_success = run_async_in_thread(manager.create_strategy(
+                        strategy_type=actual_strategy_type,
+                        name=template_strategy_name,
+                        config=converted_config
+                    ))
+                    
+                    if not creation_success:
+                        logger.error(f"策略模板创建失败: {template_strategy_name}")
+                        return jsonify({
+                            'success': False,
+                            'message': f'无法创建策略模板: {strategy_name}，请检查策略配置参数'
+                        })
+                else:
+                    # 策略已存在，更新参数
+                    logger.info(f"更新现有策略模板参数: {template_strategy_name}")
+                    logger.info(f"现有策略配置: {existing_strategy.get('config', {})}")
+                    logger.info(f"新策略配置: {converted_config}")
+                    
+                    update_success = run_async_in_thread(manager.update_strategy_config(
+                        template_strategy_name, converted_config
+                    ))
+                    
+                    if not update_success:
+                        logger.warning(f"策略参数更新失败，使用现有配置")
+                    else:
+                        logger.info(f"策略参数更新成功: {template_strategy_name}")
                 
-                logger.info(f"临时策略创建成功: {temp_strategy_name}")
-                
-                # 使用临时策略名称进行回测
-                actual_strategy_name = temp_strategy_name
+                actual_strategy_name = template_strategy_name
                 
             except Exception as create_error:
-                logger.error(f"创建临时策略异常: {create_error}")
+                logger.error(f"处理策略模板异常: {create_error}")
                 return jsonify({
                     'success': False,
-                    'message': f'创建临时策略失败: {str(create_error)}'
+                    'message': f'处理策略模板失败: {str(create_error)}'
                 })
         else:
             actual_strategy_name = strategy_name
@@ -8893,7 +9077,8 @@ def run_backtest():
                 start_date=start_date,
                 end_date=end_date,
                 initial_capital=float(initial_capital),
-                backtest_name=backtest_name
+                backtest_name=backtest_name,
+                strategy_config=converted_config if is_template else None
             ))
             
             if backtest_result:

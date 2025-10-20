@@ -32,6 +32,17 @@ class FollowType(Enum):
     PERCENTAGE = 'percentage'  # 百分比
     FIXED = 'fixed'           # 固定价格
 
+class FollowMode(Enum):
+    """跟单模式枚举"""
+    FOLLOW_SIGNAL_SOURCE = 'follow_signal_source'  # 跟信号源
+    FOLLOW_TRADER = 'follow_trader'                # 跟交易员
+
+class FollowOrderTypes(Enum):
+    """跟单订单类型枚举"""
+    LIMIT_ONLY = 'limit_only'    # 只跟限价单
+    MARKET_ONLY = 'market_only'  # 只跟市价单
+    BOTH = 'both'                # 都跟
+
 class PosSide(Enum):
     """持仓方向枚举"""
     LONG = 'long'    # 多仓
@@ -46,13 +57,19 @@ class LimitFollowStrategy:
     trader_unique_name: str = ''
     customer_uid: str = ''
     symbol: str = ''
+    symbols: str = ''  # 多交易对配置，JSON格式存储
     pos_side: str = 'both'  # 默认双向跟随
     follow_type: str = 'percentage'
+    follow_mode: str = 'follow_signal_source'  # 跟单模式
+    follow_order_types: str = 'limit_only'  # 跟单订单类型
+    limit_market_ratio: str = '1:1'  # 限价市价比例
     follow_value: float = 0.0
     min_follow_value: float = 0.5
     max_follow_value: float = 5.0
     max_orders_per_signal: int = 4
-    max_net_leverage: float = 10.0  # 最大净杠杆值
+    max_net_leverage: float = 1.5  # 最大净杠杆值
+    leverage: int = 10  # 开仓杠杆倍数
+    strategy_group_id: Optional[int] = None  # 策略组ID
     proportional_position: bool = False  # 是否启用按比例开仓
     auto_cancel_on_signal_close: bool = True
     enabled: bool = True
@@ -64,6 +81,10 @@ class LimitFollowStrategy:
             raise ValueError(f"无效的持仓方向: {self.pos_side}")
         if self.follow_type not in [e.value for e in FollowType]:
             raise ValueError(f"无效的跟单类型: {self.follow_type}")
+        if self.follow_mode not in [e.value for e in FollowMode]:
+            raise ValueError(f"无效的跟单模式: {self.follow_mode}")
+        if self.follow_order_types not in [e.value for e in FollowOrderTypes]:
+            raise ValueError(f"无效的跟单订单类型: {self.follow_order_types}")
 
 @dataclass
 class LimitFollowOrder:

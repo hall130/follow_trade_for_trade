@@ -8267,9 +8267,18 @@ class OKXTradingApp {
             formData.symbol = 'ALL'; // 跟随全部交易对
             formData.symbols = []; // 空数组表示全部
         } else {
-            formData.symbol = 'SPECIFIC'; // 指定交易对
             const symbolsSelect = document.getElementById('limitFollowStrategySymbols');
-            formData.symbols = Array.from(symbolsSelect.selectedOptions).map(option => option.value);
+            const selectedSymbols = Array.from(symbolsSelect.selectedOptions).map(option => option.value);
+            if (selectedSymbols.length > 0) {
+                // 多交易对情况：使用第一个作为主交易对，其他作为跟随交易对
+                formData.symbol = selectedSymbols[0]; // 主交易对（用于策略标识）
+                formData.symbols = selectedSymbols; // 所有选择的交易对
+                formData.symbol_count = selectedSymbols.length; // 交易对数量
+            } else {
+                formData.symbol = 'BTC-USDT-SWAP'; // 默认交易对
+                formData.symbols = ['BTC-USDT-SWAP'];
+                formData.symbol_count = 1;
+            }
         }
         
         return formData;
@@ -9390,12 +9399,73 @@ class OKXTradingApp {
                 `;
                 break;
                 
+            case 'HighFrequency_Strategy':
+            case 'High_Frequency_Strategy':
+                paramsHtml = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="backtest_fast_ema_period" class="form-label">快线EMA周期</label>
+                            <input type="number" class="form-control" id="backtest_fast_ema_period" name="fast_ema_period" value="5" min="3" max="20" required>
+                            <div class="form-text">快线EMA的计算周期</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="backtest_slow_ema_period" class="form-label">慢线EMA周期</label>
+                            <input type="number" class="form-control" id="backtest_slow_ema_period" name="slow_ema_period" value="10" min="5" max="50" required>
+                            <div class="form-text">慢线EMA的计算周期</div>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-4">
+                            <label for="backtest_rsi_period" class="form-label">RSI周期</label>
+                            <input type="number" class="form-control" id="backtest_rsi_period" name="rsi_period" value="14" min="5" max="30" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_rsi_oversold" class="form-label">RSI超卖线</label>
+                            <input type="number" class="form-control" id="backtest_rsi_oversold" name="rsi_oversold" value="30" min="10" max="40" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="backtest_rsi_overbought" class="form-label">RSI超买线</label>
+                            <input type="number" class="form-control" id="backtest_rsi_overbought" name="rsi_overbought" value="70" min="60" max="90" required>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="backtest_volume_threshold" class="form-label">成交量倍数阈值</label>
+                            <input type="number" class="form-control" id="backtest_volume_threshold" name="volume_threshold" value="1.5" min="1.0" max="5.0" step="0.1" required>
+                            <div class="form-text">成交量确认的倍数阈值</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="backtest_price_change_threshold" class="form-label">价格变化阈值</label>
+                            <input type="number" class="form-control" id="backtest_price_change_threshold" name="price_change_threshold" value="0.01" min="0.001" max="0.05" step="0.001" required>
+                            <div class="form-text">价格变化的最小阈值</div>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label for="backtest_min_trade_interval" class="form-label">最小交易间隔(分钟)</label>
+                            <input type="number" class="form-control" id="backtest_min_trade_interval" name="min_trade_interval" value="5" min="1" max="60" required>
+                            <div class="form-text">两次交易之间的最小时间间隔</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="backtest_max_trades_per_day" class="form-label">每日最大交易次数</label>
+                            <input type="number" class="form-control" id="backtest_max_trades_per_day" name="max_trades_per_day" value="50" min="10" max="200" required>
+                            <div class="form-text">每日允许的最大交易次数</div>
+                        </div>
+                    </div>
+                `;
+                break;
+                
             default:
                 paramsHtml = '<p class="text-muted">该策略使用默认参数配置</p>';
         }
         
+        // 获取参数容器并更新内容
+        const paramsContainer = document.getElementById('backtestStrategyParams');
         if (paramsContainer) {
             paramsContainer.innerHTML = paramsHtml;
+            paramsContainer.style.display = 'block';
+        } else {
+            console.error('未找到回测策略参数容器');
         }
     }
     
@@ -10648,6 +10718,16 @@ class OKXTradingApp {
                     }
                 });
                 break;
+                
+            case 'HighFrequency_Strategy':
+            case 'High_Frequency_Strategy':
+                ['fast_ema_period', 'slow_ema_period', 'rsi_period', 'rsi_oversold', 'rsi_overbought', 
+                 'volume_threshold', 'price_change_threshold', 'min_trade_interval', 'max_trades_per_day'].forEach(param => {
+                    if (config.hasOwnProperty(param)) {
+                        formHtml += this.generateParamInput(param, config[param], validation[param]);
+                    }
+                });
+                break;
         }
 
         formHtml += '</div>';
@@ -10696,7 +10776,13 @@ class OKXTradingApp {
             'signal_period': 'MACD信号线周期',
             'grid_levels': '网格层数',
             'grid_spacing': '网格间距',
-            'base_price': '基准价格'
+            'base_price': '基准价格',
+            'fast_ema_period': '快线EMA周期',
+            'slow_ema_period': '慢线EMA周期',
+            'volume_threshold': '成交量倍数阈值',
+            'price_change_threshold': '价格变化阈值',
+            'min_trade_interval': '最小交易间隔(分钟)',
+            'max_trades_per_day': '每日最大交易次数'
         };
         return labels[paramName] || paramName;
     }
@@ -10723,7 +10809,13 @@ class OKXTradingApp {
             'signal_period': 'MACD信号线周期',
             'grid_levels': '网格总层数',
             'grid_spacing': '网格间距百分比',
-            'base_price': '网格中心价格'
+            'base_price': '网格中心价格',
+            'fast_ema_period': '快线EMA周期 (建议3-20)',
+            'slow_ema_period': '慢线EMA周期 (建议5-50)',
+            'volume_threshold': '成交量倍数阈值 (建议1.0-5.0)',
+            'price_change_threshold': '价格变化阈值 (建议0.001-0.05)',
+            'min_trade_interval': '最小交易间隔分钟数 (建议1-60)',
+            'max_trades_per_day': '每日最大交易次数 (建议10-200)'
         };
         return descriptions[paramName] || '';
     }
@@ -10785,11 +10877,13 @@ class OKXTradingApp {
                         // 根据参数名判断是整数还是浮点数
                         if (paramName.includes('period') || paramName.includes('levels') || 
                             paramName.includes('oversold') || paramName.includes('overbought') ||
-                            paramName.includes('threshold') && !paramName.includes('adjustment')) {
+                            paramName.includes('interval') || paramName.includes('trades')) {
+                            // 周期、层数、超买超卖、间隔、交易次数等应该是整数
                             value = parseInt(value);
                         } else if (paramName.includes('std') || paramName.includes('spacing') || 
-                                   paramName.includes('amount') || paramName.includes('investment')) {
-                            // 标准差、间距、金额等应该是浮点数
+                                   paramName.includes('amount') || paramName.includes('investment') ||
+                                   paramName.includes('threshold') || paramName.includes('pct')) {
+                            // 标准差、间距、金额、阈值、百分比等应该是浮点数
                             value = parseFloat(value);
                         } else {
                             // 默认尝试浮点数转换

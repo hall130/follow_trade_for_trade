@@ -866,10 +866,16 @@ class SignalService:
             logger.info(f"[限价跟单] 开始处理限价跟单: signal_source_uid={signal_source_uid}, symbol={symbol}, pos_side={pos_side}")
             
             # 1. 检查是否有该信号源的限价跟单策略
+            # 查询条件：匹配具体交易对、全部交易对或指定交易对列表中的策略
             strategies = self.db_pool.query(
                 """SELECT * FROM limit_follow_strategies 
-                WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') AND enabled=1""",
-                (signal_source_uid, symbol)
+                WHERE trader_unique_name=%s AND enabled=1 
+                AND (
+                    symbol='ALL' 
+                    OR symbol=%s 
+                    OR (symbol='SPECIFIC' AND JSON_CONTAINS(symbols, %s))
+                )""",
+                (signal_source_uid, symbol, f'"{symbol}"')
             )
             
             logger.info(f"[限价跟单] 查询策略结果: 找到 {len(strategies) if strategies else 0} 个策略")

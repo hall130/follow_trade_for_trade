@@ -20,6 +20,7 @@ class StrategyManager:
             "Bollinger_Strategy": "core.strategy_trade.strategies.bollinger_strategy.BollingerStrategy",
             "MACD_Strategy": "core.strategy_trade.strategies.macd_strategy.MACDStrategy",
             "Grid_Strategy": "core.strategy_trade.strategies.grid_strategy.GridStrategy",
+            "High_Frequency_Strategy": "core.strategy_trade.strategies.high_frequency_strategy.HighFrequencyStrategy",
         }
         
         # 使用配置管理器

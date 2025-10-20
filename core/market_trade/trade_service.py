@@ -22,7 +22,7 @@ import gc
 import tracemalloc
 import traceback
 
-from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier, get_contract_info
+from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier, get_contract_info, get_contract_value_in_usdt, get_contract_sz_precision
 from database.db import get_enabled_customers, get_enabled_signal_accounts
 from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async, get_dingtalk_bot, init_dingtalk_bot, send_trade_notification_async
 from config.dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings, get_dingtalk_config
@@ -31,6 +31,7 @@ from exchange.okx.okx_rest_client import OKXRESTClient
 import os
 from config.config import get_websocket_config
 from database.global_db_manager import get_global_db_pool
+from config.limit_follow_config import get_customer_limit_follow_config
 
 
 TICKER_CACHE = {}
@@ -2672,7 +2673,6 @@ class TradeService:
                     logger.info(f"[客户资产更新] 客户{customer_uid} 当前资产: {asset}")
                     
                     # 更新客户资产到数据库（优化：只在init_asset为NULL时更新，减少更新频率）
-                    from db import get_customer_by_id
                     customer_data = get_customer_by_id(self.db_pool, customer_uid, is_demo)
 
                     if customer_data:
@@ -3000,7 +3000,6 @@ class TradeService:
     async def force_update_customer_assets(self, customer_uid=None, is_demo=None):
             """强制更新客户资产 - 用于调试"""
             try:
-                from db import get_enabled_customers, get_customer_by_id
                 
                 if is_demo is None:
                     is_demo = get_global_is_demo()
@@ -6259,11 +6258,16 @@ class TradeService:
                           sc.custom_leverage, sc.custom_follow_value
                    FROM limit_follow_strategies lfs
                    LEFT JOIN limit_follow_strategy_customers sc ON lfs.id = sc.strategy_id
-                   WHERE lfs.trader_unique_name=%s AND (lfs.symbol=%s OR lfs.symbol='ALL') 
-                   AND (lfs.pos_side='both' OR lfs.pos_side=%s) AND lfs.enabled=1
+                   WHERE lfs.trader_unique_name=%s AND lfs.enabled=1 
+                   AND (
+                       lfs.symbol='ALL' 
+                       OR lfs.symbol=%s 
+                       OR (lfs.symbol='SPECIFIC' AND JSON_CONTAINS(lfs.symbols, %s))
+                   )
+                   AND (lfs.pos_side='both' OR lfs.pos_side=%s)
                    AND (sc.enabled=1 OR sc.enabled IS NULL)
                    ORDER BY lfs.id, sc.id""",
-                (signal_source_uid, symbol, pos_side)
+                (signal_source_uid, symbol, f'"{symbol}"', pos_side)
             )
             
             # 如果没有关联客户，使用传统的customer_uid字段（向后兼容）
@@ -6272,10 +6276,15 @@ class TradeService:
                     """SELECT *, customer_uid, 1 as customer_enabled, 
                               leverage as custom_leverage, follow_value as custom_follow_value
                        FROM limit_follow_strategies 
-                       WHERE trader_unique_name=%s AND (symbol=%s OR symbol='ALL') 
-                       AND (pos_side='both' OR pos_side=%s) AND enabled=1
+                       WHERE trader_unique_name=%s AND enabled=1 
+                       AND (
+                           symbol='ALL' 
+                           OR symbol=%s 
+                           OR (symbol='SPECIFIC' AND JSON_CONTAINS(symbols, %s))
+                       )
+                       AND (pos_side='both' OR pos_side=%s)
                        AND customer_uid IS NOT NULL""",
-                    (signal_source_uid, symbol, pos_side)
+                    (signal_source_uid, symbol, f'"{symbol}"', pos_side)
                 )
             
             if not strategies:
@@ -7396,7 +7405,6 @@ class TradeService:
             logger.info(f"[限价跟单] 检查客户{customer_uid}净杠杆控制，最大杠杆: {max_leverage}")
             
             # 获取客户配置
-            from limit_follow_config import get_customer_limit_follow_config
             customer_config = get_customer_limit_follow_config(customer_uid)
             if not customer_config or 'customer_info' not in customer_config:
                 logger.warning(f"[限价跟单] 客户{customer_uid}配置不存在，跳过净杠杆检查")
@@ -7434,7 +7442,6 @@ class TradeService:
         """计算客户净杠杆（简化版，复用api_server.py中的逻辑）"""
         try:
             import asyncio
-            from contract_config import get_contract_value_in_usdt
             
             # 1. 获取账户信息
             account_info = await rest_client.get_account_info()
@@ -10162,7 +10169,6 @@ class TradeService:
         """调整订单数量，确保符合交易对的最小数量单位"""
         try:
             # 导入合约配置
-            from contract_config import get_contract_min_sz, get_contract_sz_precision
             
             # 获取交易对的最小张数和精度
             min_size = get_contract_min_sz(symbol)

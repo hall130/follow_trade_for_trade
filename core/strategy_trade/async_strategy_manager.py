@@ -16,13 +16,15 @@ class AsyncStrategyManager:
     
     def __init__(self, db_pool):
         self.db_pool = db_pool  # 同步的MySQLPool
-        self.strategies = {}  # 存储策略实例
+        self.strategies = {}  # 存储策略信息
+        self.strategy_instances = {}  # 存储策略实例缓存
         self.available_strategies = {
             "MA_Cross_Strategy": "core.strategy_trade.strategies.ma_cross_strategy.MACrossStrategy",
             "RSI_Strategy": "core.strategy_trade.strategies.rsi_strategy.RSIStrategy",
             "Bollinger_Strategy": "core.strategy_trade.strategies.bollinger_strategy.BollingerStrategy",
             "MACD_Strategy": "core.strategy_trade.strategies.macd_strategy.MACDStrategy",
             "Grid_Strategy": "core.strategy_trade.strategies.grid_strategy.GridStrategy",
+            "High_Frequency_Strategy": "core.strategy_trade.strategies.high_frequency_strategy.HighFrequencyStrategy",
         }
         
         # 使用配置管理器
@@ -252,19 +254,142 @@ class AsyncStrategyManager:
                 if strategy_info['status'] == 'RUNNING':
                     await self.stop_strategy(strategy_name)
             
+            # 清理策略实例缓存
+            self.strategy_instances.clear()
+            logger.info("策略实例缓存已清理")
+            
             logger.info("异步策略引擎已停止")
             
         except Exception as e:
             logger.error(f"停止策略引擎失败: {e}")
     
+    async def get_strategy_info(self, strategy_name: str) -> Optional[Dict]:
+        """获取策略信息"""
+        try:
+            if strategy_name in self.strategies:
+                return self.strategies[strategy_name]
+            return None
+        except Exception as e:
+            logger.error(f"获取策略信息失败: {e}")
+            return None
+
+    async def clear_strategy_cache(self, strategy_name: str = None):
+        """清理策略实例缓存"""
+        try:
+            if strategy_name:
+                # 清理指定策略的缓存
+                if strategy_name in self.strategy_instances:
+                    del self.strategy_instances[strategy_name]
+                    logger.info(f"已清理策略缓存: {strategy_name}")
+            else:
+                # 清理所有策略缓存
+                self.strategy_instances.clear()
+                logger.info("已清理所有策略实例缓存")
+                
+        except Exception as e:
+            logger.error(f"清理策略缓存失败: {e}")
+    
+    async def get_or_create_strategy_instance(self, strategy_name: str) -> Optional[Any]:
+        """获取或创建策略实例（支持缓存复用）"""
+        try:
+            if strategy_name not in self.strategies:
+                logger.error(f"策略 {strategy_name} 不存在")
+                return None
+            
+            # 检查是否已有缓存的实例
+            if strategy_name in self.strategy_instances:
+                logger.info(f"复用缓存的策略实例: {strategy_name}")
+                return self.strategy_instances[strategy_name]
+            
+            # 创建新的策略实例
+            strategy_info = self.strategies[strategy_name]
+            strategy_type = strategy_info['strategy_type']
+            
+            if strategy_type not in self.available_strategies:
+                logger.error(f"未知策略类型: {strategy_type}")
+                return None
+            
+            # 动态导入策略类
+            module_path = self.available_strategies[strategy_type]
+            module_name, class_name = module_path.rsplit('.', 1)
+            
+            import importlib
+            module = importlib.import_module(module_name)
+            strategy_class = getattr(module, class_name)
+            
+            # 创建策略实例
+            strategy_config = strategy_info['config']
+            
+            # 确保配置是字典类型
+            if isinstance(strategy_config, str):
+                import json
+                try:
+                    strategy_config = json.loads(strategy_config)
+                except json.JSONDecodeError:
+                    logger.error(f"策略配置JSON解析失败: {strategy_config}")
+                    return None
+            
+            strategy_instance = strategy_class(
+                name=strategy_name,
+                config=strategy_config
+            )
+            
+            # 缓存策略实例
+            self.strategy_instances[strategy_name] = strategy_instance
+            logger.info(f"创建并缓存策略实例: {strategy_name}")
+            
+            return strategy_instance
+            
+        except Exception as e:
+            logger.error(f"获取策略实例失败: {e}")
+            return None
+
+    async def update_strategy_config(self, strategy_name: str, new_config: Dict) -> bool:
+        """更新策略配置参数（不重新创建策略实例）"""
+        try:
+            if strategy_name not in self.strategies:
+                logger.error(f"策略 {strategy_name} 不存在")
+                return False
+            
+            # 更新内存中的策略配置
+            self.strategies[strategy_name]['config'].update(new_config)
+            
+            # 如果策略实例已缓存，更新其实例配置
+            if strategy_name in self.strategy_instances:
+                strategy_instance = self.strategy_instances[strategy_name]
+                strategy_instance.config.update(new_config)
+                logger.info(f"已更新缓存策略实例的配置: {strategy_name}")
+            
+            # 更新数据库中的配置
+            import json
+            await self._db_execute(
+                "UPDATE strategy_configs SET config_json = %s WHERE strategy_name = %s",
+                (json.dumps(self.strategies[strategy_name]['config']), strategy_name)
+            )
+            
+            logger.info(f"策略 {strategy_name} 配置已更新")
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新策略配置失败: {e}")
+            return False
+
     async def run_strategy_backtest(self, strategy_name: str, start_date: str, 
                                   end_date: str, initial_capital: float = 10000,
-                                  backtest_name: str = None) -> Optional[Dict]:
-        """运行策略回测"""
+                                  backtest_name: str = None, 
+                                  strategy_config: Dict = None) -> Optional[Dict]:
+        """运行策略回测（支持参数更新）"""
         try:
             if not backtest_name:
                 from datetime import datetime
                 backtest_name = f"{strategy_name}_backtest_{int(datetime.now().timestamp())}"
+            
+            # 如果提供了新的策略配置，先更新策略参数
+            if strategy_config:
+                logger.info(f"更新策略 {strategy_name} 的参数配置")
+                update_success = await self.update_strategy_config(strategy_name, strategy_config)
+                if not update_success:
+                    logger.warning(f"策略参数更新失败，使用现有配置")
             
             # 检查策略是否存在于内存中
             if strategy_name not in self.strategies:
@@ -273,29 +398,18 @@ class AsyncStrategyManager:
             
             strategy_info = self.strategies[strategy_name]
             
-            # 直接使用内存中的策略信息创建策略实例进行回测
+            # 获取或创建策略实例（支持缓存复用）
+            strategy_instance = await self.get_or_create_strategy_instance(strategy_name)
+            if not strategy_instance:
+                logger.error(f"无法获取策略实例: {strategy_name}")
+                return None
+            
+            # 直接使用缓存的策略实例进行回测
             def run_backtest_sync():
                 # 使用全局logger
                 global logger
                 
                 try:
-                    # 动态导入策略类
-                    strategy_type = strategy_info['strategy_type']
-                    if strategy_type not in self.available_strategies:
-                        raise ValueError(f"未知策略类型: {strategy_type}")
-                    
-                    module_path = self.available_strategies[strategy_type]
-                    module_name, class_name = module_path.rsplit('.', 1)
-                    
-                    import importlib
-                    module = importlib.import_module(module_name)
-                    strategy_class = getattr(module, class_name)
-                    
-                    # 创建策略实例
-                    strategy_instance = strategy_class(
-                        name=strategy_name,
-                        config=strategy_info['config']
-                    )
                     
                     # 创建回测引擎并运行
                     from .backtest_engine import BacktestEngine
@@ -343,10 +457,10 @@ class AsyncStrategyManager:
             'last_update': asyncio.get_event_loop().time()
         }
     
-    async def update_strategy_config(self, strategy_name: str, new_name: str, 
-                                   config: Dict, signal_sources: List = None, 
-                                   customers: List = None) -> bool:
-        """更新策略配置"""
+    async def update_strategy_full_config(self, strategy_name: str, new_name: str, 
+                                        config: Dict, signal_sources: List = None, 
+                                        customers: List = None) -> bool:
+        """更新策略完整配置（包括名称、信号源、客户等）"""
         try:
             if strategy_name not in self.strategies:
                 logger.error(f"策略 {strategy_name} 不存在")

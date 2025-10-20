@@ -417,6 +417,14 @@ def calculate_ma(data: pd.Series, period: int) -> pd.Series:
     """计算移动平均线"""
     return TechnicalIndicators.sma(data, period)
 
+def calculate_sma(data: pd.Series, period: int) -> pd.Series:
+    """计算简单移动平均线"""
+    return TechnicalIndicators.sma(data, period)
+
+def calculate_ema(data: pd.Series, period: int) -> pd.Series:
+    """计算指数移动平均线"""
+    return TechnicalIndicators.ema(data, period)
+
 def calculate_rsi(data: pd.Series, period: int = 14) -> pd.Series:
     """计算RSI指标"""
     return TechnicalIndicators.rsi(data, period)

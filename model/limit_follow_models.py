@@ -62,6 +62,7 @@ class LimitFollowStrategy:
     trader_unique_name: str = ''
     customer_uid: str = ''
     symbol: str = ''
+    symbols: str = ''
     pos_side: str = 'both'  # 默认双向跟随
     follow_type: str = 'percentage'
     follow_value: float = 0.0

@@ -107,6 +107,68 @@ class StrategyConfigManager:
             }
         )
         
+        # 高频交易策略模板
+        self.templates["High_Frequency_Strategy"] = StrategyTemplate(
+            name="High_Frequency_Strategy",
+            display_name="高频交易策略",
+            description="基于短期技术指标的高频交易策略，适合测试回测系统，产生大量交易信号",
+            category="高频交易",
+            risk_profile="HIGH",
+            complexity="ADVANCED",
+            required_fields=["symbol", "timeframe", "fast_ema_period", "slow_ema_period"],
+            validation_rules={
+                "fast_ema_period": {"min": 3, "max": 20, "type": "int"},
+                "slow_ema_period": {"min": 5, "max": 50, "type": "int"},
+                "rsi_period": {"min": 5, "max": 30, "type": "int"},
+                "rsi_oversold": {"min": 10, "max": 40, "type": "int"},
+                "rsi_overbought": {"min": 60, "max": 90, "type": "int"},
+                "volume_threshold": {"min": 1.0, "max": 5.0, "type": "float"},
+                "price_change_threshold": {"min": 0.001, "max": 0.05, "type": "float"},
+                "min_trade_interval": {"min": 1, "max": 60, "type": "int"},
+                "max_trades_per_day": {"min": 10, "max": 200, "type": "int"}
+            },
+            default_config={
+                # 基础参数
+                "symbol": "ETH-USDT-SWAP",
+                "timeframe": "5m",  # 5分钟K线，适合高频交易
+                "risk_per_trade": 0.01,  # 1% 风险
+                "max_positions": 3,
+                "position_sizing": "fixed",
+                
+                # EMA参数
+                "fast_ema_period": 5,
+                "slow_ema_period": 10,
+                
+                # RSI参数
+                "rsi_period": 14,
+                "rsi_oversold": 30,
+                "rsi_overbought": 70,
+                
+                # 成交量确认参数
+                "volume_threshold": 1.5,
+                "price_change_threshold": 0.01,
+                
+                # 交易频率控制
+                "min_trade_interval": 5,  # 最小交易间隔5分钟
+                "max_trades_per_day": 50,  # 每日最大交易次数
+                
+                # 止损止盈参数
+                "stop_loss_pct": 0.01,  # 1% 止损
+                "take_profit_pct": 0.02,  # 2% 止盈
+                "trailing_stop": True,
+                "trailing_stop_pct": 0.005,
+                
+                # 风险管理
+                "risk_config": {
+                    "max_daily_loss": 0.03,
+                    "max_position_size": 0.05,
+                    "max_drawdown": 0.1,
+                    "max_leverage": 2.0,
+                    "max_concentration": 0.2
+                }
+            }
+        )
+        
         # 网格交易策略模板
         self.templates["Grid_Strategy"] = StrategyTemplate(
             name="Grid_Strategy",
