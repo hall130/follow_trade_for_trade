@@ -268,36 +268,46 @@ def start_strategy_trade():
     logger.info("正在启动策略交易模块...")
     try:
         import asyncio
-        from core.strategy_trade.async_strategy_manager import AsyncStrategyManager
+        from core.strategy_trade.core.manager import StrategyManager
         from database.db import get_db_pool
         
-        async def run_strategy_trade():
+        def run_strategy_trade():
             try:
-                # 获取数据库连接池
-                db_pool = get_db_pool()
+                # 导入策略类
+                from core.strategy_trade.strategies.technical.ma_cross import MACrossStrategy
+                from core.strategy_trade.strategies.technical.rsi import RSIStrategy
+                from core.strategy_trade.strategies.technical.macd import MACDStrategy
+                from core.strategy_trade.strategies.technical.bollinger import BollingerStrategy
+                from core.strategy_trade.strategies.advanced.grid import GridStrategy
+                from core.strategy_trade.strategies.advanced.high_frequency import HighFrequencyStrategy
                 
-                # 创建异步策略管理器
-                strategy_manager = AsyncStrategyManager(db_pool)
+                # 创建策略管理器
+                strategy_manager = StrategyManager()
                 
-                # 启动策略引擎
-                await strategy_manager.start_engine()
+                # 注册策略类型
+                strategy_manager.register_strategy_type('MA_Cross_Strategy', MACrossStrategy)
+                strategy_manager.register_strategy_type('RSI_Strategy', RSIStrategy)
+                strategy_manager.register_strategy_type('MACD_Strategy', MACDStrategy)
+                strategy_manager.register_strategy_type('Bollinger_Strategy', BollingerStrategy)
+                strategy_manager.register_strategy_type('Grid_Strategy', GridStrategy)
+                strategy_manager.register_strategy_type('High_Frequency_Strategy', HighFrequencyStrategy)
                 
                 logger.info("策略交易模块启动成功")
                 
                 # 保持运行
                 try:
                     while True:
-                        await asyncio.sleep(1)
+                        import time
+                        time.sleep(1)
                 except KeyboardInterrupt:
                     logger.info("策略交易模块接收到停止信号")
-                    await strategy_manager.stop_engine()
                     
             except Exception as e:
                 logger.error(f"策略交易模块运行失败: {e}")
                 raise
         
-        # 运行异步任务
-        asyncio.run(run_strategy_trade())
+        # 运行策略交易模块
+        run_strategy_trade()
         
     except Exception as e:
         logger.error(f"策略交易模块启动失败: {e}")

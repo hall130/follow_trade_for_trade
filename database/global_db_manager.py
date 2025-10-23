@@ -10,9 +10,59 @@ import asyncio
 import threading
 from typing import Optional, Union
 import concurrent.futures
-from .db import MySQLPool
+import pymysql
 from config.config import get_mysql_config
 from utils.logger import logger
+
+# 直接导入DBUtils，避免循环导入
+try:
+    from dbutils.pooled_db import PooledDB
+except ImportError:
+    try:
+        from dbutils.pooled_db import PooledDB
+    except ImportError:
+        logger.error("无法导入DBUtils或dbutils，请安装DBUtils包")
+        raise
+
+class MySQLPool:
+    """MySQL连接池包装类"""
+    def __init__(self, host, user, password, db, port=3306, mincached=2, maxcached=10):
+        self.pool = PooledDB(
+            creator=pymysql,
+            host=host, user=user, password=password, db=db, port=port,
+            mincached=mincached, maxcached=maxcached,
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True
+        )
+    
+    def get_conn(self):
+        """获取数据库连接"""
+        return self.pool.connection()
+    
+    def query(self, sql, args=None):
+        """执行查询"""
+        with self.get_conn().cursor() as cursor:
+            cursor.execute(sql, args or ())
+            return cursor.fetchall()
+    
+    def execute(self, sql, args=None):
+        """执行更新并返回最后插入的ID"""
+        with self.get_conn().cursor() as cursor:
+            cursor.execute(sql, args or ())
+            return cursor.lastrowid
+    
+    def execute_with_rowcount(self, sql, args=None):
+        """执行更新并返回影响的行数"""
+        with self.get_conn().cursor() as cursor:
+            cursor.execute(sql, args or ())
+            return cursor.rowcount
+    
+    def executemany(self, sql, args_list):
+        """批量执行更新"""
+        with self.get_conn().cursor() as cursor:
+            cursor.executemany(sql, args_list)
+            return cursor.rowcount
 
 
 class GlobalDBManager:

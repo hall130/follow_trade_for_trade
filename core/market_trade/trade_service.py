@@ -2,7 +2,9 @@ from database.db import (
     insert_customer_trade, update_customer_trade_order_id, log_trade_failure, get_open_trades_by_customer, close_customer_trade, get_customer_by_id, update_customer_trade_open_px, update_customer_trade_close_order_id, update_customer_trade_close_volume_contract,
     get_customer_effective_asset, get_signal_source_current_asset, MySQLPool
 )
-from exchange.okx.okx_ws_client import OKXWebSocketClient, WebSocketStatus, get_global_client_manager
+from exchange.exchange_factory import create_exchange_client
+from exchange.base_client import ExchangeType
+from exchange.unified_ws_client import get_global_client_manager
 from model.models import Customer, Rule, CustomerTrade
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -27,7 +29,7 @@ from database.db import get_enabled_customers, get_enabled_signal_accounts
 from utils.dingtalk_bot import send_trade_notification, send_alert_notification, send_alert_notification_async, get_dingtalk_bot, init_dingtalk_bot, send_trade_notification_async
 from config.dingtalk_config import should_send_trade_notification, should_send_alert_notification, get_notification_at_settings, get_dingtalk_config
 from datetime import datetime
-from exchange.okx.okx_rest_client import OKXRESTClient
+# 已迁移到统一接口，不再直接导入OKXRESTClient
 import os
 from config.config import get_websocket_config
 from database.global_db_manager import get_global_db_pool
@@ -62,6 +64,78 @@ _position_check_lock = threading.Lock()
 _position_check_running = False
 
 # 合约最小下单量已从contract_config.py获取，无需缓存
+
+def create_exchange_rest_client(customer_data: Dict[str, Any], is_demo: bool = None) -> Any:
+    """
+    创建统一的交易所REST客户端
+    
+    Args:
+        customer_data: 客户数据，包含API密钥信息
+        is_demo: 是否使用演示模式，如果为None则从customer_data获取
+    
+    Returns:
+        统一交易所REST客户端
+    """
+    try:
+        # 获取交易所类型，默认为OKX
+        exchange = customer_data.get('exchange', 'okx')
+        
+        # 获取演示模式设置
+        if is_demo is None:
+            is_demo = customer_data.get('is_demo', False)
+        
+        # 创建统一客户端
+        client = create_exchange_client(
+            exchange=exchange,
+            client_type='rest',
+            api_key=customer_data['api_key'],
+            api_secret=customer_data['api_secret'],
+            passphrase=customer_data.get('passphrase'),
+            is_demo=is_demo
+        )
+        
+        logger.debug(f"创建{exchange.upper()}统一REST客户端成功: {customer_data.get('customer_uid', 'unknown')}")
+        return client
+        
+    except Exception as e:
+        logger.error(f"创建统一REST客户端失败: {e}")
+        raise
+
+def create_exchange_ws_client(customer_data: Dict[str, Any], is_demo: bool = None) -> Any:
+    """
+    创建统一的交易所WebSocket客户端
+    
+    Args:
+        customer_data: 客户数据，包含API密钥信息
+        is_demo: 是否使用演示模式，如果为None则从customer_data获取
+    
+    Returns:
+        统一交易所WebSocket客户端
+    """
+    try:
+        # 获取交易所类型，默认为OKX
+        exchange = customer_data.get('exchange', 'okx')
+        
+        # 获取演示模式设置
+        if is_demo is None:
+            is_demo = customer_data.get('is_demo', False)
+        
+        # 创建统一客户端
+        client = create_exchange_client(
+            exchange=exchange,
+            client_type='ws',
+            api_key=customer_data.get('api_key'),
+            api_secret=customer_data.get('api_secret'),
+            passphrase=customer_data.get('passphrase'),
+            is_demo=is_demo
+        )
+        
+        logger.debug(f"创建{exchange.upper()}统一WebSocket客户端成功: {customer_data.get('customer_uid', 'unknown')}")
+        return client
+        
+    except Exception as e:
+        logger.error(f"创建统一WebSocket客户端失败: {e}")
+        raise
 
 def get_customer_processing_lock(customer_uid):
     """获取客户专用的处理锁"""
@@ -3021,17 +3095,13 @@ class TradeService:
                         customer_uid = customer_data['customer_uid']
                         logger.info(f"[强制资产更新] 正在更新客户 {customer_uid} 的资产")
                         
-                        # 创建REST客户端
-                        client = OKXRESTClient(
-                            api_key=customer_data['api_key'],
-                            api_secret=customer_data['api_secret'],
-                            passphrase=customer_data['passphrase'],
-                            is_demo=is_demo
-                        )
+                        # 创建统一REST客户端
+                        client = create_exchange_rest_client(customer_data, is_demo)
                         
                         # 获取账户信息
                         account_info = await client.get_account_info()
-                        if 'data' in account_info and account_info['data']:
+                        if account_info.get('success') and account_info.get('data'):
+                            # 使用统一接口返回的totalEq
                             asset = safe_float(account_info['data'][0].get('totalEq', 0))
                             logger.info(f"[强制资产更新] 客户{customer_uid} 当前资产: {asset}")
                             
@@ -3418,16 +3488,16 @@ class TradeService:
                             positions = await client.get_positions()
                             
                             # 检查API响应是否正常
-                            if positions.get('code') == '50106':
+                            if not positions.get('success'):
                                 logger.warning(f"[仓位检查] 客户{customer_uid} API密钥错误，跳过检查")
                                 continue
                             elif positions.get('code') != '0':
                                 logger.warning(f"[仓位检查] 客户{customer_uid} 获取持仓失败: {positions}")
                                 continue
                             
-                            if 'data' in positions and positions['data']:
+                            if positions.get('positions'):
                                 actual_sz = 0
-                                for pos in positions['data']:
+                                for pos in positions['positions']:
                                     if pos.get('instId') == symbol and pos.get('posSide') == pos_side:
                                         actual_sz = float(pos.get('pos', 0))
                                         break
@@ -3541,21 +3611,24 @@ class TradeService:
             else:
                 # 创建临时连接
                 logger.info(f"[自动修复] 创建临时连接: {customer_uid}")
-                temp_client = OKXWebSocketClient(
-                    is_demo=customer.is_demo if hasattr(customer, 'is_demo') else False,
-                    api_key=customer.api_key,
-                    api_secret=customer.api_secret,
-                    passphrase=customer.passphrase
-                )
+                customer_data = {
+                    'customer_uid': customer_uid,
+                    'api_key': customer.api_key,
+                    'api_secret': customer.api_secret,
+                    'passphrase': customer.passphrase,
+                    'is_demo': customer.is_demo if hasattr(customer, 'is_demo') else False,
+                    'exchange': getattr(customer, 'exchange', 'OKX')  # 支持多交易所
+                }
+                temp_client = create_exchange_ws_client(customer_data)
                 await temp_client.connect()
                 client = temp_client
             
             # 再次获取实际持仓，确保数据是最新的
             try:
                 positions = await client.get_positions()
-                if 'data' in positions and positions['data']:
+                if positions.get('success') and positions.get('positions'):
                     actual_sz = 0
-                    for pos in positions['data']:
+                    for pos in positions['positions']:
                         if pos.get('instId') == symbol and pos.get('posSide') == pos_side:
                             actual_sz = float(pos.get('pos', 0))
                             break
@@ -4332,25 +4405,27 @@ class TradeService:
                 logger.warning(f"[仓位同步检查] 信号源 {source_uid} API配置不完整")
                 return []
             
-            # 创建REST API客户端
+            # 创建统一REST客户端
+            signal_data = {
+                'api_key': api_key,
+                'api_secret': api_secret,
+                'passphrase': passphrase,
+                'is_demo': is_demo,
+                'exchange': getattr(signal_source, 'exchange', 'OKX')  # 支持多交易所
+            }
+            rest_client = create_exchange_rest_client(signal_data)
             
-            rest_client = OKXRESTClient(
-                api_key=api_key,
-                api_secret=api_secret,
-                passphrase=passphrase,
-                is_demo=is_demo
-            )
-            
-            # 调用REST API获取持仓
+            # 调用统一REST API获取持仓
             positions_response = await rest_client.get_positions()
             
-            if not positions_response or 'data' not in positions_response:
+            if not positions_response or not positions_response.get('success'):
                 logger.warning(f"[仓位同步检查] 获取信号源 {source_uid} 持仓失败: {positions_response}")
                 return []
             
             # 过滤出有持仓的记录
             positions = []
-            for pos in positions_response['data']:
+            positions_data = positions_response.get('positions', [])
+            for pos in positions_data:
                 try:
                     sz = float(pos.get('pos', '0') or '0')
                     if sz > 0:  # 有持仓
@@ -5876,11 +5951,18 @@ class TradeService:
                 logger.error(f"[资产同步] 信号源 {source_uid} API凭证不完整")
                 return
             
-            # 2. 创建REST客户端查询实时资产
-            rest_client = OKXRESTClient(api_key, secret_key, passphrase, is_demo)
+            # 2. 创建统一REST客户端查询实时资产
+            signal_data = {
+                'api_key': api_key,
+                'api_secret': secret_key,
+                'passphrase': passphrase,
+                'is_demo': is_demo,
+                'exchange': getattr(signal_source, 'exchange', 'okx')  # 支持多交易所
+            }
+            rest_client = create_exchange_rest_client(signal_data)
             response = await rest_client.get_account_info()
             
-            if response and response.get('code') == '0':
+            if response and response.get('success'):
                 data = response.get('data', [])
                 
                 # 3. 更新 signal_account_assets 表（只处理USDT总资产）
@@ -6915,12 +6997,14 @@ class TradeService:
                     current_leverage = 0.0
                 else:
                     from trade_service import get_global_is_demo
-                    rest_client = OKXRESTClient(
-                        customer_data[0]['api_key'],
-                        customer_data[0]['api_secret'],
-                        customer_data[0]['passphrase'],
-                        is_demo=get_global_is_demo()
-                    )
+                    customer_info = {
+                        'api_key': customer_data[0]['api_key'],
+                        'api_secret': customer_data[0]['api_secret'],
+                        'passphrase': customer_data[0]['passphrase'],
+                        'is_demo': get_global_is_demo(),
+                        'exchange': customer_data[0].get('exchange', 'OKX')  # 支持多交易所
+                    }
+                    rest_client = create_exchange_rest_client(customer_info)
                     
                     current_leverage = await self._calculate_net_leverage_for_customer(
                         customer_uid, symbol, pos_side, rest_client
@@ -7422,14 +7506,16 @@ class TradeService:
             
             customer_info = customer_config['customer_info']
             
-            # 创建REST客户端
+            # 创建统一REST客户端
             from trade_service import get_global_is_demo
-            rest_client = OKXRESTClient(
-                api_key=customer_info['api_key'],
-                api_secret=customer_info['api_secret'],
-                passphrase=customer_info['passphrase'],
-                is_demo=customer_info.get('is_demo', False)
-            )
+            customer_data = {
+                'api_key': customer_info['api_key'],
+                'api_secret': customer_info['api_secret'],
+                'passphrase': customer_info['passphrase'],
+                'is_demo': customer_info.get('is_demo', False),
+                'exchange': customer_info.get('exchange', 'OKX')  # 支持多交易所
+            }
+            rest_client = create_exchange_rest_client(customer_data)
             
             # 计算当前净杠杆
             current_leverage = await self._calculate_net_leverage_for_customer(
@@ -7455,17 +7541,14 @@ class TradeService:
             
             # 1. 获取账户信息
             account_info = await rest_client.get_account_info()
-            if not account_info or account_info.get('code') != '0':
+            if not account_info or not account_info.get('success'):
                 logger.warning(f"[净杠杆计算] 获取账户信息失败")
                 return 0.0
             
             # 获取账户总权益（USDT）
             total_equity = 0.0
-            for detail in account_info.get('data', []):
-                for detail_item in detail.get('details', []):
-                    if detail_item.get('ccy') == 'USDT':
-                        total_equity = float(detail_item.get('eq', 0))
-                        break
+            if account_info.get('data'):
+                total_equity = float(account_info['data'][0].get('totalEq', 0))
             
             if total_equity <= 0:
                 logger.warning(f"[净杠杆计算] 账户总权益为0")
@@ -7473,11 +7556,11 @@ class TradeService:
             
             # 2. 获取持仓信息
             positions_response = await rest_client.get_positions()
-            if not positions_response or positions_response.get('code') != '0':
+            if not positions_response or not positions_response.get('success'):
                 logger.warning(f"[净杠杆计算] 获取持仓信息失败")
                 positions = []
             else:
-                positions = positions_response.get('data', [])
+                positions = positions_response.get('positions', [])
             
             # 3. 计算持仓价值
             position_value = 0.0
@@ -7580,12 +7663,14 @@ class TradeService:
                         continue
                     
                     from trade_service import get_global_is_demo
-                    order_rest_client = OKXRESTClient(
-                        customer_data[0]['api_key'],
-                        customer_data[0]['api_secret'],
-                        customer_data[0]['passphrase'],
-                        is_demo=get_global_is_demo()
-                    )
+                    customer_info = {
+                        'api_key': customer_data[0]['api_key'],
+                        'api_secret': customer_data[0]['api_secret'],
+                        'passphrase': customer_data[0]['passphrase'],
+                        'is_demo': get_global_is_demo(),
+                        'exchange': customer_data[0].get('exchange', 'OKX')  # 支持多交易所
+                    }
+                    order_rest_client = create_exchange_rest_client(customer_info)
                     
                 except Exception as e:
                     logger.error(f"[撤单] 创建客户{order_customer_uid}的REST客户端失败: {e}")
@@ -8363,12 +8448,19 @@ class TradeService:
                 logger.error(f"[资产查询] 信号源 {source_uid} API凭证不完整")
                 return None
             
-            # 创建REST客户端
-            rest_client = OKXRESTClient(api_key, secret_key, passphrase, is_demo)
+            # 创建统一REST客户端
+            signal_data = {
+                'api_key': api_key,
+                'api_secret': secret_key,
+                'passphrase': passphrase,
+                'is_demo': is_demo,
+                'exchange': getattr(signal_source, 'exchange', 'OKX')  # 支持多交易所
+            }
+            rest_client = create_exchange_rest_client(signal_data)
             
             # 查询账户资产
             response = await rest_client.get_account_info()
-            if response and response.get('code') == '0':
+            if response and response.get('success'):
                 data = response.get('data', [])
                 logger.info(f"[资产查询] 信号源 {source_uid} 资产查询成功，共{len(data)}个币种")
                 return data
@@ -8633,22 +8725,23 @@ class TradeService:
                 if not api_key or not api_secret or not passphrase:
                     logger.warning(f"[客户平仓补全] 客户 {customer_uid} API配置不完整，跳过持仓检查")
                 else:
-                    # 创建REST API客户端查询客户实际持仓
-                    
-                    rest_client = OKXRESTClient(
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        passphrase=passphrase,
-                        is_demo=is_demo
-                    )
+                    # 创建统一REST客户端查询客户实际持仓
+                    customer_data = {
+                        'api_key': api_key,
+                        'api_secret': api_secret,
+                        'passphrase': passphrase,
+                        'is_demo': is_demo,
+                        'exchange': customer.get('exchange', 'OKX')  # 支持多交易所
+                    }
+                    rest_client = create_exchange_rest_client(customer_data)
                     
                     # 查询客户在交易所的实际持仓
                     positions_response = await rest_client.get_positions()
                     
-                    if positions_response and 'data' in positions_response:
+                    if positions_response and positions_response.get('success'):
                         # 检查是否还有对应的持仓
                         has_position = False
-                        for pos in positions_response['data']:
+                        for pos in positions_response.get('positions', []):
                             if (pos.get('instId') == symbol and 
                                 pos.get('posSide') == pos_side and 
                                 float(pos.get('pos', '0') or '0') > 0):
@@ -9620,20 +9713,22 @@ class TradeService:
                 return []
             
             
-            rest_client = OKXRESTClient(
-                api_key=api_key,
-                api_secret=api_secret,
-                passphrase=passphrase,
-                is_demo=is_demo
-            )
+            customer_data = {
+                'api_key': api_key,
+                'api_secret': api_secret,
+                'passphrase': passphrase,
+                'is_demo': is_demo,
+                'exchange': customer.get('exchange', 'OKX')  # 支持多交易所
+            }
+            rest_client = create_exchange_rest_client(customer_data)
             
             positions_response = await rest_client.get_positions()
             
-            if not positions_response or 'data' not in positions_response:
+            if not positions_response or not positions_response.get('success'):
                 logger.warning(f"获取客户 {customer_uid} 持仓失败: {positions_response}")
                 return []
             
-            return [pos for pos in positions_response['data'] if float(pos.get('pos', '0')) > 0]
+            return [pos for pos in positions_response.get('positions', []) if float(pos.get('size', '0')) > 0]
             
         except Exception as e:
             customer_uid = customer.get('customer_uid')

@@ -7,9 +7,10 @@
 - 连接池配置
 """
 
-from .db import MySQLPool, get_db_pool
+# 使用global_db_manager代替直接导入db模块
+from .global_db_manager import get_global_db_pool, get_global_db_pool_async
 
 __all__ = [
-    "MySQLPool",
-    "get_db_pool"
+    "get_global_db_pool",
+    "get_global_db_pool_async"
 ] 

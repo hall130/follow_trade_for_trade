@@ -6611,7 +6611,6 @@ class OKXTradingApp {
     // 初始化限价跟单模块
     initLimitFollowModule() {
         // 初始化限价跟单模块
-        console.log('初始化限价跟单模块...');
         
         // 绑定事件
         this.bindLimitFollowEvents();
@@ -6680,6 +6679,9 @@ class OKXTradingApp {
         document.addEventListener('change', function(e) {
             if (e.target.matches('input[name="symbolType"]')) {
                 self.handleSymbolTypeChange();
+            } else if (e.target.matches('#limitFollowMode')) {
+                // 跟单模式切换，显示/隐藏相应区域
+                self.handleFollowModeChange();
             }
         });
     }
@@ -6940,6 +6942,11 @@ class OKXTradingApp {
             return;
         }
         
+        if (data.length === 0) {
+            console.warn(`populateSelectOptions: data数组为空`, data);
+            return;
+        }
+        
         // 保留第一个选项
         const firstOption = select.options[0];
         select.innerHTML = '';
@@ -6948,12 +6955,16 @@ class OKXTradingApp {
         }
         
         try {
-            data.forEach(item => {
+            let addedCount = 0;
+            data.forEach((item, index) => {
                 if (item && item[valueField] !== undefined && item[textField] !== undefined) {
                     const option = document.createElement('option');
                     option.value = item[valueField];
                     option.textContent = item[textField];
                     select.appendChild(option);
+                    addedCount++;
+                } else {
+                    console.warn(`跳过无效项:`, { item, valueField, textField, hasValue: item && item[valueField] !== undefined, hasText: item && item[textField] !== undefined });
                 }
             });
         } catch (error) {
@@ -7038,6 +7049,16 @@ class OKXTradingApp {
         // 显示模态框
         const modal = new bootstrap.Modal(document.getElementById('addLimitFollowStrategyModal'));
         modal.show();
+
+        // 设置默认模式并触发渲染（默认跟单员模式）
+        const modeSelect = document.getElementById('limitFollowMode');
+        if (modeSelect && !modeSelect.value) {
+            modeSelect.value = 'trader';
+        }
+        // 立即根据模式显示对应区域
+        if (typeof this.handleFollowModeChange === 'function') {
+            this.handleFollowModeChange();
+        }
     }
     
     // 生成策略UID
@@ -9024,16 +9045,13 @@ class OKXTradingApp {
     
     // 删除策略
     async deleteStrategyTrade(strategyName) {
-        console.log(`🗑️ 尝试删除策略: ${strategyName}`);
         
         if (!confirm(`确定要删除策略 "${strategyName}" 吗？此操作不可撤销。`)) {
-            console.log('❌ 用户取消删除操作');
             return;
         }
         
         try {
             const url = `${this.apiBaseUrl}/strategy/instances/${strategyName}`;
-            console.log(`📡 发送删除请求到: ${url}`);
             
             const response = await fetch(url, {
                 method: 'DELETE',
@@ -9042,14 +9060,10 @@ class OKXTradingApp {
                 }
             });
             
-            console.log(`📊 响应状态: ${response.status}`);
-            
             if (response.ok) {
                 const data = await response.json();
-                console.log('📋 API响应数据:', data);
                 
                 if (data.success) {
-                    console.log('✅ 策略删除成功');
                     this.showToast('成功', '策略删除成功', 'success');
                     this.loadStrategyTradeList(); // 刷新列表
                 } else {
@@ -9095,7 +9109,6 @@ class OKXTradingApp {
                             templates.push(template);
                         });
                     }
-                    console.log(`✅ 获取到 ${templates.length} 个策略模板`);
                 }
             }
             
@@ -9107,7 +9120,6 @@ class OKXTradingApp {
                 const instancesData = await instancesResponse.json();
                 if (instancesData.success && Array.isArray(instancesData.data)) {
                     instances.push(...instancesData.data);
-                    console.log(`✅ 获取到 ${instances.length} 个策略实例`);
                 }
             }
             
@@ -9151,7 +9163,6 @@ class OKXTradingApp {
                 strategySelect.appendChild(option);
             }
             
-            console.log(`✅ 加载策略完成: ${templates.length} 个模板 + ${instances.length} 个实例`);
             
         } catch (error) {
             console.error('加载策略列表失败:', error);
@@ -9181,8 +9192,6 @@ class OKXTradingApp {
         // 提取策略类型
         const strategyType = strategyValue.replace('template:', '');
         
-        console.log(`🔄 回测策略变化: ${strategyType}`);
-        
         // 显示参数配置区域
         if (paramsArea) paramsArea.style.display = 'block';
         
@@ -9193,7 +9202,6 @@ class OKXTradingApp {
     // 显示回测策略参数
     async showBacktestStrategyParams(strategyType) {
         try {
-            console.log(`📡 获取策略 ${strategyType} 的参数模板...`);
             
             const response = await fetch(`${this.apiBaseUrl}/strategy/templates/${strategyType}`);
             if (!response.ok) {
@@ -9206,7 +9214,6 @@ class OKXTradingApp {
             }
             
             const template = data.data;
-            console.log(`✅ 获取到策略模板:`, template);
             
             // 生成动态参数表单
             const paramsHtml = this.generateBacktestStrategyParamsForm(strategyType, template.default_config, template.validation_rules, template.parameters);
@@ -9215,7 +9222,6 @@ class OKXTradingApp {
             const paramsArea = document.getElementById('backtestStrategyParams');
             if (paramsArea) {
                 paramsArea.innerHTML = paramsHtml;
-                console.log(`📝 回测参数表单已生成`);
             }
             
         } catch (error) {
@@ -9227,7 +9233,6 @@ class OKXTradingApp {
     
     // 生成回测策略参数表单
     generateBacktestStrategyParamsForm(strategyType, config, validation, parameters) {
-        console.log(`🎨 生成回测参数表单:`, strategyType, config);
         
         let formHtml = '<div class="row">';
         let hasParams = false;
@@ -9255,10 +9260,10 @@ class OKXTradingApp {
     
     // 生成回测参数输入框
     generateBacktestParamInput(paramName, paramInfo) {
-        const label = paramInfo.label || paramName;
+        const label = this.getParamLabel(paramName); // 使用中文标签
         const defaultValue = paramInfo.default || '';
         const inputType = paramInfo.input_type || 'text';
-        const description = paramInfo.description || '';
+        const description = this.getParamDescription(paramName); // 使用中文描述
         
         let inputHtml = '';
         
@@ -9501,7 +9506,6 @@ class OKXTradingApp {
     // 查看回测详情
     async viewBacktestDetail(backtestId) {
         try {
-            //console.log('查看回测详情:', backtestId);
             
             // 获取回测详情数据
             const response = await fetch(`${this.apiBaseUrl}/strategy/backtests/${backtestId}`);
@@ -9524,7 +9528,6 @@ class OKXTradingApp {
 
     // 显示回测详情模态框
     showBacktestDetailModal(backtestData) {
-        //console.log('显示回测详情:', backtestData);
 
         // 填充基本信息
         document.getElementById('detailBacktestName').textContent = backtestData.backtest_name || '-';
@@ -9632,7 +9635,6 @@ class OKXTradingApp {
 
     // 初始化回测图表
     initBacktestCharts(backtestData) {
-        //console.log('初始化回测图表:', backtestData);
 
         // 解析结果数据
         let results = {};
@@ -9700,8 +9702,8 @@ class OKXTradingApp {
             
             candlestickSeries.setData(priceData);
 
-            // 添加买入卖出标记
-            this.addTradeMarkers(chart, results.trade_history || []);
+            // 添加买入卖出标记 - markers 需要设置到 series 上
+            this.addTradeMarkers(candlestickSeries, results.trade_history || []);
 
             // 响应式调整
             new ResizeObserver(() => {
@@ -9716,7 +9718,6 @@ class OKXTradingApp {
 
     // 初始化收益曲线图表
     initEquityChart(results) {
-        //console.log('🎯 初始化收益曲线图表', results);
         const chartContainer = document.getElementById('equityChart');
         if (!chartContainer) {
             console.error('❌ 找不到equityChart容器');
@@ -9754,6 +9755,13 @@ class OKXTradingApp {
             const equityData = this.generateEquityCurve(results);
             const returnData = this.generateReturnCurve(equityData);
             
+            // 🔧 验证数据有效性
+            if (!returnData || returnData.length === 0) {
+                console.error('❌ 没有有效的收益率数据');
+                chartContainer.innerHTML = '<div class="text-center p-4 text-muted">无收益率数据</div>';
+                return;
+            }
+            
             // 添加收益率曲线（主图）
             const returnSeries = chart.addLineSeries({
                 color: '#26a69a',
@@ -9771,14 +9779,18 @@ class OKXTradingApp {
                 title: '基准线',
             });
             
-            const baselineData = returnData.map(point => ({
-                time: point.time,
-                value: 0
-            }));
+            // 🔧 确保baseline数据也经过验证
+            const baselineData = returnData
+                .filter(point => point && typeof point.time === 'number')
+                .map(point => ({
+                    time: point.time,
+                    value: 0
+                }));
+            
             baselineSeries.setData(baselineData);
 
-            // 标记交易点
-            this.addTradeMarkersToChart(chart, results.trade_history || []);
+            // 标记交易点 - markers 需要设置到 series 上，不是 chart
+            this.addTradeMarkersToChart(returnSeries, results.trade_history || []);
 
             // 响应式调整
             new ResizeObserver(() => {
@@ -9794,8 +9806,12 @@ class OKXTradingApp {
             });
 
         } catch (error) {
-            console.error('初始化收益曲线图表失败:', error);
-            chartContainer.innerHTML = '<div class="text-center p-4 text-muted">收益曲线图表加载失败</div>';
+            console.error('❌ 初始化收益曲线图表失败:', error);
+            console.error('❌ 错误堆栈:', error.stack);
+            chartContainer.innerHTML = `<div class="text-center p-4 text-danger">
+                收益曲线图表加载失败<br>
+                <small>${error.message}</small>
+            </div>`;
         }
     }
 
@@ -9831,6 +9847,13 @@ class OKXTradingApp {
             // 生成回撤数据
             const drawdownData = this.generateDrawdownCurve(results);
             
+            // 🔧 验证数据有效性
+            if (!drawdownData || drawdownData.length === 0) {
+                console.error('❌ 没有有效的回撤数据');
+                chartContainer.innerHTML = '<div class="text-center p-4 text-muted">无回撤数据</div>';
+                return;
+            }
+            
             // 添加回撤曲线
             const drawdownSeries = chart.addAreaSeries({
                 topColor: 'rgba(239, 83, 80, 0.4)',
@@ -9839,7 +9862,7 @@ class OKXTradingApp {
                 lineWidth: 2,
                 title: '回撤百分比',
             });
-            
+
             drawdownSeries.setData(drawdownData);
 
             // 响应式调整
@@ -9887,57 +9910,89 @@ class OKXTradingApp {
         return data;
     }
 
-    // 添加交易标记
-    addTradeMarkers(chart, tradeHistory) {
+    // 添加交易标记（用于价格图表）
+    addTradeMarkers(series, tradeHistory) {
         const markers = [];
         
         tradeHistory.forEach(trade => {
-            if (trade.type === 'BUY' || trade.type === 'SELL') {
+            if (trade.type === 'BUY' || trade.type === 'SELL' || trade.type === 'CLOSE') {
                 const timestamp = this.parseTradeTimestamp(trade.timestamp);
                 
-                markers.push({
-                    time: timestamp,
-                    position: trade.type === 'BUY' ? 'belowBar' : 'aboveBar',
-                    color: trade.type === 'BUY' ? '#26a69a' : '#ef5350',
-                    shape: trade.type === 'BUY' ? 'arrowUp' : 'arrowDown',
-                    text: trade.type === 'BUY' ? 'B' : 'S',
-                    size: 1,
-                });
+                // 🔧 验证时间戳有效性
+                if (timestamp && typeof timestamp === 'number' && !isNaN(timestamp)) {
+                    const isBuy = trade.type === 'BUY';
+                    markers.push({
+                        time: timestamp,
+                        position: isBuy ? 'belowBar' : 'aboveBar',
+                        color: isBuy ? '#26a69a' : '#ef5350',
+                        shape: isBuy ? 'arrowUp' : 'arrowDown',
+                        text: isBuy ? 'B' : 'S',
+                        size: 1,
+                    });
+                } else {
+                    console.warn('⚠️ 跳过无效交易标记时间戳:', trade);
+                }
             }
         });
         
-        if (markers.length > 0) {
-            chart.setMarkers(markers);
+        if (markers.length > 0 && series && typeof series.setMarkers === 'function') {
+            series.setMarkers(markers);
+            console.log(`✅ 价格图表已添加 ${markers.length} 个交易标记`);
         }
     }
 
     // 解析交易时间戳
     parseTradeTimestamp(timestamp) {
         try {
+            if (!timestamp) {
+                console.warn('时间戳为空，使用当前时间');
+                return Math.floor(Date.now() / 1000);
+            }
+            
             if (typeof timestamp === 'string') {
-                return Math.floor(new Date(timestamp).getTime() / 1000);
+                // 处理ISO格式字符串
+                if (timestamp.includes('T') || timestamp.includes('-')) {
+                    const date = new Date(timestamp);
+                    if (!isNaN(date.getTime())) {
+                        return Math.floor(date.getTime() / 1000);
+                    }
+                }
+                // 处理纯数字字符串
+                const num = parseInt(timestamp);
+                if (!isNaN(num)) {
+                    return num > 1000000000000 ? Math.floor(num / 1000) : num;
+                }
             } else if (typeof timestamp === 'number') {
                 return timestamp > 1000000000000 ? Math.floor(timestamp / 1000) : timestamp;
             }
         } catch (e) {
-            console.warn('解析时间戳失败:', timestamp);
+            console.warn('解析时间戳失败:', timestamp, e);
         }
+        
+        console.warn('使用当前时间作为默认时间戳');
         return Math.floor(Date.now() / 1000);
     }
 
     // 生成资金曲线数据
     generateEquityCurve(results) {
         const equityData = [];
-        
+              
         if (results.equity_curve && Array.isArray(results.equity_curve)) {
-            // console.log('📈 处理equity_curve数据:', results.equity_curve.length, '个点');
-            results.equity_curve.forEach(point => {
-                equityData.push({
-                    time: this.parseTradeTimestamp(point.timestamp || point.time),
-                    value: point.total_value || point.equity || point.value || 0
-                });
+            console.log('📈 处理equity_curve数据:', results.equity_curve.length, '个点');
+            results.equity_curve.forEach((point, index) => {
+                const timestamp = this.parseTradeTimestamp(point.timestamp || point.time);
+                const value = point.equity || point.total_value || point.value || 0;
+                
+                // 严格验证：时间戳必须是有效数字，且value不能是NaN
+                if (timestamp && typeof timestamp === 'number' && !isNaN(timestamp) && !isNaN(value)) {
+                    equityData.push({
+                        time: timestamp,
+                        value: value
+                    });
+                } else {
+                    console.warn(`⚠️ 跳过无效数据点 ${index}: time=${timestamp}, value=${value}`);
+                }
             });
-            //console.log('📊 生成equity数据:', equityData.length, '个点');
         } else {
             // 如果没有资金曲线数据，从交易历史生成
             let equity = results.initial_capital || 100000;
@@ -9946,9 +10001,9 @@ class OKXTradingApp {
                 value: equity
             });
             
-            const trades = results.trade_history || [];
+            const trades = results.trades || results.trade_history || [];
             trades.forEach(trade => {
-                if (trade.type === 'CLOSE') {
+                if (trade.type === 'CLOSE' || trade.side === 'SELL') {
                     equity += trade.pnl || 0;
                     equityData.push({
                         time: this.parseTradeTimestamp(trade.timestamp),
@@ -9958,7 +10013,30 @@ class OKXTradingApp {
             });
         }
         
-        return equityData;
+        // 确保至少有一个数据点
+        if (equityData.length === 0) {
+            equityData.push({
+                time: Math.floor(Date.now() / 1000),
+                value: results.initial_capital || 100000
+            });
+        }
+        
+        // 🔧 关键修复：按时间排序并去重
+        equityData.sort((a, b) => a.time - b.time);
+        
+        // 去除重复时间戳，保留最后一个值
+        const uniqueData = [];
+        const timeSet = new Set();
+        
+        for (let i = equityData.length - 1; i >= 0; i--) {
+            const point = equityData[i];
+            if (!timeSet.has(point.time)) {
+                timeSet.add(point.time);
+                uniqueData.unshift(point);
+            }
+        }
+        
+        return uniqueData;
     }
 
     // 生成收益率曲线数据
@@ -9966,10 +10044,20 @@ class OKXTradingApp {
         if (!equityData || equityData.length === 0) return [];
         
         const initialValue = equityData[0].value;
-        return equityData.map(point => ({
-            time: point.time,
-            value: ((point.value - initialValue) / initialValue) * 100 // 转换为百分比
-        }));
+        if (!initialValue || initialValue === 0) {
+            console.warn('⚠️ 初始资金为0，无法计算收益率');
+            return [];
+        }
+        
+        // 🔧 过滤并验证数据
+        const returnData = equityData
+            .filter(point => point && typeof point.time === 'number' && !isNaN(point.time) && !isNaN(point.value))
+            .map(point => ({
+                time: point.time,
+                value: ((point.value - initialValue) / initialValue) * 100 // 转换为百分比
+            }));
+        
+        return returnData;
     }
 
     // 生成回撤曲线数据
@@ -9981,43 +10069,58 @@ class OKXTradingApp {
         let peak = equityData[0].value;
         
         equityData.forEach(point => {
+            // 🔧 验证数据有效性
+            if (!point || typeof point.time !== 'number' || isNaN(point.time) || isNaN(point.value)) {
+                console.warn('⚠️ 跳过无效的回撤数据点:', point);
+                return;
+            }
+            
             // 更新最高点
             if (point.value > peak) {
                 peak = point.value;
             }
             
             // 计算回撤百分比
-            const drawdown = ((point.value - peak) / peak) * 100;
-            drawdownData.push({
-                time: point.time,
-                value: drawdown // 负数表示回撤
-            });
+            if (peak > 0) {
+                const drawdown = ((point.value - peak) / peak) * 100;
+                drawdownData.push({
+                    time: point.time,
+                    value: drawdown // 负数表示回撤
+                });
+            }
         });
         
         return drawdownData;
     }
 
     // 为图表添加交易标记
-    addTradeMarkersToChart(chart, tradeHistory) {
+    addTradeMarkersToChart(series, tradeHistory) {
         const markers = [];
         
         tradeHistory.forEach(trade => {
-            if (trade.type === 'BUY' || trade.type === 'SELL') {
+            if (trade.type === 'BUY' || trade.type === 'SELL' || trade.type === 'CLOSE') {
                 const timestamp = this.parseTradeTimestamp(trade.timestamp);
                 
-                markers.push({
-                    time: timestamp,
-                    position: trade.type === 'BUY' ? 'belowBar' : 'aboveBar',
-                    color: trade.type === 'BUY' ? '#26a69a' : '#ef5350',
-                    shape: trade.type === 'BUY' ? 'arrowUp' : 'arrowDown',
-                    text: trade.type === 'BUY' ? 'B' : 'S',
-                    size: 1,
-                });
+                // 🔧 验证时间戳有效性
+                if (timestamp && typeof timestamp === 'number' && !isNaN(timestamp)) {
+                    const isBuy = trade.type === 'BUY';
+                    markers.push({
+                        time: timestamp,
+                        position: isBuy ? 'belowBar' : 'aboveBar',
+                        color: isBuy ? '#26a69a' : '#ef5350',
+                        shape: isBuy ? 'arrowUp' : 'arrowDown',
+                        text: isBuy ? 'B' : 'S',
+                        size: 1,
+                    });
+                } else {
+                    console.warn('⚠️ 跳过无效交易标记时间戳:', trade);
+                }
             }
         });
         
-        if (markers.length > 0) {
-            chart.setMarkers(markers);
+        if (markers.length > 0 && series && typeof series.setMarkers === 'function') {
+            series.setMarkers(markers);
+            console.log(`✅ 已添加 ${markers.length} 个交易标记`);
         }
     }
 
@@ -10185,7 +10288,8 @@ class OKXTradingApp {
             }
             
             const formData = new FormData(form);
-            const strategyType = formData.get('strategyType') || document.getElementById('strategyType')?.value;
+            const strategyTypeSelect = document.getElementById('strategyType');
+            const strategyType = formData.get('strategyType') || strategyTypeSelect?.value;
             const strategyName = formData.get('strategyName') || document.getElementById('strategyName')?.value;
             const tradingSymbol = formData.get('tradingSymbol') || document.getElementById('tradingSymbol')?.value;
             const timeframe = formData.get('timeframe') || document.getElementById('timeframe')?.value;
@@ -10195,6 +10299,12 @@ class OKXTradingApp {
             const takeProfitPct = formData.get('takeProfitPct') || document.getElementById('takeProfitPct')?.value;
             
             if (!strategyType || !strategyName || !tradingSymbol || !timeframe) {
+                console.error('缺少必需字段:', {
+                    strategyType: !strategyType,
+                    strategyName: !strategyName,
+                    tradingSymbol: !tradingSymbol,
+                    timeframe: !timeframe
+                });
                 this.showToast('错误', '请填写所有必需字段', 'danger');
                 return;
             }
@@ -10212,9 +10322,9 @@ class OKXTradingApp {
             this.collectDynamicStrategyParams(config);
             
             // 获取选中的客户和信号源
-            const selectedSignalSources = Array.from(document.getElementById('signalSources')?.selectedOptions || [])
+            const selectedSignalSources = Array.from(document.getElementById('createStrategyTradeSignalSources')?.selectedOptions || [])
                 .map(option => option.value);
-            const selectedCustomers = Array.from(document.getElementById('customers')?.selectedOptions || [])
+            const selectedCustomers = Array.from(document.getElementById('createStrategyTradeCustomers')?.selectedOptions || [])
                 .map(option => option.value);
 
             const requestData = {
@@ -10264,7 +10374,6 @@ class OKXTradingApp {
     // 编辑策略
     async editStrategyTrade(strategyName) {
         try {
-            console.log('编辑策略:', strategyName);
             
             // 获取策略详情
             const response = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}`);
@@ -10287,7 +10396,6 @@ class OKXTradingApp {
 
     // 显示策略编辑模态框
     async showEditStrategyTradeModal(strategyData) {
-        console.log('显示策略编辑模态框:', strategyData);
 
         // 填充基本信息
         document.getElementById('editStrategyTradeId').value = strategyData.name || strategyData.instance_name;
@@ -10420,16 +10528,13 @@ class OKXTradingApp {
             const signalSourcesResponse = await fetch(`${this.apiBaseUrl}/signal_sources`);
             if (signalSourcesResponse.ok) {
                 const signalSourcesData = await signalSourcesResponse.json();
-                console.log('信号源API响应:', signalSourcesData); // 调试日志
                 
                 if (signalSourcesData.success && Array.isArray(signalSourcesData.data)) {
                     signalSourcesSelect.innerHTML = signalSourcesData.data.map(source => 
                         `<option value="${source.source_uid}">${source.name} (${source.source_uid})</option>`
                     ).join('');
-                    console.log('信号源选项已加载:', signalSourcesData.data.length, '个信号源');
                 } else {
                     signalSourcesSelect.innerHTML = '<option value="">暂无信号源数据</option>';
-                    console.log('没有信号源数据');
                 }
             } else {
                 console.error('信号源API调用失败:', signalSourcesResponse.status, signalSourcesResponse.statusText);
@@ -10439,7 +10544,6 @@ class OKXTradingApp {
             const customersResponse = await fetch(`${this.apiBaseUrl}/customers`);
             if (customersResponse.ok) {
                 const customersData = await customersResponse.json();
-                console.log('客户API响应:', customersData); // 调试日志
                 
                 let customers = [];
                 if (customersData.success) {
@@ -10460,7 +10564,6 @@ class OKXTradingApp {
                     // console.log('客户选项已加载:', customers.length, '个客户');
                 } else {
                     customersSelect.innerHTML = '<option value="">暂无客户数据</option>';
-                    console.log('没有客户数据');
                 }
             } else {
                 console.error('客户API调用失败:', customersResponse.status, customersResponse.statusText);
@@ -10584,13 +10687,58 @@ class OKXTradingApp {
     
     // 策略类型变化处理
     async onStrategyTypeChangeTrade(strategyType) {
-        console.log('🔄 策略类型变化:', strategyType);
-        await this.showStrategyParams(strategyType);
+        await this.showStrategyTradeParams(strategyType);
+    }
+
+    // 加载策略模板到创建策略模态框
+    async loadStrategyTemplatesForCreate() {
+        try {
+            // 专门获取策略交易模态框中的选择器
+            const strategySelect = document.querySelector('#createStrategyTradeModal #strategyType');
+            if (!strategySelect) {
+                console.error('❌ 找不到策略交易模态框中的策略类型选择器');
+                return;
+            }
+
+            // 清空现有选项，保留默认选项
+            strategySelect.innerHTML = '<option value="">请选择策略类型</option>';
+
+            // 获取策略模板
+            const response = await fetch(`${this.apiBaseUrl}/strategy/templates`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            
+            if (!data.success) {
+                throw new Error(data.message || '获取策略模板失败');
+            }
+
+            const templates = data.data;
+            if (templates) {
+                // 如果返回的是对象，转换为数组
+                const templateArray = Array.isArray(templates) ? templates : Object.values(templates);
+                
+                
+                templateArray.forEach((template, index) => {
+                    const option = document.createElement('option');
+                    option.value = template.strategy_type || template.id || template.name;
+                    option.textContent = template.display_name || template.name || template.strategy_type;
+                    option.dataset.description = template.description || '';
+                    strategySelect.appendChild(option);
+                });
+            }
+
+        } catch (error) {
+            console.error('❌ 加载策略模板失败:', error);
+            this.showToast('错误', `加载策略模板失败: ${error.message}`, 'danger');
+        }
     }
 
     // 根据策略类型显示参数表单
     async showStrategyTradeParams(strategyType) {
-        console.log('📋 开始生成策略参数表单:', strategyType);
+        
         const paramsContainer = document.getElementById('strategySpecificParams');
         if (!paramsContainer) {
             console.error('❌ 找不到参数容器 strategySpecificParams');
@@ -10600,20 +10748,19 @@ class OKXTradingApp {
         paramsContainer.innerHTML = '';
 
         if (!strategyType) {
-            console.log('⚠️ 策略类型为空，清空参数区域');
+            console.log('❌ 策略类型为空');
             return;
         }
 
         try {
-            console.log('🌐 正在获取策略模板:', `${this.apiBaseUrl}/strategy/templates/${strategyType}`);
             // 获取策略模板
             const response = await fetch(`${this.apiBaseUrl}/strategy/templates/${strategyType}`);
+            
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
             const data = await response.json();
-            console.log('📥 API响应数据:', data);
             
             if (!data.success) {
                 throw new Error(data.message || '获取策略模板失败');
@@ -10623,15 +10770,9 @@ class OKXTradingApp {
             const config = template.default_config;
             const validation = template.validation_rules || {};
 
-            console.log('⚙️ 策略模板数据:', {
-                name: template.display_name,
-                config: Object.keys(config),
-                validation: Object.keys(validation)
-            });
-
             // 创建参数表单
             const formHtml = this.generateStrategyParamsForm(strategyType, config, validation);
-            console.log('🎨 生成的表单HTML长度:', formHtml.length);
+            
             
             if (formHtml) {
                 paramsContainer.innerHTML = `
@@ -10640,9 +10781,9 @@ class OKXTradingApp {
                     <p class="text-muted small">${template.description}</p>
                     ${formHtml}
                 `;
-                console.log('✅ 策略参数表单已渲染');
+                
             } else {
-                console.log('⚠️ 生成的表单HTML为空');
+                console.log('❌ 策略参数表单生成失败');
                 paramsContainer.innerHTML = `
                     <hr>
                     <h6>策略参数 - ${template.display_name}</h6>
@@ -10662,9 +10803,7 @@ class OKXTradingApp {
 
     // 生成策略参数表单
     generateStrategyParamsForm(strategyType, config, validation) {
-        console.log('🔧 开始生成参数表单:', strategyType);
-        console.log('📝 配置参数:', config);
-        console.log('✅ 验证规则:', validation);
+        
         
         let formHtml = '<div class="row">';
 
@@ -10722,7 +10861,6 @@ class OKXTradingApp {
         }
 
         formHtml += '</div>';
-        console.log('🎯 最终表单HTML:', formHtml);
         return formHtml;
     }
 
@@ -10773,7 +10911,21 @@ class OKXTradingApp {
             'volume_threshold': '成交量倍数阈值',
             'price_change_threshold': '价格变化阈值',
             'min_trade_interval': '最小交易间隔(分钟)',
-            'max_trades_per_day': '每日最大交易次数'
+            'max_trades_per_day': '每日最大交易次数',
+            // 网格策略参数
+            'dynamic_grid': '动态网格',
+            'enable_trend_following': '启用趋势跟踪',
+            'grid_adjustment_threshold': '网格调整阈值',
+            'investment_per_grid': '每网格投资金额',
+            'max_grid_adjustments': '最大网格调整次数',
+            'max_grid_positions': '最大网格持仓数',
+            'position_sizing': '仓位大小',
+            // 风险管理参数
+            'risk_per_trade': '每笔交易风险',
+            'stop_loss_pct': '止损百分比',
+            'take_profit_pct': '止盈百分比',
+            'max_positions': '最大持仓数',
+            'risk_config': '风险配置'
         };
         return labels[paramName] || paramName;
     }
@@ -10806,7 +10958,21 @@ class OKXTradingApp {
             'volume_threshold': '成交量倍数阈值 (建议1.0-5.0)',
             'price_change_threshold': '价格变化阈值 (建议0.001-0.05)',
             'min_trade_interval': '最小交易间隔分钟数 (建议1-60)',
-            'max_trades_per_day': '每日最大交易次数 (建议10-200)'
+            'max_trades_per_day': '每日最大交易次数 (建议10-200)',
+            // 网格策略参数描述
+            'dynamic_grid': '是否启用动态网格调整 (true/false)',
+            'enable_trend_following': '是否启用趋势跟踪功能 (true/false)',
+            'grid_adjustment_threshold': '网格调整的价格变化阈值 (0.01-0.1)',
+            'investment_per_grid': '每个网格的投资金额 (建议100-10000)',
+            'max_grid_adjustments': '最大网格调整次数 (建议1-10)',
+            'max_grid_positions': '最大网格持仓数量 (建议3-20)',
+            'position_sizing': '仓位大小计算方式 (fixed/percentage)',
+            // 风险管理参数描述
+            'risk_per_trade': '每笔交易的风险比例 (0.01-0.1)',
+            'stop_loss_pct': '止损百分比 (0.01-0.2)',
+            'take_profit_pct': '止盈百分比 (0.01-0.5)',
+            'max_positions': '最大同时持仓数量 (1-50)',
+            'risk_config': '风险配置对象 (包含详细风险参数)'
         };
         return descriptions[paramName] || '';
     }
@@ -10847,13 +11013,11 @@ class OKXTradingApp {
         };
         
         try {
-            console.log(`🔍 动态收集策略 ${strategyType} 的参数...`);
             
             // 使用动态参数收集而不是硬编码
             const paramsContainer = document.getElementById('backtestStrategyParams');
             if (paramsContainer) {
                 const inputs = paramsContainer.querySelectorAll('input[name], select[name]');
-                console.log(`📋 找到 ${inputs.length} 个动态参数输入框`);
                 
                 inputs.forEach(input => {
                     const paramName = input.name;
@@ -10891,7 +11055,6 @@ class OKXTradingApp {
                     }
                     
                     config[paramName] = value;
-                    console.log(`📝 动态参数: ${paramName} = ${value} (${typeof value})`);
                     
                     // 特别检查bb_std参数
                     if (paramName === 'bb_std') {
@@ -10905,7 +11068,6 @@ class OKXTradingApp {
             // 验证必需参数
             this.validateStrategyParamsTrade(strategyType, config);
             
-            console.log(`✅ 收集到策略参数:`, config);
             return config;
             
         } catch (error) {
@@ -10958,7 +11120,6 @@ class OKXTradingApp {
                 break;
                 
             default:
-                console.log(`✅ 策略 ${strategyType} 使用默认参数验证`);
                 break;
         }
     }
@@ -11033,8 +11194,6 @@ class OKXTradingApp {
                 strategy_config: strategyConfig  // 策略配置参数
             };
             
-            console.log('开始回测，参数:', requestData);
-            console.log('🔍 策略配置详情:', strategyConfig);
             if (strategyConfig.bb_std !== undefined) {
                 console.log(`🔍 bb_std 最终值: ${strategyConfig.bb_std} (${typeof strategyConfig.bb_std})`);
             }
@@ -11051,7 +11210,6 @@ class OKXTradingApp {
                 const data = await response.json();
                 if (data.success) {
                     this.showToast('成功', '回测运行完成！', 'success');
-                    console.log('回测结果:', data.data);
                     
                     // 关闭模态框
                     const modal = bootstrap.Modal.getInstance(document.getElementById('backtestModal'));
@@ -11246,15 +11404,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // 策略类型变化事件
-    const strategyTypeSelect = document.getElementById('strategyType');
-    if (strategyTypeSelect) {
-        strategyTypeSelect.addEventListener('change', (e) => {
+    // 策略类型变化事件 - 使用事件委托，专门针对策略交易模态框
+    document.addEventListener('change', (e) => {
+        if (e.target && e.target.id === 'strategyType' && e.target.closest('#createStrategyTradeModal')) {
+            
             if (window.app) {
-                window.app.onStrategyTypeChange(e.target.value);
+                window.app.onStrategyTypeChangeTrade(e.target.value);
+            } else {
+                console.error('❌ window.app 不存在');
             }
-        });
-    }
+        }
+    });
+    
     
     // 创建策略模态框显示事件
     const createStrategyModal = document.getElementById('createStrategyTradeModal');
@@ -11262,6 +11423,7 @@ document.addEventListener('DOMContentLoaded', function() {
         createStrategyModal.addEventListener('show.bs.modal', () => {
             if (window.app) {
                 window.app.loadAccountsForStrategyTrade('create');
+                window.app.loadStrategyTemplatesForCreate();
             }
         });
     }

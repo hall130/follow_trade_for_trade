@@ -496,12 +496,8 @@ _global_db_pool = None
 
 def get_db_pool():
     """获取全局数据库连接池实例"""
-    global _global_db_pool
-    if _global_db_pool is None:
-        from config import get_mysql_config
-        mysql_config = get_mysql_config()
-        _global_db_pool = MySQLPool(**mysql_config)
-    return _global_db_pool
+    from database.global_db_manager import get_global_db_pool
+    return get_global_db_pool()
 
 def set_db_pool(db_pool):
     """设置全局数据库连接池实例"""

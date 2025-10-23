@@ -35,8 +35,14 @@ class TechnicalIndicators:
         delta = data.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
+        
+        # 避免除零错误
+        rs = gain / loss.replace(0, np.nan)  # 将0替换为NaN，避免除零
         rsi = 100 - (100 / (1 + rs))
+        
+        # 处理特殊情况
+        rsi = rsi.fillna(50)  # 当gain和loss都为0时，RSI设为50（中性）
+        
         return rsi
     
     @staticmethod

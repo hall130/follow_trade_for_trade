@@ -17,9 +17,8 @@ from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
 from utils.logger import logger
-from database import get_db_pool
 from config import get_mysql_config, get_okx_config
-from exchange.okx import OKXRESTClient, OKXWebSocketClient
+from exchange.exchange_factory import ExchangeFactory
 from core.market_trade.trade_service import TradeService
 from core.market_trade.signal_service import SignalService
 from core.limit_trade.limit_follow_service import LimitFollowService

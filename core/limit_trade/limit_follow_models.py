@@ -19,6 +19,12 @@ class OrderStatus(Enum):
     EXPIRED = 'expired'     # 已过期
     REJECTED = 'rejected'   # 被拒绝
 
+class FollowOrderTypes(Enum):
+    """跟单订单类型枚举"""
+    LIMIT_ONLY = 'limit_only'    # 只限价跟单
+    MARKET_ONLY = 'market_only'  # 只市价跟单
+    BOTH = 'both'        
+
 class ExecutionStatus(Enum):
     """执行状态枚举"""
     PENDING = 'pending'      # 待执行
@@ -57,19 +63,18 @@ class LimitFollowStrategy:
     trader_unique_name: str = ''
     customer_uid: str = ''
     symbol: str = ''
-    symbols: str = ''  # 多交易对配置，JSON格式存储
+    symbols: Optional[List[str]] = None  # 新增：指定交易对列表
     pos_side: str = 'both'  # 默认双向跟随
     follow_type: str = 'percentage'
-    follow_mode: str = 'follow_signal_source'  # 跟单模式
-    follow_order_types: str = 'limit_only'  # 跟单订单类型
-    limit_market_ratio: str = '1:1'  # 限价市价比例
+    follow_mode: str = 'follow_signal_source'  # 新增：跟单模式，默认跟信号源
+    follow_order_types: str = 'limit_only'  # 新增：跟单订单类型
+    limit_market_ratio: str = '1:1'  # 新增：限价市价比例
     follow_value: float = 0.0
     min_follow_value: float = 0.5
     max_follow_value: float = 5.0
     max_orders_per_signal: int = 4
-    max_net_leverage: float = 1.5  # 最大净杠杆值
-    leverage: int = 10  # 开仓杠杆倍数
-    strategy_group_id: Optional[int] = None  # 策略组ID
+    leverage: float = 10.0  # 新增：杠杆倍数
+    max_net_leverage: float = 10.0  # 最大净杠杆值
     proportional_position: bool = False  # 是否启用按比例开仓
     auto_cancel_on_signal_close: bool = True
     enabled: bool = True
@@ -83,8 +88,14 @@ class LimitFollowStrategy:
             raise ValueError(f"无效的跟单类型: {self.follow_type}")
         if self.follow_mode not in [e.value for e in FollowMode]:
             raise ValueError(f"无效的跟单模式: {self.follow_mode}")
-        if self.follow_order_types not in [e.value for e in FollowOrderTypes]:
-            raise ValueError(f"无效的跟单订单类型: {self.follow_order_types}")
+
+    def is_follow_signal_source(self) -> bool:
+        """判断是否为跟信号源模式"""
+        return self.follow_mode == FollowMode.FOLLOW_SIGNAL_SOURCE.value
+    
+    def is_follow_trader(self) -> bool:
+        """判断是否为跟交易员模式"""
+        return self.follow_mode == FollowMode.FOLLOW_TRADER.value
 
 @dataclass
 class LimitFollowOrder:
@@ -305,6 +316,31 @@ class SignalEvent:
     def __post_init__(self):
         if self.pos_side not in [e.value for e in PosSide]:
             raise ValueError(f"无效的持仓方向: {self.pos_side}")
+
+
+@dataclass
+class AccountRelation:
+    """账户关系"""
+    strategy: LimitFollowStrategy
+    signal_source_uid: str  # 信号源账户UID
+    customer_uid: str       # 客户账户UID
+    
+    def should_exclude_signal_account(self) -> bool:
+        """
+        判断客户账户是否应该排除信号源账户
+        
+        Returns:
+            bool: True表示客户账户不包含信号源账户（跟信号源模式），
+                  False表示客户账户包含信号源账户（跟交易员模式）
+        """
+        return self.strategy.is_follow_signal_source()
+    
+    def get_follow_description(self) -> str:
+        """获取跟单模式描述"""
+        if self.strategy.is_follow_signal_source():
+            return f"跟随信号源 {self.signal_source_uid}，客户账户 {self.customer_uid} 不包含信号源账户"
+        else:
+            return f"跟随交易员 {self.strategy.trader_unique_name}，客户账户 {self.customer_uid} 包含信号源账户"
 
 # 工具函数
 def create_order_uid() -> str:

@@ -231,8 +231,10 @@ class BacktestEngine:
             
             logger.info(f"单次请求历史数据: {symbol} {start_dt} -> {end_dt}")
             
-            from exchange.okx.okx_rest_client import OKXRESTClient
-            client = OKXRESTClient(
+            from exchange.exchange_factory import create_exchange_client
+            client = create_exchange_client(
+                exchange='okx',
+                client_type='rest',
                 api_key="",
                 api_secret="",
                 passphrase="",
@@ -263,8 +265,10 @@ class BacktestEngine:
         try:
             logger.info(f"开始分片获取历史数据: {symbol} {start_dt} -> {end_dt}")
             
-            from exchange.okx.okx_rest_client import OKXRESTClient
-            client = OKXRESTClient(
+            from exchange.exchange_factory import create_exchange_client
+            client = create_exchange_client(
+                exchange='okx',
+                client_type='rest',
                 api_key="",
                 api_secret="",
                 passphrase="",

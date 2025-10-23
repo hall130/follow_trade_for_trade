@@ -8,11 +8,10 @@
 from typing import Dict, Any, Optional, Union
 from utils.logger import logger
 
-# 导入所有交易所客户端
-from .okx.okx_rest_client import OKXRESTClient
-from .okx.okx_ws_client import OKXWebSocketClient
-from .binance.binance_rest_client import BinanceRESTClient
-from .binance.binance_ws_client import BinanceWebSocketClient
+# 导入统一客户端
+from .unified_rest_client import UnifiedRESTClient, create_unified_rest_client
+from .unified_ws_client import UnifiedWebSocketClient, create_unified_ws_client
+from .base_client import ExchangeType
 
 # 导入配置
 from config import get_okx_config, get_binance_config
@@ -24,82 +23,69 @@ class ExchangeFactory:
     def __init__(self):
         self.rest_clients = {}
         self.ws_clients = {}
-        self.supported_exchanges = ['okx', 'binance']
+        self.supported_exchanges = ['okx', 'binance', 'bybit']
     
     def create_rest_client(self, exchange: str, api_key: str, api_secret: str, 
-                          passphrase: str = None, is_demo: bool = True) -> Union[OKXRESTClient, BinanceRESTClient]:
+                          passphrase: str = None, is_demo: bool = True) -> UnifiedRESTClient:
         """
-        创建REST API客户端
+        创建统一REST API客户端
         
         Args:
-            exchange: 交易所名称 ('okx', 'binance')
+            exchange: 交易所名称 ('okx', 'binance', 'bybit')
             api_key: API密钥
             api_secret: API密钥
             passphrase: 密码短语（仅OKX需要）
             is_demo: 是否使用演示模式
         
         Returns:
-            REST API客户端实例
+            统一REST API客户端实例
         """
         exchange = exchange.lower()
         
-        if exchange == 'okx':
-            client = OKXRESTClient(api_key, api_secret, passphrase, is_demo)
-            self.rest_clients[f'okx_{api_key}'] = client
-            logger.info(f"已创建OKX REST客户端: {api_key}")
-            return client
-            
-        elif exchange == 'binance':
-            client = BinanceRESTClient(api_key, api_secret, is_demo)
-            self.rest_clients[f'binance_{api_key}'] = client
-            logger.info(f"已创建币安REST客户端: {api_key}")
-            return client
-            
-        else:
+        if exchange not in self.supported_exchanges:
             raise ValueError(f"不支持的交易所: {exchange}")
+        
+        client = create_unified_rest_client(exchange, api_key, api_secret, passphrase, is_demo)
+        self.rest_clients[f'{exchange}_{api_key}'] = client
+        logger.info(f"已创建{exchange.upper()}统一REST客户端: {api_key}")
+        return client
     
     def create_ws_client(self, exchange: str, api_key: str = None, api_secret: str = None, 
-                        is_demo: bool = True) -> Union[OKXWebSocketClient, BinanceWebSocketClient]:
+                        passphrase: str = None, is_demo: bool = True) -> UnifiedWebSocketClient:
         """
-        创建WebSocket客户端
+        创建统一WebSocket客户端
         
         Args:
-            exchange: 交易所名称 ('okx', 'binance')
+            exchange: 交易所名称 ('okx', 'binance', 'bybit')
             api_key: API密钥（可选）
             api_secret: API密钥（可选）
+            passphrase: 密码短语（仅OKX需要，可选）
             is_demo: 是否使用演示模式
         
         Returns:
-            WebSocket客户端实例
+            统一WebSocket客户端实例
         """
         exchange = exchange.lower()
         
-        if exchange == 'okx':
-            client = OKXWebSocketClient(api_key, api_secret, is_demo)
-            self.ws_clients[f'okx_{api_key or "public"}'] = client
-            logger.info(f"已创建OKX WebSocket客户端: {api_key or 'public'}")
-            return client
-            
-        elif exchange == 'binance':
-            client = BinanceWebSocketClient(api_key, api_secret, is_demo)
-            self.ws_clients[f'binance_{api_key or "public"}'] = client
-            logger.info(f"已创建币安WebSocket客户端: {api_key or 'public'}")
-            return client
-            
-        else:
+        if exchange not in self.supported_exchanges:
             raise ValueError(f"不支持的交易所: {exchange}")
+        
+        client = create_unified_ws_client(exchange, api_key, api_secret, passphrase, is_demo)
+        self.ws_clients[f'{exchange}_{api_key or "public"}'] = client
+        logger.info(f"已创建{exchange.upper()}统一WebSocket客户端: {api_key or 'public'}")
+        return client
     
-    def get_rest_client(self, exchange: str, api_key: str) -> Optional[Union[OKXRESTClient, BinanceRESTClient]]:
+    def get_rest_client(self, exchange: str, api_key: str) -> Optional[UnifiedRESTClient]:
         """获取已创建的REST客户端"""
         key = f'{exchange.lower()}_{api_key}'
         return self.rest_clients.get(key)
     
-    def get_ws_client(self, exchange: str, api_key: str = None) -> Optional[Union[OKXWebSocketClient, BinanceWebSocketClient]]:
+    def get_ws_client(self, exchange: str, api_key: str = None) -> Optional[UnifiedWebSocketClient]:
         """获取已创建的WebSocket客户端"""
         key = f'{exchange.lower()}_{api_key or "public"}'
         return self.ws_clients.get(key)
     
-    def create_client_from_config(self, exchange: str, is_demo: bool = True) -> Union[OKXRESTClient, BinanceRESTClient]:
+    def create_client_from_config(self, exchange: str, is_demo: bool = True) -> UnifiedRESTClient:
         """
         从配置文件创建客户端
         
@@ -108,7 +94,7 @@ class ExchangeFactory:
             is_demo: 是否使用演示模式
         
         Returns:
-            REST API客户端实例
+            统一REST API客户端实例
         """
         exchange = exchange.lower()
         
@@ -193,14 +179,14 @@ def create_exchange_client(exchange: str, client_type: str = 'rest',
         is_demo: 是否使用演示模式
     
     Returns:
-        交易所客户端实例
+        统一交易所客户端实例
     """
     factory = get_exchange_factory()
     
     if client_type.lower() == 'rest':
         return factory.create_rest_client(exchange, api_key, api_secret, passphrase, is_demo)
     elif client_type.lower() == 'ws':
-        return factory.create_ws_client(exchange, api_key, api_secret, is_demo)
+        return factory.create_ws_client(exchange, api_key, api_secret, passphrase, is_demo)
     else:
         raise ValueError(f"不支持的客户端类型: {client_type}")
 
@@ -214,7 +200,7 @@ def get_exchange_client(exchange: str, client_type: str = 'rest', api_key: str =
         api_key: API密钥
     
     Returns:
-        交易所客户端实例或None
+        统一交易所客户端实例或None
     """
     factory = get_exchange_factory()
     

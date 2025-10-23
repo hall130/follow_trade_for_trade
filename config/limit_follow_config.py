@@ -8,7 +8,7 @@
 import json
 import logging
 from typing import Dict, Any, List, Optional
-from database.db import get_db_pool
+# from database.global_db_manager import get_global_db_pool  # 延迟导入避免循环导入
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,8 @@ def get_config_from_db() -> Optional[Dict[str, Any]]:
     从数据库获取限价跟单配置
     """
     try:
-        db_pool = get_db_pool()
+        from database.global_db_manager import get_global_db_pool
+        db_pool = get_global_db_pool()
         if not db_pool:
             return None
             
@@ -139,7 +140,8 @@ def update_config_in_db(config_data: Dict[str, Any]) -> bool:
     更新数据库中的限价跟单配置
     """
     try:
-        db_pool = get_db_pool()
+        from database.global_db_manager import get_global_db_pool
+        db_pool = get_global_db_pool()
         if not db_pool:
             return False
         
@@ -177,7 +179,8 @@ def get_customer_limit_follow_config(customer_uid: str) -> Dict[str, Any]:
     获取客户特定的限价跟单配置
     """
     try:
-        db_pool = get_db_pool()
+        from database.global_db_manager import get_global_db_pool
+        db_pool = get_global_db_pool()
         if not db_pool:
             return {}
         

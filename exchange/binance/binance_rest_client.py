@@ -1,342 +1,431 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-币安REST API客户端
-提供币安交易所的REST API接口
+Binance REST API客户端
+用于真实的下单、查询等操作
 """
 
+import aiohttp
+import asyncio
 import hmac
 import hashlib
+import base64
 import json
 import time
-import aiohttp
 from typing import Dict, Any, Optional, List
-from urllib.parse import urlencode
 from utils.logger import logger
+from ..base_client import (
+    BaseRESTClient, ExchangeType, OrderRequest, OrderResponse, Position, Balance, Ticker,
+    OrderSide, OrderType, OrderStatus, FundingRate, OpenInterest, MarkPrice,
+    LiquidationOrder, TradeFee, MarginBalance, Instrument, BillDetail
+)
 
 
-class BinanceRESTClient:
-    """币安REST API客户端"""
+class BinanceRESTClient(BaseRESTClient):
+    """Binance REST API客户端"""
     
-    # 鉴权类型常量
-    AUTH_NONE = "NONE"           # 无需鉴权
-    AUTH_TRADE = "TRADE"         # 交易权限
-    AUTH_USER_DATA = "USER_DATA" # 用户数据权限
-    AUTH_USER_STREAM = "USER_STREAM" # 用户流权限
-    
-    def __init__(self, api_key: str, api_secret: str, is_demo: bool = True):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.is_demo = is_demo
+    def __init__(self, api_key: str, api_secret: str, passphrase: str = None, is_demo: bool = True):
+        super().__init__(api_key, api_secret, passphrase, is_demo)
         
         # 根据是否为演示账户选择不同的URL
         if is_demo:
             self.base_url = "https://testnet.binance.vision"
-            self.api_url = "https://testnet.binance.vision/api"
+            self.api_url = "https://testnet.binance.vision/api/v3"
         else:
             self.base_url = "https://api.binance.com"
-            self.api_url = "https://api.binance.com/api"
-        
-        # 默认recvWindow设置（5秒，适合大多数情况）
-        self.default_recv_window = 5000
+            self.api_url = "https://api.binance.com/api/v3"
     
-    def _get_timestamp(self) -> int:
-        """获取当前时间戳（毫秒）"""
-        return int(time.time() * 1000)
+    def _get_exchange_type(self) -> ExchangeType:
+        """获取交易所类型"""
+        return ExchangeType.BINANCE
     
     def _sign(self, params: Dict[str, Any]) -> str:
         """生成签名"""
-        # 将参数转换为查询字符串
-        query_string = urlencode(params)
-        
-        # 使用HMAC SHA256生成签名
+        query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-        
         return signature
     
-    def _get_headers(self, auth_type: str = AUTH_NONE) -> Dict[str, str]:
-        """获取请求头
-        
-        Args:
-            auth_type: 鉴权类型 (NONE, TRADE, USER_DATA, USER_STREAM)
-        """
-        headers = {
+    def _get_headers(self) -> Dict[str, str]:
+        """获取请求头"""
+        return {
+            'X-MBX-APIKEY': self.api_key,
             'Content-Type': 'application/json'
         }
-        
-        # 除了NONE类型，其他都需要API密钥
-        if auth_type != self.AUTH_NONE:
-            if not self.api_key:
-                raise ValueError(f"鉴权类型 {auth_type} 需要API密钥")
-            headers['X-MBX-APIKEY'] = self.api_key
-        
-        return headers
     
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, 
-                       auth_type: str = AUTH_NONE, recv_window: Optional[int] = None) -> Dict[str, Any]:
-        """发送HTTP请求
-        
-        Args:
-            method: HTTP方法 (GET, POST, DELETE)
-            endpoint: API端点
-            params: 请求参数
-            auth_type: 鉴权类型 (NONE, TRADE, USER_DATA, USER_STREAM)
-            recv_window: 请求有效期（毫秒），默认5000ms，最大60000ms
-        """
+    async def _request(self, method: str, endpoint: str, data: Optional[Dict] = None, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """发送HTTP请求"""
         url = f"{self.api_url}{endpoint}"
         
+        # 添加时间戳
         if params is None:
             params = {}
+        params['timestamp'] = int(time.time() * 1000)
         
-        # 除了NONE类型，其他都需要添加时间戳和签名
-        if auth_type != self.AUTH_NONE:
-            # 添加时间戳（毫秒）
-            params['timestamp'] = self._get_timestamp()
-            
-            # 添加recvWindow参数
-            if recv_window is None:
-                recv_window = self.default_recv_window
-            else:
-                # 验证recvWindow范围
-                if recv_window < 1 or recv_window > 60000:
-                    raise ValueError("recvWindow必须在1-60000毫秒之间")
-            
-            params['recvWindow'] = recv_window
-            
-            # 生成签名
-            params['signature'] = self._sign(params)
+        # 生成签名
+        signature = self._sign(params)
+        params['signature'] = signature
         
-        # 构建查询字符串
-        query_string = urlencode(params)
-        full_url = f"{url}?{query_string}"
+        headers = self._get_headers()
         
-        headers = self._get_headers(auth_type)
-        
-        logger.debug(f"发送请求: {method} {full_url}")
+        logger.debug(f"发送请求: {method} {url}")
+        logger.debug(f"参数: {params}")
         
         try:
             async with aiohttp.ClientSession() as session:
                 if method == 'GET':
-                    async with session.get(full_url, headers=headers) as response:
+                    async with session.get(url, headers=headers, params=params) as response:
                         result = await response.json()
                 elif method == 'POST':
-                    async with session.post(full_url, headers=headers) as response:
-                        result = await response.json()
-                elif method == 'DELETE':
-                    async with session.delete(full_url, headers=headers) as response:
-                        result = await response.json()
+                    if data:
+                        async with session.post(url, headers=headers, params=params, data=json.dumps(data)) as response:
+                            result = await response.json()
+                    else:
+                        async with session.post(url, headers=headers, params=params) as response:
+                            result = await response.json()
                 else:
                     raise ValueError(f"不支持的HTTP方法: {method}")
-                
-                if response.status != 200:
-                    logger.error(f"API请求失败: {response.status} - {result}")
-                    raise Exception(f"API请求失败: {result}")
                 
                 return result
                 
         except Exception as e:
-            logger.error(f"请求异常: {e}")
+            logger.error(f"REST API请求失败: {method} {endpoint}, 错误: {e}")
+            return {"error": f"请求失败: {str(e)}"}
+    
+    async def place_order(self, order_request: OrderRequest) -> OrderResponse:
+        """下单（统一接口）"""
+        try:
+            # 转换统一格式到Binance格式
+            binance_data = {
+                'symbol': order_request.symbol,
+                'side': order_request.side.value.upper(),
+                'type': order_request.order_type.value.upper(),
+                'quantity': str(order_request.quantity)
+            }
+            
+            if order_request.price:
+                binance_data['price'] = str(order_request.price)
+            
+            if order_request.client_order_id:
+                binance_data['newClientOrderId'] = order_request.client_order_id
+            
+            if order_request.reduce_only:
+                binance_data['reduceOnly'] = 'true'
+            
+            response = await self._request('POST', "/order", data=binance_data)
+            
+            if 'orderId' in response:
+                return OrderResponse(
+                    order_id=str(response.get('orderId', '')),
+                    client_order_id=response.get('clientOrderId', order_request.client_order_id),
+                    symbol=order_request.symbol,
+                    side=order_request.side,
+                    order_type=order_request.order_type,
+                    quantity=order_request.quantity,
+                    price=order_request.price,
+                    status=OrderStatus(response.get('status', '').lower()),
+                    filled_quantity=float(response.get('executedQty', '0')),
+                    remaining_quantity=float(response.get('origQty', '0')) - float(response.get('executedQty', '0')),
+                    timestamp=int(response.get('transactTime', 0)),
+                    exchange=self.exchange_type
+                )
+            else:
+                raise Exception(f"下单失败: {response}")
+                
+        except Exception as e:
+            logger.error(f"下单异常: {e}")
             raise
     
-    # 账户相关接口
-    async def get_account_info(self) -> Dict[str, Any]:
-        """获取账户信息 (USER_DATA)"""
-        return await self._request('GET', '/v3/account', auth_type=self.AUTH_USER_DATA)
+    async def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """取消订单（统一接口）"""
+        try:
+            params = {
+                'symbol': symbol,
+                'orderId': order_id
+            }
+            response = await self._request('DELETE', "/order", params=params)
+            return 'orderId' in response
+        except Exception as e:
+            logger.error(f"取消订单异常: {e}")
+            return False
     
-    async def get_balance(self) -> List[Dict[str, Any]]:
-        """获取账户余额 (USER_DATA)"""
-        account_info = await self.get_account_info()
-        return account_info.get('balances', [])
+    async def get_order(self, symbol: str, order_id: str) -> Optional[OrderResponse]:
+        """获取订单信息（统一接口）"""
+        try:
+            params = {
+                'symbol': symbol,
+                'orderId': order_id
+            }
+            response = await self._request('GET', "/order", params=params)
+            
+            if 'orderId' in response:
+                return OrderResponse(
+                    order_id=str(response.get('orderId', '')),
+                    client_order_id=response.get('clientOrderId', ''),
+                    symbol=response.get('symbol', ''),
+                    side=OrderSide(response.get('side', '').lower()),
+                    order_type=OrderType(response.get('type', '').lower()),
+                    quantity=float(response.get('origQty', '0')),
+                    price=float(response.get('price', '0')) if response.get('price') else None,
+                    status=OrderStatus(response.get('status', '').lower()),
+                    filled_quantity=float(response.get('executedQty', '0')),
+                    remaining_quantity=float(response.get('origQty', '0')) - float(response.get('executedQty', '0')),
+                    timestamp=int(response.get('time', 0)),
+                    exchange=self.exchange_type
+                )
+            return None
+            
+        except Exception as e:
+            logger.error(f"获取订单异常: {e}")
+            return None
     
-    # 交易相关接口
-    async def place_order(self, symbol: str, side: str, order_type: str, 
-                         quantity: float, price: Optional[float] = None,
-                         time_in_force: str = 'GTC', recv_window: Optional[int] = None) -> Dict[str, Any]:
-        """
-        下单 (TRADE)
-        
-        Args:
-            symbol: 交易对
-            side: 买卖方向 (BUY/SELL)
-            order_type: 订单类型 (LIMIT/MARKET/STOP_LOSS_LIMIT)
-            quantity: 数量
-            price: 价格（市价单可为空）
-            time_in_force: 有效期 (GTC/IOC/FOK)
-            recv_window: 请求有效期（毫秒），默认5000ms
-        """
-        params = {
-            'symbol': symbol,
-            'side': side,
-            'type': order_type,
-            'quantity': quantity,
-            'timeInForce': time_in_force
-        }
-        
-        if price:
-            params['price'] = price
-        
-        return await self._request('POST', '/v3/order', params, 
-                                 auth_type=self.AUTH_TRADE, recv_window=recv_window)
+    async def get_positions(self, symbol: Optional[str] = None) -> List[Position]:
+        """获取持仓信息（统一接口）"""
+        try:
+            response = await self._request('GET', "/account")
+            
+            if 'balances' in response:
+                positions = []
+                for balance in response['balances']:
+                    free = float(balance.get('free', '0'))
+                    locked = float(balance.get('locked', '0'))
+                    total = free + locked
+                    
+                    if total > 0:  # 只返回有余额的记录
+                        position = Position(
+                            symbol=balance.get('asset', ''),
+                            side='long',  # Binance现货只有多头
+                            size=total,
+                            entry_price=0.0,  # 现货没有开仓价格
+                            mark_price=0.0,
+                            unrealized_pnl=0.0,
+                            margin=0.0,
+                            leverage=1.0,
+                            exchange=self.exchange_type
+                        )
+                        positions.append(position)
+                
+                return positions
+            else:
+                logger.error(f"获取持仓失败: {response}")
+                return []
+            
+        except Exception as e:
+            logger.error(f"获取持仓异常: {e}")
+            return []
     
-    async def cancel_order(self, symbol: str, order_id: int, recv_window: Optional[int] = None) -> Dict[str, Any]:
-        """取消订单 (TRADE)"""
-        params = {
-            'symbol': symbol,
-            'orderId': order_id
-        }
-        return await self._request('DELETE', '/v3/order', params, 
-                                 auth_type=self.AUTH_TRADE, recv_window=recv_window)
+    async def get_balance(self) -> List[Balance]:
+        """获取账户余额（统一接口）"""
+        try:
+            response = await self._request('GET', "/account")
+            
+            if 'balances' in response:
+                balances = []
+                for balance_data in response['balances']:
+                    free = float(balance_data.get('free', '0'))
+                    locked = float(balance_data.get('locked', '0'))
+                    total = free + locked
+                    
+                    if total > 0:  # 只返回有余额的记录
+                        balance = Balance(
+                            asset=balance_data.get('asset', ''),
+                            free=free,
+                            locked=locked,
+                            total=total,
+                            exchange=self.exchange_type
+                        )
+                        balances.append(balance)
+                
+                return balances
+            else:
+                logger.error(f"获取余额失败: {response}")
+                return []
+            
+        except Exception as e:
+            logger.error(f"获取余额异常: {e}")
+            return []
     
-    async def get_order_status(self, symbol: str, order_id: int, recv_window: Optional[int] = None) -> Dict[str, Any]:
-        """获取订单状态 (USER_DATA)"""
-        params = {
-            'symbol': symbol,
-            'orderId': order_id
-        }
-        return await self._request('GET', '/v3/order', params, 
-                                 auth_type=self.AUTH_USER_DATA, recv_window=recv_window)
-    
-    async def get_open_orders(self, symbol: Optional[str] = None, recv_window: Optional[int] = None) -> List[Dict[str, Any]]:
-        """获取未成交订单 (USER_DATA)"""
-        params = {}
-        if symbol:
-            params['symbol'] = symbol
-        return await self._request('GET', '/v3/openOrders', params, 
-                                 auth_type=self.AUTH_USER_DATA, recv_window=recv_window)
-    
-    # 市场数据接口
-    async def get_ticker_price(self, symbol: Optional[str] = None) -> Dict[str, Any]:
-        """获取价格信息 (NONE)"""
-        endpoint = '/v3/ticker/price'
-        if symbol:
-            endpoint += f'?symbol={symbol}'
-        return await self._request('GET', endpoint, auth_type=self.AUTH_NONE)
+    async def get_ticker(self, symbol: str) -> Ticker:
+        """获取行情信息（统一接口）"""
+        try:
+            params = {'symbol': symbol}
+            response = await self._request('GET', "/ticker/24hr", params=params)
+            
+            if 'symbol' in response:
+                return Ticker(
+                    symbol=response.get('symbol', ''),
+                    price=float(response.get('lastPrice', '0')),
+                    volume=float(response.get('volume', '0')),
+                    timestamp=int(response.get('closeTime', 0)),
+                    exchange=self.exchange_type,
+                    bid_price=float(response.get('bidPrice', '0')),
+                    ask_price=float(response.get('askPrice', '0')),
+                    high_24h=float(response.get('highPrice', '0')),
+                    low_24h=float(response.get('lowPrice', '0')),
+                    change_24h=float(response.get('priceChange', '0')),
+                    change_percent_24h=float(response.get('priceChangePercent', '0'))
+                )
+            else:
+                raise Exception(f"获取行情失败: {response}")
+                
+        except Exception as e:
+            logger.error(f"获取行情异常: {e}")
+            raise
     
     async def get_klines(self, symbol: str, interval: str, 
-                         start_time: Optional[int] = None, 
-                         end_time: Optional[int] = None,
-                         limit: int = 500) -> List[List]:
-        """
-        获取K线数据 (NONE)
-        
-        Args:
-            symbol: 交易对
-            interval: 时间间隔 (1m, 3m, 5m, 15m, 30m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M)
-            start_time: 开始时间（毫秒时间戳）
-            end_time: 结束时间（毫秒时间戳）
-            limit: 返回数量限制
-        """
-        params = {
-            'symbol': symbol,
-            'interval': interval,
-            'limit': limit
-        }
-        
-        if start_time:
-            params['startTime'] = start_time
-        if end_time:
-            params['endTime'] = end_time
-        
-        return await self._request('GET', '/v3/klines', params, auth_type=self.AUTH_NONE)
+                        start_time: Optional[int] = None, 
+                        end_time: Optional[int] = None,
+                        limit: int = 500) -> List[List]:
+        """获取K线数据（统一接口）"""
+        try:
+            params = {
+                'symbol': symbol,
+                'interval': interval,
+                'limit': limit
+            }
+            
+            if start_time:
+                params['startTime'] = start_time
+            if end_time:
+                params['endTime'] = end_time
+            
+            response = await self._request('GET', "/klines", params=params)
+            
+            if isinstance(response, list):
+                return response
+            else:
+                logger.error(f"获取K线数据失败: {response}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"获取K线数据异常: {e}")
+            return []
     
-    async def get_exchange_info(self) -> Dict[str, Any]:
-        """获取交易所信息 (NONE)"""
-        return await self._request('GET', '/v3/exchangeInfo', auth_type=self.AUTH_NONE)
+    async def get_open_orders(self, symbol: Optional[str] = None) -> List[OrderResponse]:
+        """获取未成交订单（统一接口）"""
+        try:
+            params = {}
+            if symbol:
+                params['symbol'] = symbol
+            
+            response = await self._request('GET', "/openOrders", params=params)
+            
+            if isinstance(response, list):
+                orders = []
+                for order_data in response:
+                    order = OrderResponse(
+                        order_id=str(order_data.get('orderId', '')),
+                        client_order_id=order_data.get('clientOrderId', ''),
+                        symbol=order_data.get('symbol', ''),
+                        side=OrderSide(order_data.get('side', '').lower()),
+                        order_type=OrderType(order_data.get('type', '').lower()),
+                        quantity=float(order_data.get('origQty', '0')),
+                        price=float(order_data.get('price', '0')) if order_data.get('price') else None,
+                        status=OrderStatus(order_data.get('status', '').lower()),
+                        filled_quantity=float(order_data.get('executedQty', '0')),
+                        remaining_quantity=float(order_data.get('origQty', '0')) - float(order_data.get('executedQty', '0')),
+                        timestamp=int(order_data.get('time', 0)),
+                        exchange=self.exchange_type
+                    )
+                    orders.append(order)
+                return orders
+            else:
+                logger.error(f"获取未成交订单失败: {response}")
+                return []
+            
+        except Exception as e:
+            logger.error(f"获取未成交订单异常: {e}")
+            return []
     
-    # 持仓相关接口
-    async def get_position_info(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
-        """获取持仓信息（仅适用于合约交易）"""
-        # 注意：现货交易没有持仓概念，这里返回空列表
-        # 如果需要合约交易，需要实现合约相关的API
-        logger.warning("现货交易不支持持仓查询，返回空列表")
+    # 实现其他抽象方法（简化版本）
+    async def get_funding_rate(self, symbol: str) -> FundingRate:
+        """获取资金费率（统一接口）"""
+        # Binance现货没有资金费率，返回默认值
+        return FundingRate(
+            symbol=symbol,
+            funding_rate=0.0,
+            funding_time=0,
+            next_funding_time=0,
+            exchange=self.exchange_type
+        )
+    
+    async def get_open_interest(self, symbol: str) -> OpenInterest:
+        """获取持仓量（统一接口）"""
+        # Binance现货没有持仓量概念，返回默认值
+        return OpenInterest(
+            symbol=symbol,
+            open_interest=0.0,
+            timestamp=int(time.time() * 1000),
+            exchange=self.exchange_type
+        )
+    
+    async def get_mark_price(self, symbol: str) -> MarkPrice:
+        """获取标记价格（统一接口）"""
+        # 使用当前价格作为标记价格
+        ticker = await self.get_ticker(symbol)
+        return MarkPrice(
+            symbol=symbol,
+            mark_price=ticker.price,
+            index_price=ticker.price,
+            timestamp=ticker.timestamp,
+            exchange=self.exchange_type
+        )
+    
+    async def get_liquidation_orders(self, symbol: Optional[str] = None, limit: int = 100) -> List[LiquidationOrder]:
+        """获取强平订单（统一接口）"""
+        # Binance现货没有强平订单
         return []
     
-    # 用户数据流管理 (USER_STREAM)
-    async def create_listen_key(self) -> str:
-        """创建listenKey用于用户数据流订阅 (USER_STREAM)"""
-        result = await self._request('POST', '/v3/userDataStream', auth_type=self.AUTH_USER_STREAM)
-        return result.get('listenKey', '')
+    async def get_trade_fee(self, symbol: str, category: str = "spot") -> TradeFee:
+        """获取交易手续费（统一接口）"""
+        # 返回默认手续费
+        return TradeFee(
+            symbol=symbol,
+            maker_fee=0.001,
+            taker_fee=0.001,
+            category=category,
+            exchange=self.exchange_type
+        )
     
-    async def extend_listen_key(self, listen_key: str) -> Dict[str, Any]:
-        """延长listenKey有效期 (USER_STREAM)"""
-        params = {'listenKey': listen_key}
-        return await self._request('PUT', '/v3/userDataStream', params, auth_type=self.AUTH_USER_STREAM)
+    async def get_margin_balance(self, asset: Optional[str] = None) -> List[MarginBalance]:
+        """获取保证金余额（统一接口）"""
+        # Binance现货没有保证金概念
+        return []
     
-    async def close_listen_key(self, listen_key: str) -> Dict[str, Any]:
-        """关闭listenKey (USER_STREAM)"""
-        params = {'listen_key': listen_key}
-        return await self._request('DELETE', '/v3/userDataStream', params, auth_type=self.AUTH_USER_STREAM)
-    
-    # 交易历史 (USER_DATA)
-    async def get_trade_history(self, symbol: str, limit: int = 500, 
-                               from_id: Optional[int] = None, recv_window: Optional[int] = None) -> List[Dict[str, Any]]:
-        """获取交易历史 (USER_DATA)"""
-        params = {
-            'symbol': symbol,
-            'limit': limit
-        }
-        if from_id:
-            params['fromId'] = from_id
-        
-        return await self._request('GET', '/v3/myTrades', params, 
-                                 auth_type=self.AUTH_USER_DATA, recv_window=recv_window)
-    
-    # 账户交易统计 (USER_DATA)
-    async def get_account_trades(self, symbol: Optional[str] = None, 
-                                order_id: Optional[int] = None, recv_window: Optional[int] = None) -> List[Dict[str, Any]]:
-        """获取账户交易统计 (USER_DATA)"""
-        params = {}
-        if symbol:
-            params['symbol'] = symbol
-        if order_id:
-            params['orderId'] = order_id
-        
-        return await self._request('GET', '/v3/myTrades', params, 
-                                 auth_type=self.AUTH_USER_DATA, recv_window=recv_window)
-    
-    # 工具方法
-    def calculate_order_size(self, symbol: str, quantity: float, price: float) -> float:
-        """计算订单价值"""
-        return quantity * price
-    
-    def format_quantity(self, symbol: str, quantity: float) -> float:
-        """格式化数量（根据交易对精度要求）"""
-        # 这里可以根据不同交易对的精度要求进行格式化
-        # 暂时返回原值
-        return quantity
-    
-    def validate_auth_requirements(self, auth_type: str) -> bool:
-        """验证鉴权要求
-        
-        Args:
-            auth_type: 鉴权类型
+    async def get_instruments(self, inst_type: str = "SPOT") -> List[Instrument]:
+        """获取交易产品基础信息（统一接口）"""
+        try:
+            response = await self._request('GET', "/exchangeInfo")
             
-        Returns:
-            是否满足鉴权要求
-        """
-        if auth_type == self.AUTH_NONE:
-            return True
-        
-        if not self.api_key or not self.api_secret:
-            logger.error(f"鉴权类型 {auth_type} 需要API密钥和密钥")
-            return False
-        
-        return True
+            if 'symbols' in response:
+                instruments = []
+                for symbol_data in response['symbols']:
+                    if symbol_data.get('status') == 'TRADING':
+                        instrument = Instrument(
+                            symbol=symbol_data.get('symbol', ''),
+                            base_asset=symbol_data.get('baseAsset', ''),
+                            quote_asset=symbol_data.get('quoteAsset', ''),
+                            min_qty=float(symbol_data.get('filters', [{}])[0].get('minQty', '0')),
+                            max_qty=float(symbol_data.get('filters', [{}])[0].get('maxQty', '0')),
+                            step_size=float(symbol_data.get('filters', [{}])[0].get('stepSize', '0')),
+                            min_notional=float(symbol_data.get('filters', [{}])[0].get('minNotional', '0')),
+                            status=symbol_data.get('status', ''),
+                            exchange=self.exchange_type
+                        )
+                        instruments.append(instrument)
+                return instruments
+            else:
+                logger.error(f"获取交易产品信息失败: {response}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"获取交易产品信息异常: {e}")
+            return []
     
-    def get_auth_info(self) -> Dict[str, Any]:
-        """获取鉴权信息"""
-        return {
-            'has_api_key': bool(self.api_key),
-            'has_api_secret': bool(self.api_secret),
-            'is_demo': self.is_demo,
-            'supported_auth_types': [
-                self.AUTH_NONE,
-                self.AUTH_TRADE if self.api_key else None,
-                self.AUTH_USER_DATA if self.api_key else None,
-                self.AUTH_USER_STREAM if self.api_key else None
-            ]
-        } 
+    async def get_bill_details(self, asset: Optional[str] = None, limit: int = 100) -> List[BillDetail]:
+        """获取账单详情（统一接口）"""
+        # Binance现货没有账单详情API
+        return []

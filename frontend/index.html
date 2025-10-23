@@ -302,6 +302,11 @@
                                 <!-- 分页将在这里动态生成 -->
                             </ul>
                         </nav>
+                        
+                        <!-- 分页信息 -->
+                        <div id="customersPaginationInfo" class="text-center mt-2">
+                            <!-- 分页信息将在这里动态生成 -->
+                        </div>
                     </div>
                 </div>
             </div>
@@ -3029,24 +3034,20 @@
                         <div class="row">
                             <div class="col-md-6">
                                 <label for="strategyType" class="form-label">策略类型</label>
-                                <select class="form-select" id="strategyType" required>
+                                <select class="form-select" id="strategyType" name="strategyType" required>
                                     <option value="">请选择策略类型</option>
-                                    <option value="MA_Cross_Strategy">移动平均交叉策略</option>
-                                    <option value="RSI_Strategy">RSI超买超卖策略</option>
-                                    <option value="Grid_Strategy">网格交易策略</option>
-                                    <option value="Bollinger_Strategy">布林带策略</option>
-                                    <option value="MACD_Strategy">MACD策略</option>
+                                    <!-- 策略选项将通过JavaScript动态加载 -->
                                 </select>
                             </div>
                             <div class="col-md-6">
                                 <label for="strategyName" class="form-label">策略名称</label>
-                                <input type="text" class="form-control" id="strategyName" required>
+                                <input type="text" class="form-control" id="strategyName" name="strategyName" required>
                             </div>
                         </div>
                         <div class="row mt-3">
                             <div class="col-md-6">
                                 <label for="tradingSymbol" class="form-label">交易对</label>
-                                <select class="form-select" id="tradingSymbol" required>
+                                <select class="form-select" id="tradingSymbol" name="tradingSymbol" required>
                                     <option value="">请选择交易对</option>
                                     <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
                                     <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
@@ -3058,7 +3059,7 @@
                             </div>
                             <div class="col-md-6">
                                 <label for="timeframe" class="form-label">时间框架</label>
-                                <select class="form-select" id="timeframe" required>
+                                <select class="form-select" id="timeframe" name="timeframe" required>
                                     <option value="">请选择时间框架</option>
                                     <option value="1m">1分钟</option>
                                     <option value="5m">5分钟</option>
@@ -3072,21 +3073,21 @@
                         <div class="row mt-3">
                             <div class="col-md-6">
                                 <label for="riskPerTrade" class="form-label">每次交易风险比例</label>
-                                <input type="number" class="form-control" id="riskPerTrade" value="0.02" min="0.01" max="0.1" step="0.01" required>
+                                <input type="number" class="form-control" id="riskPerTrade" name="riskPerTrade" value="0.02" min="0.01" max="0.1" step="0.01" required>
                             </div>
                             <div class="col-md-6">
                                 <label for="maxPositions" class="form-label">最大持仓数量</label>
-                                <input type="number" class="form-control" id="maxPositions" value="3" min="1" max="10" required>
+                                <input type="number" class="form-control" id="maxPositions" name="maxPositions" value="3" min="1" max="10" required>
                             </div>
                         </div>
                         <div class="row mt-3">
                             <div class="col-md-6">
                                 <label for="stopLossPct" class="form-label">止损百分比</label>
-                                <input type="number" class="form-control" id="stopLossPct" value="0.02" min="0.005" max="0.1" step="0.005" required>
+                                <input type="number" class="form-control" id="stopLossPct" name="stopLossPct" value="0.02" min="0.005" max="0.1" step="0.005" required>
                             </div>
                             <div class="col-md-6">
                                 <label for="takeProfitPct" class="form-label">止盈百分比</label>
-                                <input type="number" class="form-control" id="takeProfitPct" value="0.06" min="0.01" max="0.5" step="0.01" required>
+                                <input type="number" class="form-control" id="takeProfitPct" name="takeProfitPct" value="0.06" min="0.01" max="0.5" step="0.01" required>
                             </div>
                         </div>
                         

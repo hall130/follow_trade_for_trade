@@ -141,16 +141,16 @@ class StrategyConfigManager:
                 
                 # RSI参数
                 "rsi_period": 14,
-                "rsi_oversold": 30,
-                "rsi_overbought": 70,
+                "rsi_oversold": 35,  # 放宽超卖条件
+                "rsi_overbought": 65,  # 放宽超买条件
                 
                 # 成交量确认参数
-                "volume_threshold": 1.5,
-                "price_change_threshold": 0.01,
+                "volume_threshold": 1.2,  # 降低成交量要求
+                "price_change_threshold": 0.005,  # 降低价格变化要求
                 
                 # 交易频率控制
-                "min_trade_interval": 5,  # 最小交易间隔5分钟
-                "max_trades_per_day": 50,  # 每日最大交易次数
+                "min_trade_interval": 1,  # 减少最小交易间隔到1分钟
+                "max_trades_per_day": 100,  # 增加每日最大交易次数
                 
                 # 止损止盈参数
                 "stop_loss_pct": 0.01,  # 1% 止损
@@ -376,6 +376,8 @@ class StrategyConfigManager:
             return False, [f"未知策略类型: {strategy_type}"]
         
         template = self.templates[strategy_type]
+        logger.info(f"验证策略配置 - 策略类型: {strategy_type}, 模板类型: {type(template)}")
+        logger.info(f"模板属性: required_fields={getattr(template, 'required_fields', 'None')}, validation_rules={getattr(template, 'validation_rules', 'None')}")
         
         # 检查必需字段
         for field in template.required_fields:

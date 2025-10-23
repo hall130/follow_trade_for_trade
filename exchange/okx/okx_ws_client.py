@@ -1591,11 +1591,19 @@ class OKXWebSocketClient:
     async def place_order(self, **kwargs):
         """下单模块 - 使用REST API进行真实下单"""
         try:
-            # 导入REST客户端
+            # 使用统一接口创建REST客户端
             try:
-                from exchange.okx.okx_rest_client import OKXRESTClient
-            except ImportError as import_error:
-                logger.error(f"❌ 无法导入REST客户端: {import_error}")
+                from exchange.exchange_factory import create_exchange_client
+                rest_client = create_exchange_client(
+                    exchange='okx',
+                    client_type='rest',
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    passphrase=self.passphrase,
+                    is_demo=self.is_demo
+                )
+            except Exception as import_error:
+                logger.error(f"❌ 无法创建REST客户端: {import_error}")
                 # 返回模拟响应作为后备
                 return {
                     "code": "0",
@@ -1607,14 +1615,6 @@ class OKXWebSocketClient:
                     "tag": kwargs.get('tag', '')
                 }]
             }
-            
-            # 创建REST客户端
-            rest_client = OKXRESTClient(
-                api_key=self.api_key,
-                api_secret=self.api_secret,
-                passphrase=self.passphrase,
-                is_demo=self.is_demo
-            )
             
             logger.info(f"📤 使用REST API下单: {kwargs}")
             
@@ -1651,11 +1651,11 @@ class OKXWebSocketClient:
     async def get_ticker(self, symbol: str):
         """获取价格 - 使用REST API"""
         try:
-            # 导入REST客户端
-            from exchange.okx.okx_rest_client import OKXRESTClient
-            
-            # 创建REST客户端
-            rest_client = OKXRESTClient(
+            # 使用统一接口创建REST客户端
+            from exchange.exchange_factory import create_exchange_client
+            rest_client = create_exchange_client(
+                exchange='okx',
+                client_type='rest',
                 api_key=self.api_key,
                 api_secret=self.api_secret,
                 passphrase=self.passphrase,
@@ -1679,11 +1679,11 @@ class OKXWebSocketClient:
     async def get_order(self, order_id: str):
         """获取订单 - 使用REST API"""
         try:
-            # 导入REST客户端
-            from exchange.okx.okx_rest_client import OKXRESTClient
-            
-            # 创建REST客户端
-            rest_client = OKXRESTClient(
+            # 使用统一接口创建REST客户端
+            from exchange.exchange_factory import create_exchange_client
+            rest_client = create_exchange_client(
+                exchange='okx',
+                client_type='rest',
                 api_key=self.api_key,
                 api_secret=self.api_secret,
                 passphrase=self.passphrase,
@@ -1820,243 +1820,6 @@ class OKXWebSocketClient:
             logger.debug("🎧 活跃性检查被取消")
         except Exception as e:
             logger.error(f"❌ 活跃性检查异常: {e}")
-    
-
-
-# 全局客户端管理器
-_global_client_manager = None
-
-def get_global_client_manager():
-    """获取全局客户端管理器"""
-    global _global_client_manager
-    if _global_client_manager is None:
-        _global_client_manager = WebSocketClientManager()
-    return _global_client_manager
-
-class WebSocketClientManager:
-    """WebSocket客户端管理器"""
-    
-    def __init__(self):
-        self._clients = {}  # 客户端池
-        self._client_locks = {}  # 客户端锁
-        self._connection_pool = {}  # 连接池
-        self._stats = {
-            'total_clients': 0,
-            'active_clients': 0,
-            'total_connections': 0,
-            'failed_connections': 0,
-            'memory_usage_mb': 0.0
-        }
-        self._cleanup_task = None
-        self._running = False
-        
-        # 启动清理任务
-        asyncio.create_task(self._start_cleanup_task())
-    
-    async def get_client(self, client_key: str, is_demo: bool = False, 
-                        api_key: str = '', api_secret: str = '', passphrase: str = '') -> OKXWebSocketClient:
-        """获取或创建WebSocket客户端 - 防止重复创建"""
-        try:
-            # 检查是否已存在客户端
-            if client_key in self._clients:
-                client = self._clients[client_key]
-                if client and client.is_connection_healthy():
-                    logger.info(f"复用现有客户端: {client_key}")
-                    return client
-                else:
-                    # 客户端存在但不健康，清理后重新创建
-                    logger.warning(f"客户端 {client_key} 不健康，清理后重新创建")
-                    await self._cleanup_client(client_key)
-            
-            # 创建新客户端
-            async with self._get_client_lock(client_key):
-                # 双重检查，防止重复创建
-                if client_key in self._clients:
-                    return self._clients[client_key]
-                
-                logger.info(f"创建新客户端: {client_key}")
-                client = OKXWebSocketClient(
-                    is_demo=is_demo,
-                    api_key=api_key,
-                    api_secret=api_secret,
-                    passphrase=passphrase
-                )
-                
-                # 设置客户端唯一标识
-                client._connection_id = client_key
-                
-                # 添加到客户端池
-                self._clients[client_key] = client
-                self._stats['total_clients'] += 1
-                self._stats['active_clients'] += 1
-                
-                # 记录连接信息
-                self._connection_pool[client_key] = {
-                    'created_time': time.time(),
-                    'last_used': time.time(),
-                    'connection_count': 0,
-                    'is_demo': is_demo
-                }
-                
-                logger.info(f"客户端 {client_key} 创建成功")
-                return client
-                
-        except Exception as e:
-            logger.error(f"获取客户端 {client_key} 失败: {e}")
-            self._stats['failed_connections'] += 1
-            raise
-    
-    def _get_client_lock(self, client_key: str) -> asyncio.Lock:
-        """获取客户端锁"""
-        if client_key not in self._client_locks:
-            self._client_locks[client_key] = asyncio.Lock()
-        return self._client_locks[client_key]
-    
-    async def _cleanup_client(self, client_key: str):
-        """清理指定客户端"""
-        try:
-            if client_key in self._clients:
-                client = self._clients[client_key]
-                if client:
-                    try:
-                        # 检查客户端状态，避免无效的状态转换
-                        current_status = client.state_machine.current_status
-                        if current_status != WebSocketStatus.INIT:
-                            await client.close()
-                        else:
-                            # 如果客户端处于INIT状态，直接清理资源
-                            await client._cleanup_connection()
-                    except Exception as e:
-                        logger.error(f"关闭客户端 {client_key} 异常: {e}")
-                
-                # 从池中移除
-                del self._clients[client_key]
-                if client_key in self._connection_pool:
-                    del self._connection_pool[client_key]
-                
-                self._stats['active_clients'] = max(0, self._stats['active_clients'] - 1)
-                logger.info(f"客户端 {client_key} 已清理")
-                
-        except Exception as e:
-            logger.error(f"清理客户端 {client_key} 异常: {e}")
-    
-    async def _start_cleanup_task(self):
-        """启动清理任务"""
-        if self._running:
-            return
-        
-        self._running = True
-        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        logger.info("WebSocket客户端管理器清理任务已启动")
-    
-    async def _cleanup_loop(self):
-        """清理循环"""
-        try:
-            while self._running:
-                await asyncio.sleep(300)  # 5分钟清理一次
-                await self._perform_cleanup()
-        except asyncio.CancelledError:
-            logger.info("清理任务被取消")
-        except Exception as e:
-            logger.error(f"清理任务异常: {e}")
-    
-    async def _perform_cleanup(self):
-        """执行清理"""
-        try:
-            current_time = time.time()
-            clients_to_cleanup = []
-            
-            # 检查需要清理的客户端
-            for client_key, client_info in self._connection_pool.items():
-                # 检查连接超时（1小时）
-                if current_time - client_info['created_time'] > 3600:
-                    clients_to_cleanup.append(client_key)
-                    continue
-                
-                # 检查最后使用时间（30分钟）
-                if current_time - client_info['last_used'] > 1800:
-                    clients_to_cleanup.append(client_key)
-                    continue
-            
-            # 执行清理
-            for client_key in clients_to_cleanup:
-                await self._cleanup_client(client_key)
-            
-            # 更新统计信息
-            self._update_stats()
-            
-            if clients_to_cleanup:
-                logger.info(f"清理了 {len(clients_to_cleanup)} 个客户端")
-                
-        except Exception as e:
-            logger.error(f"执行清理异常: {e}")
-    
-    def _update_stats(self):
-        """更新统计信息"""
-        try:
-            # 计算内存使用
-            total_memory = 0
-            for client in self._clients.values():
-                if client and hasattr(client, 'metrics'):
-                    # 估算每个客户端的内存使用（约1-2MB）
-                    total_memory += 1.5
-            
-            self._stats['memory_usage_mb'] = total_memory
-            self._stats['active_clients'] = len(self._clients)
-            
-        except Exception as e:
-            logger.error(f"更新统计信息异常: {e}")
-    
-    def get_stats(self) -> Dict:
-        """获取管理器统计信息"""
-        self._update_stats()
-        return self._stats.copy()
-    
-    def get_client_status(self) -> Dict:
-        """获取所有客户端状态"""
-        status = {}
-        for client_key, client in self._clients.items():
-            if client:
-                try:
-                    status[client_key] = client.get_connection_status()
-                except Exception as e:
-                    status[client_key] = {'error': str(e)}
-        return status
-    
-    async def close_all_clients(self):
-        """关闭所有客户端"""
-        try:
-            logger.info("开始关闭所有WebSocket客户端...")
-            
-            # 停止清理任务
-            self._running = False
-            if self._cleanup_task:
-                self._cleanup_task.cancel()
-                try:
-                    await self._cleanup_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # 关闭所有客户端
-            cleanup_tasks = []
-            for client_key in list(self._clients.keys()):
-                cleanup_tasks.append(self._cleanup_client(client_key))
-            
-            if cleanup_tasks:
-                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-            
-            logger.info("所有WebSocket客户端已关闭")
-            
-        except Exception as e:
-            logger.error(f"关闭所有客户端异常: {e}")
-    
-    def __del__(self):
-        """析构函数"""
-        try:
-            if self._running:
-                asyncio.create_task(self.close_all_clients())
-        except:
-            pass
 
 # 使用示例
 if __name__ == "__main__":

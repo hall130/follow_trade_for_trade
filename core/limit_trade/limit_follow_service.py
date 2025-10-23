@@ -13,7 +13,8 @@ from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from config.contract_config import get_contract_tick_sz_from_usdt_value, get_contract_min_sz, get_contract_tick_sz, get_contract_multiplier, get_contract_sz_precision, get_contract_value_in_usdt, get_contract_sz_from_usdt_value
-from exchange.okx.okx_rest_client import OKXRESTClient
+from exchange.exchange_factory import create_exchange_client
+from exchange.base_client import ExchangeType
 from utils.logger import logger
 from core.limit_trade.limit_follow_db import LimitFollowDB
 from core.limit_trade.limit_follow_models import LimitFollowOrder, LimitFollowStrategy, FollowOrderRequest, FollowOrderResponse
@@ -235,14 +236,22 @@ class EnhancedLimitFollowService:
                 self.metrics.record_api_call(success=False)
                 return
             
-            # 创建OKX客户端
-            from .exchange.okx.okx_rest_client import OKXRESTClient
+            # 创建统一交易所客户端
             from trade_service import get_global_is_demo
-            okx_client = OKXRESTClient(
-                customer['api_key'],
-                customer.get('secret_key') or customer.get('api_secret'),
-                customer['passphrase'],
-                is_demo=get_global_is_demo()
+            customer_data = {
+                'api_key': customer['api_key'],
+                'api_secret': customer.get('secret_key') or customer.get('api_secret'),
+                'passphrase': customer['passphrase'],
+                'is_demo': get_global_is_demo(),
+                'exchange': customer.get('exchange', 'okx')
+            }
+            okx_client = create_exchange_client(
+                exchange=customer_data['exchange'],
+                client_type='rest',
+                api_key=customer_data['api_key'],
+                api_secret=customer_data['api_secret'],
+                passphrase=customer_data['passphrase'],
+                is_demo=customer_data['is_demo']
             )
             
             # 添加重试机制处理50011错误
@@ -456,15 +465,23 @@ class EnhancedLimitFollowService:
                 logger.error(f"无法获取客户信息: {order['customer_uid']}")
                 return False
             
-            # 创建REST客户端
-            from okx_rest_client import OKXRESTClient
+            # 创建统一REST客户端
             from trade_service import get_global_is_demo
             
-            rest_client = OKXRESTClient(
-                api_key=customer_info['api_key'],
-                api_secret=customer_info.get('secret_key') or customer_info.get('api_secret'),
-                passphrase=customer_info['passphrase'],
-                is_demo=get_global_is_demo()
+            customer_data = {
+                'api_key': customer_info['api_key'],
+                'api_secret': customer_info.get('secret_key') or customer_info.get('api_secret'),
+                'passphrase': customer_info['passphrase'],
+                'is_demo': get_global_is_demo(),
+                'exchange': customer_info.get('exchange', 'okx')
+            }
+            rest_client = create_exchange_client(
+                exchange=customer_data['exchange'],
+                client_type='rest',
+                api_key=customer_data['api_key'],
+                api_secret=customer_data['api_secret'],
+                passphrase=customer_data['passphrase'],
+                is_demo=customer_data['is_demo']
             )
             
             # 如果有交易所订单ID，尝试取消订单
@@ -813,13 +830,22 @@ class EnhancedLimitFollowService:
                 logger.error(f"客户配置不存在: {customer_uid}")
                 return []
             
-            # 获取OKX客户端
+            # 获取统一交易所客户端
             from trade_service import get_global_is_demo
-            okx_client = OKXRESTClient(
-                customer['api_key'],
-                customer.get('secret_key') or customer.get('api_secret'),
-                customer['passphrase'],
-                is_demo=get_global_is_demo()
+            customer_data = {
+                'api_key': customer['api_key'],
+                'api_secret': customer.get('secret_key') or customer.get('api_secret'),
+                'passphrase': customer['passphrase'],
+                'is_demo': get_global_is_demo(),
+                'exchange': customer.get('exchange', 'okx')
+            }
+            okx_client = create_exchange_client(
+                exchange=customer_data['exchange'],
+                client_type='rest',
+                api_key=customer_data['api_key'],
+                api_secret=customer_data['api_secret'],
+                passphrase=customer_data['passphrase'],
+                is_demo=customer_data['is_demo']
             )
             
             # 获取持仓信息（OKX REST API不支持instType参数）
@@ -860,13 +886,22 @@ class EnhancedLimitFollowService:
                 logger.error(f"客户配置不存在: {customer_uid}")
                 return None
             
-            # 获取OKX客户端
+            # 获取统一交易所客户端
             from trade_service import get_global_is_demo
-            okx_client = OKXRESTClient(
-                customer['api_key'],
-                customer.get('secret_key') or customer.get('api_secret'),
-                customer['passphrase'],
-                is_demo=get_global_is_demo()
+            customer_data = {
+                'api_key': customer['api_key'],
+                'api_secret': customer.get('secret_key') or customer.get('api_secret'),
+                'passphrase': customer['passphrase'],
+                'is_demo': get_global_is_demo(),
+                'exchange': customer.get('exchange', 'okx')
+            }
+            okx_client = create_exchange_client(
+                exchange=customer_data['exchange'],
+                client_type='rest',
+                api_key=customer_data['api_key'],
+                api_secret=customer_data['api_secret'],
+                passphrase=customer_data['passphrase'],
+                is_demo=customer_data['is_demo']
             )
             
             # 获取账户余额
@@ -941,15 +976,23 @@ class EnhancedLimitFollowService:
                 logger.error(f"无法获取客户信息: {order.customer_uid}")
                 return False
             
-            # 创建REST客户端
-            from okx_rest_client import OKXRESTClient
+            # 创建统一REST客户端
             from trade_service import get_global_is_demo
             
-            rest_client = OKXRESTClient(
-                api_key=customer_info['api_key'],
-                api_secret=customer_info.get('secret_key') or customer_info.get('api_secret'),
-                passphrase=customer_info['passphrase'],
-                is_demo=get_global_is_demo()
+            customer_data = {
+                'api_key': customer_info['api_key'],
+                'api_secret': customer_info.get('secret_key') or customer_info.get('api_secret'),
+                'passphrase': customer_info['passphrase'],
+                'is_demo': get_global_is_demo(),
+                'exchange': customer_info.get('exchange', 'okx')
+            }
+            rest_client = create_exchange_client(
+                exchange=customer_data['exchange'],
+                client_type='rest',
+                api_key=customer_data['api_key'],
+                api_secret=customer_data['api_secret'],
+                passphrase=customer_data['passphrase'],
+                is_demo=customer_data['is_demo']
             )
             
             # 调整订单数量精度

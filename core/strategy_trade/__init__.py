@@ -1,47 +1,29 @@
 """
 策略交易模块
+重构后的策略交易系统，提供统一的策略开发、回测和管理功能
 
-提供策略交易的核心功能，包括：
-- 策略引擎
-- 策略管理器
-- 基础策略类
-- 技术指标工具
-- 监控和告警系统
-- 回测引擎
-- 数据库接口
-- 配置管理
+新架构特点：
+- 统一的策略基类
+- 事件驱动的回测引擎
+- 模块化的策略设计
+- 完整的API接口
+- 高性能执行
 """
 
-from .strategy_engine import StrategyEngine, RiskMonitor, PerformanceMonitor
-from .strategy_manager import StrategyManager
-from .async_strategy_manager import AsyncStrategyManager
-from .simple_strategy_manager import SimpleStrategyManager
-from .base_strategy import BaseStrategy, TradingSignal, Position
-from .strategy_db import StrategyDB
-from .backtest_engine import BacktestEngine
-from .monitoring import StrategyMonitor, AlertLevel, Alert
-from .strategy_scanner import StrategyScanner
-from .strategy_config_manager import StrategyConfigManager
-# from .api import StrategyAPI
-from .utils.indicators import TechnicalIndicators
+from .core import *
+from .strategies import *
+from .api import *
 
 __all__ = [
-    'StrategyEngine',
-    'StrategyManager',
-    'AsyncStrategyManager', 
-    'SimpleStrategyManager',
-    'BaseStrategy',
-    'TradingSignal',
-    'Position',
-    'StrategyDB',
-    'BacktestEngine',
-    'StrategyMonitor',
-    'AlertLevel',
-    'Alert',
-    'StrategyScanner',
-    'StrategyConfigManager',
-    # 'StrategyAPI',
-    'TechnicalIndicators',
-    'RiskMonitor',
-    'PerformanceMonitor',
+    # 核心模块
+    'IStrategy', 'BaseStrategy',
+    'IBacktestEngine', 'BacktestEngine',
+    'IStrategyManager', 'StrategyManager',
+    'EventEngine', 'Event', 'MarketDataEvent', 'SignalEvent',
+    # 策略模块
+    'StrategyBase',
+    'MACrossStrategy', 'RSIStrategy', 'MACDStrategy', 'BollingerStrategy',
+    'GridStrategy', 'HighFrequencyStrategy',
+    # API模块
+    'StrategyTradeAPI'
 ]

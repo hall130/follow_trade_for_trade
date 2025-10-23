@@ -12,7 +12,9 @@ from utils.logger import logger
 from dataclasses import fields
 import traceback
 import time
-from exchange.okx.okx_ws_client import get_global_client_manager, OKXWebSocketClient
+from exchange.exchange_factory import create_exchange_client
+from exchange.base_client import ExchangeType
+from exchange.unified_ws_client import get_global_client_manager
 # 导入合约配置
 from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
 
