@@ -147,6 +147,7 @@ CORS(app)  # 允许跨域请求
 # 全局数据库连接池
 db_pool = get_global_db_pool()
 trade_service = None  # 全局trade_service实例
+strategy_trade_integration = None  # 全局策略交易集成实例
 
 # 在模块导入时就初始化数据库连接池
 try:
@@ -167,7 +168,7 @@ def get_trade_service():
 
 def init_db():
     """初始化数据库连接池"""
-    global db_pool
+    global db_pool, strategy_trade_integration
     # 使用global_db_manager获取数据库连接池
     db_pool = get_global_db_pool()
     if db_pool is None:
@@ -196,8 +197,49 @@ def init_db():
                     logger.warning("钉钉机器人配置未完成，跳过初始化")
             else:
                 logger.info("钉钉通知已禁用或配置无效")
+    
     except Exception as e:
-        logger.error(f"钉钉机器人初始化失败: {e}")
+        logger.error(f"钉钉机器人初始化异常: {e}")
+    
+    # 初始化策略交易服务
+    try:
+        if STRATEGY_MODULE_AVAILABLE:
+            logger.info("🤖 正在初始化策略交易服务...")
+            from core.strategy_trade.integration import StrategyTradeIntegration
+            
+            # 创建 TradeService 实例（如果还没有）
+            global trade_service
+            if trade_service is None:
+                trade_service = TradeService(db_pool)
+                logger.info("TradeService 已创建")
+            
+            # 创建策略交易集成实例
+            strategy_trade_integration = StrategyTradeIntegration(
+                db_pool=db_pool,
+                trade_service=trade_service
+            )
+            
+            # 异步启动策略交易服务
+            asyncio.create_task(_async_start_strategy_trade())
+            
+            logger.info("✅ 策略交易服务已初始化并启动")
+        else:
+            logger.warning("⚠️ 策略交易模块不可用，跳过初始化")
+    
+    except Exception as e:
+        logger.error(f"❌ 策略交易服务初始化失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+async def _async_start_strategy_trade():
+    """异步启动策略交易服务"""
+    try:
+        global strategy_trade_integration
+        if strategy_trade_integration:
+            await strategy_trade_integration.start()
+            logger.info("✅ 策略交易服务异步启动完成")
+    except Exception as e:
+        logger.error(f"策略交易服务异步启动失败: {e}")
     
 def get_global_is_demo():
     """获取全局demo状态"""
@@ -9768,6 +9810,131 @@ def strategy_trade_health_check():
         return jsonify({
             'success': False,
             'message': f'健康检查失败: {str(e)}'
+        }), 500
+
+# ============================================================================
+# 策略交易实盘接口
+# ============================================================================
+
+@app.route('/api/v1/strategy-live/strategies', methods=['POST'])
+async def create_live_strategy():
+    """创建策略实盘交易实例"""
+    try:
+        if not strategy_trade_integration:
+            return jsonify({
+                'success': False,
+                'message': '策略交易服务未初始化'
+            }), 503
+        
+        data = await request.get_json()
+        result = await strategy_trade_integration.api_create_strategy(
+            strategy_type=data.get('strategy_type'),
+            name=data.get('name'),
+            config=data.get('config', {})
+        )
+        
+        if result.get('success'):
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        logger.error(f"创建策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/strategy-live/strategies/<strategy_id>/start', methods=['POST'])
+async def start_live_strategy(strategy_id):
+    """启动策略实盘交易"""
+    try:
+        if not strategy_trade_integration:
+            return jsonify({
+                'success': False,
+                'message': '策略交易服务未初始化'
+            }), 503
+        
+        data = await request.get_json()
+        result = await strategy_trade_integration.api_start_strategy(
+            strategy_id=strategy_id,
+            config=data
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"启动策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/strategy-live/strategies/<strategy_id>/stop', methods=['POST'])
+async def stop_live_strategy(strategy_id):
+    """停止策略实盘交易"""
+    try:
+        if not strategy_trade_integration:
+            return jsonify({
+                'success': False,
+                'message': '策略交易服务未初始化'
+            }), 503
+        
+        data = await request.get_json() if request.data else {}
+        close_positions = data.get('close_positions', True)
+        
+        result = await strategy_trade_integration.api_stop_strategy(
+            strategy_id=strategy_id,
+            close_positions=close_positions
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"停止策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/strategy-live/strategies/<strategy_id>/status', methods=['GET'])
+async def get_live_strategy_status(strategy_id):
+    """获取策略运行状态"""
+    try:
+        if not strategy_trade_integration:
+            return jsonify({
+                'success': False,
+                'message': '策略交易服务未初始化'
+            }), 503
+        
+        result = await strategy_trade_integration.api_get_strategy_status(strategy_id)
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"获取策略状态失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/strategy-live/strategies', methods=['GET'])
+async def list_live_strategies():
+    """列出所有策略（包括运行状态）"""
+    try:
+        if not strategy_trade_integration:
+            return jsonify({
+                'success': False,
+                'message': '策略交易服务未初始化'
+            }), 503
+        
+        result = await strategy_trade_integration.api_list_strategies()
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"列出策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
         }), 500
 
 # 策略交易API已通过装饰器注册

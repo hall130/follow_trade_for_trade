@@ -60,7 +60,7 @@
 |---------|---------|---------|
 | **多交易所支持** | OKX、Binance REST/WebSocket API | 统一多平台交易，提高流动性 |
 | **智能跟单系统** | 异步信号处理，毫秒级执行 | 自动化交易，降低人工成本 |
-| **策略交易引擎** | 5种核心策略，可插拔架构 | 多策略组合，提升收益稳定性 |
+| **策略交易引擎** | 5种核心策略，**支持实盘自动化** 🆕 | 从回测到实盘无缝切换，全自动交易 |
 | **风险控制系统** | 实时风险评估，自动干预 | 保护资金安全，控制回撤 |
 | **数据分析平台** | 完整回测，可视化分析 | 策略优化，数据驱动决策 |
 
@@ -69,6 +69,7 @@
 - **⚡ 高性能**：支持1000+并发连接，API响应时间<100ms
 - **🔄 高可用**：自动重连机制，智能重试，99.5%+系统可用性
 - **🧠 智能化**：动态参数配置，自适应策略优化
+- **🤖 全自动**：策略交易实盘自动化，从信号生成到订单执行全流程自动化 🆕
 - **🛡️ 安全性**：多层次安全机制，数据加密存储
 - **📈 可扩展**：微服务架构，支持水平扩展
 
@@ -286,16 +287,56 @@ async def process_trading_signal(signal):
 
 #### 🎨 策略生态系统
 
-| 策略类型 | 适用场景 | 预期收益 | 风险等级 | 回测支持 |
-|---------|---------|---------|---------|---------|
-| **移动平均交叉** | 趋势行情 | 年化15%+ | 中 | ✅ |
-| **RSI超买超卖** | 震荡行情 | 年化12%+ | 低 | ✅ |
-| **布林带策略** | 波动行情 | 年化18%+ | 中高 | ✅ |
-| **MACD策略** | 趋势确认 | 年化14%+ | 中 | ✅ |
-| **网格交易** | 横盘整理 | 年化20%+ | 高 | ✅ |
+| 策略类型 | 适用场景 | 预期收益 | 风险等级 | 回测支持 | 实盘支持 |
+|---------|---------|---------|---------|---------|---------|
+| **移动平均交叉** | 趋势行情 | 年化15%+ | 中 | ✅ | ✅ |
+| **RSI超买超卖** | 震荡行情 | 年化12%+ | 低 | ✅ | ✅ |
+| **布林带策略** | 波动行情 | 年化18%+ | 中高 | ✅ | ✅ |
+| **MACD策略** | 趋势确认 | 年化14%+ | 中 | ✅ | ✅ |
+| **网格交易** | 横盘整理 | 年化20%+ | 高 | ✅ | 🔄 开发中 |
 
-**💡 支持自定义策略**  
-**注**:策略回测不代表实盘效果，请谨慎使用
+**💡 支持自定义策略 + 实盘自动交易**  
+**⚠️ 注意**：策略回测不代表实盘效果，请谨慎使用
+
+#### 🔄 策略交易模式
+
+系统支持两种运行模式，从回测到实盘无缝切换：
+
+```
+📊 回测模式（已完成）
+  ├─ 历史数据回测
+  ├─ 性能指标分析  
+  ├─ 参数优化
+  └─ 风险评估
+
+🔴 实盘模式（已集成！）
+  ├─ 实时市场数据订阅（WebSocket）
+  ├─ 自动信号生成
+  ├─ 智能订单执行
+  └─ 实时风险控制
+```
+
+**快速启动实盘交易**：
+
+```bash
+# 1. 启动系统（策略交易服务自动加载）
+python main.py
+
+# 2. 创建策略
+curl -X POST http://localhost:5000/api/v1/strategy-live/strategies \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy_type": "RSI_Strategy",
+    "name": "my_rsi_btc",
+    "config": {"symbol": "BTC-USDT-SWAP", "timeframe": "1h"}
+  }'
+
+# 3. 启动实盘（演示账户）
+curl -X POST http://localhost:5000/api/v1/strategy-live/strategies/{id}/start \
+  -d '{"is_demo": true, "initial_capital": 1000}'
+
+# 📖 详细文档: docs/QUICK_START_LIVE_TRADING.md
+```
 
 #### 🚀 回测系统特性
 
@@ -421,6 +462,32 @@ open http://localhost:5000
 python test_okx_connection.py
 ```
 
+### 📖 下一步：阅读文档
+
+**🎯 文档导航：[📚 文档索引](docs/INDEX.md)** - 快速找到你需要的文档
+
+**⭐ 强烈推荐新用户阅读：[📖 用户使用手册](docs/USER_MANUAL.md)**
+
+使用手册涵盖：
+- ✅ 所有模块的详细使用方法（信号源跟单、限价跟单、策略交易、风险管理）
+- ✅ 完整的操作示例和命令
+- ✅ 常见问题和故障排查
+- ✅ 安全建议和最佳实践
+
+**快速跳转**：
+```
+📖 用户手册: docs/USER_MANUAL.md
+  ├─ 信号源跟单 (#2)
+  ├─ 限价跟单 (#3)
+  ├─ 策略回测 (#4)
+  ├─ 策略实盘 (#5)
+  └─ 风险管理 (#6)
+
+⚡ 策略实盘快速启动: docs/QUICK_START_LIVE_TRADING.md
+🔧 技术集成文档: docs/STRATEGY_LIVE_TRADING_INTEGRATION.md
+📚 完整文档索引: docs/INDEX.md
+```
+
 ## 📁 项目结构
 
 ```
@@ -446,17 +513,20 @@ follow_trade_for_trade/
 │   │   ├── 📁 core/           # 核心引擎
 │   │   │   ├── backtest.py    # 回测引擎（优化版）
 │   │   │   ├── engine.py      # 策略引擎
-│   │   │   └── manager.py     # 策略管理器
+│   │   │   ├── manager.py     # 策略管理器
+│   │   │   └── strategy.py    # 策略基类接口
 │   │   ├── 📁 strategies/     # 策略实现
 │   │   │   ├── base.py        # 策略基类（优化版）
 │   │   │   ├── 📁 technical/
-│   │   │   │   ├── rsi.py     # RSI策略
-│   │   │   │   ├── ma_cross.py # MA交叉策略
-│   │   │   │   ├── bollinger.py # 布林带策略
-│   │   │   │   └── macd.py    # MACD策略
+│   │   │   │   ├── rsi.py     # RSI策略（支持实盘）
+│   │   │   │   ├── ma_cross.py # MA交叉策略（支持实盘）
+│   │   │   │   ├── bollinger.py # 布林带策略（支持实盘）
+│   │   │   │   └── macd.py    # MACD策略（支持实盘）
 │   │   │   └── grid_strategy.py
-│   │   └── 📁 utils/
-│   │       └── indicators.py  # 技术指标库
+│   │   ├── 📁 utils/
+│   │   │   └── indicators.py  # 技术指标库
+│   │   ├── strategy_trade_service.py  # 实盘交易服务 🆕
+│   │   └── integration.py     # 系统集成模块 🆕
 │   └── module_manager.py      # 模块管理器
 ├── 📁 database/                # 数据访问层
 │   ├── db.py                  # 数据库连接池
@@ -478,9 +548,15 @@ follow_trade_for_trade/
 │   ├── logger.py             # 日志工具
 │   └── dingtalk_bot.py       # 钉钉机器人
 ├── 📁 docs/                    # 项目文档
-│   ├── API_DOCS.md           # API文档
-│   ├── FRONTEND.md           # 前端文档
-│   └── BACKTEST_OPTIMIZATION.md # 回测优化文档
+│   ├── INDEX.md              # 📚 文档索引（导航页） 🆕
+│   ├── USER_MANUAL.md        # 📖 用户使用手册（推荐阅读） 🆕
+│   ├── QUICK_START_LIVE_TRADING.md # ⚡ 实盘快速启动（5分钟） 🆕
+│   ├── STRATEGY_LIVE_TRADING_INTEGRATION.md # 🔧 实盘集成技术文档 🆕
+│   ├── BACKTEST_OPTIMIZATION.md # 📊 回测系统优化文档
+│   ├── OKX_API_OPTIMIZATION.md # 🌐 OKX API优化文档 🆕
+│   ├── FRONTEND_CHART_FIX.md # 📈 前端图表修复文档 🆕
+│   ├── API_DOCS.md           # 🔌 API接口文档
+│   └── FRONTEND.md           # 🎨 前端开发文档
 ├── main.py                    # 主程序入口
 ├── test_okx_connection.py    # OKX连接测试脚本 ⭐
 ├── requirements.txt           # 依赖列表
@@ -688,6 +764,56 @@ class ChartManager {
 ```
 
 ## 🆕 最新更新
+
+### 📅 2025年10月23日 - 策略交易实盘上线 🎉
+
+#### 🚀 重磅功能：策略交易实盘自动化
+
+系统现已支持策略交易实盘模式，从回测到实盘无缝切换！
+
+**核心特性**：
+- ✅ **WebSocket 实时数据订阅**：毫秒级数据接收，无延迟
+- ✅ **自动信号生成**：策略自动分析市场并生成交易信号
+- ✅ **智能订单执行**：自动下单、风险控制、仓位管理
+- ✅ **统一系统启动**：与现有交易系统完全集成
+- ✅ **演示账户支持**：安全测试，零风险
+
+**支持的策略**：
+- RSI 超买超卖策略 ✅
+- 移动平均交叉策略 ✅
+- 布林带策略 ✅
+- MACD 策略 ✅
+
+**系统架构**：
+```
+主系统启动 (python main.py)
+    ↓
+API 服务器初始化
+    ↓
+策略交易服务自动加载 ⭐
+    ├─ StrategyTradeService (WebSocket + 订单执行)
+    ├─ StrategyTradeIntegration (统一管理)
+    └─ API 端点注册
+```
+
+**快速体验**：
+```bash
+# 1. 启动系统
+python main.py
+
+# 2. 创建并启动策略（演示账户）
+curl -X POST http://localhost:5000/api/v1/strategy-live/strategies \
+  -d '{"strategy_type": "RSI_Strategy", "name": "demo_rsi", 
+       "config": {"symbol": "BTC-USDT-SWAP", "timeframe": "1h"}}'
+
+# 3. 策略自动交易！
+```
+
+**文档**：
+- 📖 快速入门：[docs/QUICK_START_LIVE_TRADING.md](docs/QUICK_START_LIVE_TRADING.md)
+- 📚 完整文档：[docs/STRATEGY_LIVE_TRADING_INTEGRATION.md](docs/STRATEGY_LIVE_TRADING_INTEGRATION.md)
+
+---
 
 ### 📅 2025年10月23日 - 回测系统全面优化 ⭐
 

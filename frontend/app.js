@@ -9978,7 +9978,6 @@ class OKXTradingApp {
         const equityData = [];
               
         if (results.equity_curve && Array.isArray(results.equity_curve)) {
-            console.log('📈 处理equity_curve数据:', results.equity_curve.length, '个点');
             results.equity_curve.forEach((point, index) => {
                 const timestamp = this.parseTradeTimestamp(point.timestamp || point.time);
                 const value = point.equity || point.total_value || point.value || 0;
@@ -10120,7 +10119,6 @@ class OKXTradingApp {
         
         if (markers.length > 0 && series && typeof series.setMarkers === 'function') {
             series.setMarkers(markers);
-            console.log(`✅ 已添加 ${markers.length} 个交易标记`);
         }
     }
 
