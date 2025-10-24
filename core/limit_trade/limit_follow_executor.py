@@ -1077,6 +1077,17 @@ class LimitFollowExecutor:
             # 使用传入的trade_direction
             follow_side = trade_direction
             
+            # 🆕 反向跟单逻辑：如果启用了反向跟单，反转开仓方向
+            if strategy.reverse_direction:
+                if follow_side == 'long':
+                    follow_side = 'short'
+                    logger.info(f"🔄 反向跟单已启用：信号源做多 → 跟单做空")
+                elif follow_side == 'short':
+                    follow_side = 'long'
+                    logger.info(f"🔄 反向跟单已启用：信号源做空 → 跟单做多")
+                else:
+                    logger.warning(f"⚠️ 未知的跟单方向: {follow_side}，无法反转")
+            
             # 检查是否应该跟单这个币种
             should_follow = False
             if strategy.symbol == 'SPECIFIC':

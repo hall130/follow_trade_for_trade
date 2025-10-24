@@ -33,6 +33,17 @@ class StrategyInfo:
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
+        # 尝试从策略对象获取配置
+        config = {}
+        if hasattr(self.strategy, 'config'):
+            config = self.strategy.config
+        elif hasattr(self.strategy, 'get_config'):
+            config = self.strategy.get_config()
+        
+        # 尝试获取 symbol 和 timeframe
+        symbol = getattr(self.strategy, 'symbol', '')
+        timeframe = getattr(self.strategy, 'timeframe', '')
+        
         return {
             'id': self.id,
             'name': self.name,
@@ -40,7 +51,10 @@ class StrategyInfo:
             'status': self.status,
             'created_time': self.created_time.isoformat(),
             'last_update': self.last_update.isoformat(),
-            'performance': self.performance
+            'performance': self.performance,
+            'config': config,
+            'symbol': symbol,
+            'timeframe': timeframe
         }
 
 class IStrategyManager(ABC):

@@ -1059,11 +1059,14 @@ def update_strategy(strategy_uid):
         data = request.get_json()
         is_demo = get_global_is_demo()
         
+        logger.info(f"[策略更新] strategy_uid={strategy_uid}, data={data}")
+        
         # 检查策略是否存在
         existing = db_pool.query(
             "SELECT 1 FROM strategies WHERE strategy_uid=%s",
-            (strategy_uid)
+            (strategy_uid,)
         )
+        logger.info(f"[策略更新] 策略存在检查: {existing}")
         if not existing:
             return jsonify({'success': 404, 'data': None, 'message': '策略不存在'}), 404
         
@@ -1132,7 +1135,7 @@ def delete_strategy(strategy_uid):
         # 检查策略是否存在
         existing = db_pool.query(
             "SELECT 1 FROM strategies WHERE strategy_uid=%s",
-            (strategy_uid)
+            (strategy_uid,)
         )
         if not existing:
             return jsonify({'success': 404, 'data': None, 'message': '策略不存在'}), 404
@@ -1191,6 +1194,31 @@ def get_rules():
         logger.error(f"获取规则失败: {e}")
         raise APIError(f"获取规则失败: {str(e)}")
 
+@app.route('/api/v1/rules/<rule_uid>', methods=['GET'])
+def get_rule(rule_uid):
+    """获取单个规则详情"""
+    try:
+        # 查询规则详情
+        rule = db_pool.query(
+            """SELECT r.*, s.name as strategy_name, s.strategy_type 
+               FROM rules r 
+               JOIN strategies s ON r.strategy_uid = s.strategy_uid 
+               WHERE r.rule_uid=%s""",
+            (rule_uid,)
+        )
+        
+        if not rule:
+            return jsonify({'success': 404, 'data': None, 'message': '规则不存在'}), 404
+        
+        return jsonify({
+            'success': 200,
+            'data': format_datetime(rule[0]),
+            'message': '获取规则详情成功'
+        })
+    except Exception as e:
+        logger.error(f"获取规则详情失败: {e}")
+        return jsonify({'success': 500, 'data': None, 'message': str(e)}), 500
+
 @app.route('/api/v1/rules', methods=['POST'])
 def create_rule():
     """创建规则"""
@@ -1240,10 +1268,16 @@ def update_rule(rule_uid):
     """更新规则（RESTful风格）"""
     try:
         data = request.get_json()
-        required_fields = ['strategy_uid']
-        for field in required_fields:
-            if field not in data:
-                raise APIError(f"缺少必填字段: {field}")
+        
+        # 如果前端没有传递strategy_uid，从数据库查询
+        if 'strategy_uid' not in data:
+            existing_rule = db_pool.query(
+                "SELECT strategy_uid FROM rules WHERE rule_uid=%s",
+                (rule_uid,)
+            )
+            if not existing_rule:
+                raise APIError("规则不存在", 404)
+            data['strategy_uid'] = existing_rule[0]['strategy_uid']
         
         # 检查规则是否存在
         existing = db_pool.query(
@@ -5207,6 +5241,28 @@ def get_signal_trades():
     except Exception as e:
         logger.error(f"获取信号源交易记录失败: {e}")
         raise APIError(f"获取信号源交易记录失败: {str(e)}")
+
+@app.route('/api/v1/signal-trades/<trade_uid>', methods=['GET'])
+def get_signal_trade(trade_uid):
+    """获取单个信号源交易详情"""
+    try:
+        # 查询信号源交易详情
+        trade = db_pool.query(
+            """SELECT * FROM signal_account_trades WHERE trade_uid=%s""",
+            (trade_uid,)
+        )
+        
+        if not trade:
+            return jsonify({'success': 404, 'data': None, 'message': '信号源交易不存在'}), 404
+        
+        return jsonify({
+            'success': 200,
+            'data': format_datetime(trade[0]),
+            'message': '获取信号源交易详情成功'
+        })
+    except Exception as e:
+        logger.error(f"获取信号源交易详情失败: {e}")
+        return jsonify({'success': 500, 'data': None, 'message': str(e)}), 500
 
 
 @app.route('/api/v1/signal-positions', methods=['GET'])

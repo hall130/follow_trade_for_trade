@@ -78,6 +78,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="message-forward">
+                            <i class="bi bi-send"></i> 消息转发
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="#" data-page="system">
                             <i class="bi bi-cpu"></i> 系统状态
                         </a>
@@ -458,6 +463,9 @@
                             <div class="btn-group">
                                 <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createStrategyTradeModal">
                                     <i class="bi bi-plus"></i> 创建策略
+                                </button>
+                                <button class="btn btn-info" id="refreshStrategiesBtn" title="扫描并刷新策略列表">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新策略
                                 </button>
                                 <button class="btn btn-success" id="initDatabaseBtn">
                                     <i class="bi bi-database"></i> 初始化数据库
@@ -1148,6 +1156,170 @@
                                             </tr>
                                         </thead>
                                         <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 消息转发页面 -->
+        <div id="message-forward-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-send"></i> 消息转发管理</h2>
+                            <div class="btn-group">
+                                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addPlatformModal">
+                                    <i class="bi bi-plus-circle"></i> 添加平台
+                                </button>
+                                <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addForwardRuleModal">
+                                    <i class="bi bi-arrow-left-right"></i> 添加转发规则
+                                </button>
+                                <button class="btn btn-info" id="refreshMessageForwardBtn">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 服务状态卡片 -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body">
+                                <h6 class="card-subtitle mb-2 text-muted">服务状态</h6>
+                                <h3 class="card-title" id="mf-service-status">
+                                    <span class="badge bg-secondary">未启动</span>
+                                </h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body">
+                                <h6 class="card-subtitle mb-2 text-muted">已连接平台</h6>
+                                <h3 class="card-title" id="mf-connected-platforms">0</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body">
+                                <h6 class="card-subtitle mb-2 text-muted">活跃规则</h6>
+                                <h3 class="card-title" id="mf-active-rules">0</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card">
+                            <div class="card-body">
+                                <h6 class="card-subtitle mb-2 text-muted">今日转发</h6>
+                                <h3 class="card-title" id="mf-today-forwarded">0</h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 平台管理标签页 -->
+                <ul class="nav nav-tabs mb-3" id="messageForwardTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="platforms-tab" data-bs-toggle="tab" data-bs-target="#platforms-content" type="button">
+                            <i class="bi bi-diagram-3"></i> 平台管理
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="rules-tab" data-bs-toggle="tab" data-bs-target="#rules-content" type="button">
+                            <i class="bi bi-arrow-left-right"></i> 转发规则
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-content" type="button">
+                            <i class="bi bi-clock-history"></i> 消息历史
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="messageForwardTabContent">
+                    <!-- 平台管理标签 -->
+                    <div class="tab-pane fade show active" id="platforms-content">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">已配置平台</h5>
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>平台</th>
+                                                <th>名称</th>
+                                                <th>状态</th>
+                                                <th>最后连接</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="platformsTableBody">
+                                            <tr>
+                                                <td colspan="5" class="text-center text-muted">暂无平台配置</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 转发规则标签 -->
+                    <div class="tab-pane fade" id="rules-content">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">转发规则列表</h5>
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>规则名称</th>
+                                                <th>源平台</th>
+                                                <th>目标平台</th>
+                                                <th>状态</th>
+                                                <th>已转发</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="rulesTableBody">
+                                            <tr>
+                                                <td colspan="6" class="text-center text-muted">暂无转发规则</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 消息历史标签 -->
+                    <div class="tab-pane fade" id="history-content">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">消息历史（最近100条）</h5>
+                                <div class="table-responsive">
+                                    <table class="table table-hover table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th>时间</th>
+                                                <th>源平台</th>
+                                                <th>内容</th>
+                                                <th>转发至</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="historyTableBody">
+                                            <tr>
+                                                <td colspan="4" class="text-center text-muted">暂无消息历史</td>
+                                            </tr>
+                                        </tbody>
                                     </table>
                                 </div>
                             </div>
@@ -2020,7 +2192,7 @@
                         
                         <!-- 跟单模式选择 -->
                         <div class="row">
-                            <div class="col-md-12">
+                            <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="limitFollowMode" class="form-label">跟单模式</label>
                                     <select class="form-select" id="limitFollowMode" required>
@@ -2029,26 +2201,20 @@
                                         <option value="signal">信号源模式 - 跟随系统信号源</option>
                                     </select>
                                     <div class="form-text">
-                                        <strong>跟单员模式：</strong>跟随OKX社区的优秀跟单员，客户可以是信号源账户或普通客户账户<br>
-                                        <strong>信号源模式：</strong>跟随系统内的信号源账户，跟单账户只能是普通客户账户
+                                        <small>👥 跟单员模式：跟随专业交易员 | 📡 信号源模式：跟随系统信号</small>
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                        <!-- 跟单订单类型选择 -->
-                        <div class="row">
-                            <div class="col-md-12">
+                            <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="followOrderTypes" class="form-label">跟单订单类型</label>
                                     <select class="form-select" id="followOrderTypes" required>
-                                        <option value="limit_only">只跟限价单 - 以限价单形式跟随，价格更优但可能不成交</option>
-                                        <option value="market_only">只跟市价单 - 以市价单形式跟随，立即成交但价格可能不利</option>
+                                        <option value="limit_only">只跟限价单 - 价格更优但可能不成交</option>
+                                        <option value="market_only">只跟市价单 - 立即成交但价格可能不利</option>
                                         <option value="both">限价+市价 - 同时下限价单和市价单，确保成交</option>
                                     </select>
                                     <div class="form-text">
-                                        <strong>只跟限价单：</strong>以限价单形式跟随，价格更优但可能不成交<br>
-                                        <strong>只跟市价单：</strong>以市价单形式跟随，立即成交但价格可能不利<br>
-                                        <strong>限价+市价：</strong>同时下限价单和市价单，确保成交
+                                        <small>💰 限价单：价格优 | ⚡ 市价单：立即成交 | 🎯 混合：兼顾价格和速度</small>
                                     </div>
                                 </div>
                             </div>
@@ -2056,7 +2222,7 @@
                         
                         <!-- 限价市价比例配置 -->
                         <div class="row" id="limitMarketRatioRow" style="display: none;">
-                            <div class="col-md-12">
+                            <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="limitMarketRatio" class="form-label">限价市价比例</label>
                                     <select class="form-select" id="limitMarketRatio">
@@ -2068,8 +2234,7 @@
                                         <option value="1:3">1:3 - 限价占25%，市价占75%</option>
                                     </select>
                                     <div class="form-text">
-                                        <strong>比例说明：</strong>当选择"限价+市价"模式时，可以设置限价单和市价单的开仓比例<br>
-                                        <strong>示例：</strong>总开仓0.4，选择3:1比例，则限价开仓0.3，市价开仓0.1
+                                        <small>🎯 保守型：3:1/4:1 | ⚡ 激进型：1:2/1:3 | ⚖️ 平衡型：1:1</small>
                                     </div>
                                 </div>
                             </div>
@@ -2117,38 +2282,55 @@
                                     <div class="form-check mb-2">
                                         <input class="form-check-input" type="radio" name="symbolType" id="symbolTypeAll" value="all" checked>
                                         <label class="form-check-label" for="symbolTypeAll">
-                                            <strong>跟随全部交易对</strong> - 自动跟随跟单员的所有交易品种
+                                            <strong>跟随全部</strong> - 自动跟随所有交易品种
                                         </label>
                                     </div>
                                     <div class="form-check mb-2">
                                         <input class="form-check-input" type="radio" name="symbolType" id="symbolTypeSpecific" value="specific">
                                         <label class="form-check-label" for="symbolTypeSpecific">
-                                            <strong>指定交易对</strong> - 只跟随特定的交易品种
+                                            <strong>指定交易对</strong> - 只跟随指定品种
                                         </label>
                                     </div>
                                     <div id="specificSymbolsContainer" style="display: none;">
                                         <div class="mb-2">
                                             <label for="limitFollowStrategySymbols" class="form-label">交易对列表</label>
-                                            <select class="form-select" id="limitFollowStrategySymbols" multiple>
-                                                <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
-                                                <option value="ETH-USDT-SWAP">ETH-USDT-SWAP</option>
-                                                <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
-                                                <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
-                                                <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
-                                                <option value="OKB-USDT-SWAP">OKB-USDT-SWAP</option>
-                                                <option value="XRP-USDT-SWAP">XRP-USDT-SWAP</option>
-                                                <option value="LTC-USDT-SWAP">LTC-USDT-SWAP</option>
-                                                <option value="PEPE-USDT-SWAP">PEPE-USDT-SWAP</option>
-                                                <option value="BCH-USDT-SWAP">BCH-USDT-SWAP</option>
+                                            <div class="input-group mb-2">
+                                                <input type="text" class="form-control" id="symbolSearchInput" placeholder="搜索交易对，如：BTC、ETH、SOL...">
+                                                <button class="btn btn-outline-secondary" type="button" id="searchSymbolsBtn">
+                                                    <i class="bi bi-search"></i> 搜索
+                                                </button>
+                                            </div>
+                                            <select class="form-select" id="limitFollowStrategySymbols" multiple style="height: 200px;">
+                                                <!-- 动态加载的交易对选项 -->
                                             </select>
-                                            <div class="form-text">按住Ctrl键可多选，留空表示跟随全部</div>
+                                            <div class="form-text">
+                                                <strong class="text-primary">🔍 智能搜索说明：</strong><br>
+                                                • 🔎 <strong>按币种搜索：</strong>输入 "BTC"、"ETH"、"SOL" 等币种名称<br>
+                                                • 🎯 <strong>按类型搜索：</strong>输入 "USDT" 显示所有USDT交易对<br>
+                                                • ⚡ <strong>实时搜索：</strong>输入2个字符后自动搜索（300ms防抖）<br>
+                                                • ⌨️ <strong>快捷操作：</strong>支持回车键快速搜索<br>
+                                                <br>
+                                                <strong class="text-success">✅ 多选操作指南：</strong><br>
+                                                • 🖱️ <strong>单个选择：</strong>直接点击选择交易对<br>
+                                                • 🖱️ <strong>多选操作：</strong>按住 <kbd>Ctrl</kbd> 键可多选不同币种<br>
+                                                • 🔄 <strong>累积选择：</strong>可多次搜索，累积选择多个币种<br>
+                                                • 💾 <strong>状态保持：</strong>搜索新币种时保持已选择的交易对<br>
+                                                <br>
+                                                <strong class="text-info">📋 操作示例：</strong><br>
+                                                • 🔍 搜索 "BTC" → 选择 "BTC-USDT-SWAP"<br>
+                                                • 🔍 搜索 "ETH" → 按住 <kbd>Ctrl</kbd> 选择 "ETH-USDT-SWAP"<br>
+                                                • 🔍 搜索 "SOL" → 按住 <kbd>Ctrl</kbd> 选择 "SOL-USDT-SWAP"<br>
+                                                • 🎯 <strong>最终结果：</strong>成功选择3个不同币种进行跟单<br>
+                                                <br>
+                                                <strong class="text-warning">⚠️ 注意事项：</strong><br>
+                                                • 📝 留空表示跟随全部交易对<br>
+                                                • ✏️ 支持自定义输入完整的交易对名称<br>
+                                                • 🚀 系统包含100+个常见交易对供选择
+                                            </div>
                                         </div>
                                     </div>
                                     <div class="form-text">
-                                        <strong>智能跟随：</strong><br>
-                                        • 选择"跟随全部"时，系统会自动检测跟单员的新增交易品种<br>
-                                        • 选择"指定交易对"时，只跟随您明确选择的品种<br>
-                                        • 建议使用"跟随全部"以获得更好的跟单效果
+                                        <small>🌐 跟随全部：不错失机会，适合新手 | 🎯 指定交易对：精准控制，适合进阶用户</small>
                                     </div>
                                 </div>
                             </div>
@@ -2160,6 +2342,23 @@
                                     启用策略
                                 </label>
                                 <div class="form-text">启用后策略将开始执行跟单操作</div>
+                            </div>
+                        </div>
+                        
+                        <!-- 🆕 反向跟单选项 -->
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="limitFollowStrategyReverseDirection">
+                                <label class="form-check-label" for="limitFollowStrategyReverseDirection">
+                                    <strong>🔄 反向跟单</strong> <span class="badge bg-warning text-dark">高级功能</span>
+                                </label>
+                                <div class="form-text">
+                                    <strong class="text-danger">反向操作说明：</strong><br>
+                                    • ✅ <strong>信号源做多</strong> → 跟单账户<strong>做空</strong><br>
+                                    • ✅ <strong>信号源做空</strong> → 跟单账户<strong>做多</strong><br>
+                                    • ⚠️ <strong>适用场景：</strong>适合对信号源持相反看法时使用<br>
+                                    • 🔥 <strong>风险提示：</strong>反向跟单存在更高风险，请谨慎使用
+                                </div>
                             </div>
                         </div>
                         
@@ -2188,10 +2387,7 @@
                                     <input type="number" class="form-control" id="limitFollowStrategyFollowValue" 
                                            step="0.1" min="0.1" max="500" value="1" required>
                                     <div class="form-text">
-                                        <strong>价格偏移百分比：</strong><br>
-                                        • 多仓跟单：比跟单员便宜 1%/2%/3%/4% 挂单<br>
-                                        • 空仓跟单：比跟单员贵 1%/2%/3%/4% 挂单<br>
-                                        • 每个订单数量相同，按策略配置计算
+                                        <small>多仓便宜1-4% | 空仓贵1-4% | 按策略配置计算</small>
                                     </div>
                                 </div>
                             </div>
@@ -2202,7 +2398,7 @@
                                     <input type="number" class="form-control" id="limitFollowStrategyMinFollowValue" 
                                            step="0.1" min="0.1" max="5" value="0.5" required>
                                     <div class="form-text">
-                                        <strong>最小价格偏移：</strong>防止价格偏移太小，建议 0.5%
+                                        <small>防止价格偏移太小，建议0.5%</small>
                                     </div>
                                 </div>
                                 <!-- 最大跟单值 -->
@@ -2211,11 +2407,11 @@
                                     <input type="number" class="form-control" id="limitFollowStrategyMaxFollowValue" 
                                            step="0.1" min="1" max="10" value="4" required>
                                     <div class="form-text">
-                                        <strong>最大价格偏移：</strong>控制风险上限，建议 4%
+                                        <small>控制风险上限，建议4%</small>
                                     </div>
                                 </div>
                                 <div class="mb-3">
-                                    <label for="limitFollowStrategyMaxOrdersPerSignal" class="form-label">每个信号源最大跟单数量</label>
+                                    <label for="limitFollowStrategyMaxOrdersPerSignal" class="form-label">最大跟单数量</label>
                                     <input type="number" class="form-control" id="limitFollowStrategyMaxOrdersPerSignal" min="1" max="10" value="4">
                                 </div>
                             </div>
@@ -2224,16 +2420,16 @@
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="limitFollowStrategyLeverage" class="form-label">开仓杠杆倍数</label>
+                                    <label for="limitFollowStrategyLeverage" class="form-label">开仓杠杆</label>
                                     <input type="number" class="form-control" id="limitFollowStrategyLeverage" value="10" min="1" max="125" step="1">
-                                    <div class="form-text">策略默认的开仓杠杆倍数</div>
+                                    <div class="form-text"><small>策略默认开仓杠杆</small></div>
                                 </div>
                             </div>
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="limitFollowStrategyMaxNetLeverage" class="form-label">最大净杠杆值</label>
+                                    <label for="limitFollowStrategyMaxNetLeverage" class="form-label">最大净杠杆</label>
                                     <input type="number" class="form-control" id="limitFollowStrategyMaxNetLeverage" value="10.0" min="0.1" max="100.0" step="0.1">
-                                    <div class="form-text">策略允许的最大净杠杆倍数</div>
+                                    <div class="form-text"><small>策略允许的最大净杠杆</small></div>
                                 </div>
                             </div>
                         </div>
@@ -3538,6 +3734,262 @@
                     <button type="button" class="btn btn-primary" id="exportBacktestBtn">
                         <i class="bi bi-download"></i> 导出报告
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加平台模态框 -->
+    <div class="modal fade" id="addPlatformModal" tabindex="-1" aria-labelledby="addPlatformModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addPlatformModalLabel">添加消息平台</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addPlatformForm">
+                        <div class="mb-3">
+                            <label for="platformType" class="form-label">平台类型</label>
+                            <select class="form-select" id="platformType" required>
+                                <option value="">请选择平台</option>
+                                <option value="telegram">Telegram</option>
+                                <option value="dingtalk">钉钉</option>
+                                <option value="wechat">微信</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="platformName" class="form-label">平台名称</label>
+                            <input type="text" class="form-control" id="platformName" placeholder="例如：主群机器人" required>
+                        </div>
+
+                        <!-- Telegram 配置 -->
+                        <div id="telegramConfig" class="platform-config" style="display: none;">
+                            <div class="alert alert-info">
+                                <strong>提示：</strong>从 @BotFather 获取 Bot Token
+                            </div>
+                            <div class="mb-3">
+                                <label for="telegramBotToken" class="form-label">Bot Token</label>
+                                <input type="text" class="form-control" id="telegramBotToken" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+                            </div>
+                        </div>
+
+                        <!-- 钉钉配置 -->
+                        <div id="dingtalkConfig" class="platform-config" style="display: none;">
+                            <div class="alert alert-info">
+                                <strong>提示：</strong>从钉钉群机器人设置获取 Webhook 和密钥
+                            </div>
+                            <div class="mb-3">
+                                <label for="dingtalkWebhook" class="form-label">Webhook URL</label>
+                                <input type="text" class="form-control" id="dingtalkWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=...">
+                            </div>
+                            <div class="mb-3">
+                                <label for="dingtalkSecret" class="form-label">加签密钥（可选）</label>
+                                <input type="text" class="form-control" id="dingtalkSecret" placeholder="SECxxxxxx">
+                            </div>
+                        </div>
+
+                        <!-- 微信配置 -->
+                        <div id="wechatConfig" class="platform-config" style="display: none;">
+                            <div class="alert alert-warning">
+                                <strong>注意：</strong>微信需要扫码登录，首次使用会显示二维码
+                            </div>
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="wechatHotReload" checked>
+                                <label class="form-check-label" for="wechatHotReload">
+                                    启用热登录（保存登录状态）
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="platformEnabled" checked>
+                            <label class="form-check-label" for="platformEnabled">
+                                立即启用此平台
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="savePlatformBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加转发规则模态框 -->
+    <div class="modal fade" id="addForwardRuleModal" tabindex="-1" aria-labelledby="addForwardRuleModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addForwardRuleModalLabel">添加转发规则</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="addForwardRuleForm">
+                        <!-- 基本信息 -->
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="ruleName" class="form-label">规则名称</label>
+                                    <input type="text" class="form-control" id="ruleName" placeholder="例如：TG转钉钉" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-check mt-4">
+                                    <input class="form-check-input" type="checkbox" id="ruleEnabled" checked>
+                                    <label class="form-check-label" for="ruleEnabled">
+                                        立即启用此规则
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 源配置 -->
+                        <h6 class="mt-3">源平台配置</h6>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="sourcePlatform" class="form-label">源平台</label>
+                                    <select class="form-select" id="sourcePlatform" required>
+                                        <option value="">请选择源平台</option>
+                                        <option value="telegram">Telegram</option>
+                                        <option value="dingtalk">钉钉</option>
+                                        <option value="wechat">微信</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="sourceChatIds" class="form-label">源聊天ID（可选，多个用逗号分隔）</label>
+                                    <input type="text" class="form-control" id="sourceChatIds" placeholder="留空表示所有聊天">
+                                    <small class="form-text text-muted">例如：-1001234567890, -1009876543210</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 目标配置 -->
+                        <h6 class="mt-3">目标平台配置</h6>
+                        <div class="mb-3">
+                            <label class="form-label">目标平台（可多选）</label>
+                            <div class="form-check">
+                                <input class="form-check-input target-platform" type="checkbox" id="targetTelegram" value="telegram">
+                                <label class="form-check-label" for="targetTelegram">Telegram</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input target-platform" type="checkbox" id="targetDingtalk" value="dingtalk">
+                                <label class="form-check-label" for="targetDingtalk">钉钉</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input target-platform" type="checkbox" id="targetWechat" value="wechat">
+                                <label class="form-check-label" for="targetWechat">微信</label>
+                            </div>
+                        </div>
+
+                        <div class="row" id="targetChatIdsContainer">
+                            <div class="col-md-4" id="telegramTargetContainer" style="display: none;">
+                                <div class="mb-3">
+                                    <label for="telegramTargetChatIds" class="form-label">Telegram 聊天ID</label>
+                                    <input type="text" class="form-control" id="telegramTargetChatIds" placeholder="例如：-1001234567890">
+                                </div>
+                            </div>
+                            <div class="col-md-4" id="dingtalkTargetContainer" style="display: none;">
+                                <div class="mb-3">
+                                    <label for="dingtalkTargetChatIds" class="form-label">钉钉群ID</label>
+                                    <input type="text" class="form-control" id="dingtalkTargetChatIds" placeholder="留空使用webhook默认群">
+                                </div>
+                            </div>
+                            <div class="col-md-4" id="wechatTargetContainer" style="display: none;">
+                                <div class="mb-3">
+                                    <label for="wechatTargetChatIds" class="form-label">微信 UserName</label>
+                                    <input type="text" class="form-control" id="wechatTargetChatIds" placeholder="例如：@@xxxxx">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 过滤条件 -->
+                        <h6 class="mt-3">过滤条件（可选）</h6>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="keywords" class="form-label">包含关键词（用逗号分隔）</label>
+                                    <input type="text" class="form-control" id="keywords" placeholder="例如：买入, 卖出, 交易">
+                                    <small class="form-text text-muted">包含任一关键词才转发</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label for="excludeKeywords" class="form-label">排除关键词（用逗号分隔）</label>
+                                    <input type="text" class="form-control" id="excludeKeywords" placeholder="例如：测试, 调试">
+                                    <small class="form-text text-muted">包含任一关键词则不转发</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 转换配置 -->
+                        <h6 class="mt-3">内容转换（可选）</h6>
+                        <div class="row">
+                            <div class="col-md-4">
+                                <div class="mb-3">
+                                    <label for="addPrefix" class="form-label">添加前缀</label>
+                                    <input type="text" class="form-control" id="addPrefix" placeholder="例如：[转发] ">
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="mb-3">
+                                    <label for="addSuffix" class="form-label">添加后缀</label>
+                                    <input type="text" class="form-control" id="addSuffix" placeholder="例如：- 来自TG">
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check mt-4">
+                                    <input class="form-check-input" type="checkbox" id="enableMarkdown">
+                                    <label class="form-check-label" for="enableMarkdown">
+                                        启用 Markdown 格式
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveForwardRuleBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑平台模态框 -->
+    <div class="modal fade" id="editPlatformModal" tabindex="-1" aria-labelledby="editPlatformModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="editPlatformModalLabel">编辑消息平台</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editPlatformId">
+                    <form id="editPlatformForm">
+                        <!-- 类似添加平台的表单，但是字段会预填充 -->
+                        <div class="mb-3">
+                            <label for="editPlatformName" class="form-label">平台名称</label>
+                            <input type="text" class="form-control" id="editPlatformName" required>
+                        </div>
+                        <div id="editPlatformConfigFields"></div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="editPlatformEnabled">
+                            <label class="form-check-label" for="editPlatformEnabled">
+                                启用此平台
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="updatePlatformBtn">更新</button>
                 </div>
             </div>
         </div>

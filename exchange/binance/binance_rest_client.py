@@ -190,8 +190,12 @@ class BinanceRESTClient(BaseRESTClient):
             if 'balances' in response:
                 positions = []
                 for balance in response['balances']:
-                    free = float(balance.get('free', '0'))
-                    locked = float(balance.get('locked', '0'))
+                    # 安全地转换数值，处理空字符串情况
+                    free_str = balance.get('free', '0')
+                    locked_str = balance.get('locked', '0')
+                    
+                    free = float(free_str if free_str != '' else '0')
+                    locked = float(locked_str if locked_str != '' else '0')
                     total = free + locked
                     
                     if total > 0:  # 只返回有余额的记录

@@ -6,7 +6,7 @@ from database.db import (
     get_rule_by_signal_and_strategy, get_rule_by_signal_source, update_signal_account_trade_close_volume_contract
 )
 from model.models import Rule, Strategy, SignalAccount, Customer, CustomerTrade
-from core.market_trade.trade_service import TradeService, get_global_is_demo
+from core.market_trade.trade_service import TradeService, get_global_is_demo, get_signal_processing_lock
 import asyncio
 from utils.logger import logger
 from dataclasses import fields
@@ -17,7 +17,6 @@ from exchange.base_client import ExchangeType
 from exchange.unified_ws_client import get_global_client_manager
 # 导入合约配置
 from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier
-
 # 导入屏蔽规则配置
 from config.blocking_config import get_blocking_rules, get_blocked_symbols, is_signal_source_blocked
 
@@ -629,7 +628,6 @@ class SignalService:
                 self._processing_follow_signals.add(follow_key)
                 
                 try:
-                    logger.info(f"on_order_trade: {order}")
                     strategies = get_strategies_by_signal_account(self.db_pool, signal_account.source_uid)
                     logger.info(f"on_signal_trade: 查到 strategies: {strategies}")
                     for strategy in strategies:
@@ -679,7 +677,6 @@ class SignalService:
                         
                         # ==================== 1. 普通跟单（市价单） ====================
                         # 使用信号源级别的锁防止同一信号源并发处理
-                        from trade_service import get_signal_processing_lock
                         signal_lock = get_signal_processing_lock(signal_account.source_uid, order['instId'], order['posSide'])
                         
                         # 创建客户跟单任务列表

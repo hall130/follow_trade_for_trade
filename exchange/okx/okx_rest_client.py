@@ -100,19 +100,19 @@ class OKXRESTClient(BaseRESTClient):
         else:
             request_path = f"/api/v5{endpoint}"
         
+        # 确保body格式正确（签名和发送使用相同的格式）
+        if data and method != 'GET':
+            body = json.dumps(data, separators=(',', ':'))
+        else:
+            body = ''
+        
         # 对于公共接口，不需要签名
         if endpoint.startswith('/market/'):
             headers = {
                 'Content-Type': 'application/json'
             }
         else:
-            headers = self._get_headers(method, request_path, json.dumps(data) if data else '')
-        
-        # 确保body格式正确
-        if data and method != 'GET':
-            body = json.dumps(data, separators=(',', ':'))
-        else:
-            body = ''
+            headers = self._get_headers(method, request_path, body)
         
         logger.debug(f"发送请求: {method} {url}")
         logger.debug(f"签名路径: {request_path}")
@@ -177,11 +177,19 @@ class OKXRESTClient(BaseRESTClient):
             # 转换统一格式到OKX格式
             okx_data = {
                 'instId': order_request.symbol,
-                'tdMode': 'cross',  # 默认全仓模式
+                'tdMode': order_request.td_mode or 'cross',  # 使用传入的td_mode或默认全仓模式
                 'side': order_request.side.value,
                 'ordType': order_request.order_type.value,
                 'sz': str(order_request.quantity)
             }
+            
+            # 添加持仓方向（如果提供）
+            if order_request.pos_side:
+                okx_data['posSide'] = order_request.pos_side
+            
+            # 添加杠杆倍数（如果提供）
+            if order_request.lever:
+                okx_data['lever'] = order_request.lever
             
             if order_request.price:
                 okx_data['px'] = str(order_request.price)
@@ -301,16 +309,28 @@ class OKXRESTClient(BaseRESTClient):
             
             positions = []
             for pos_data in response.get('data', []):
-                if float(pos_data.get('pos', '0')) > 0:  # 只返回有持仓的记录
+                # 安全地转换数值，处理空字符串情况
+                pos_str = pos_data.get('pos', '0')
+                if pos_str == '' or pos_str is None:
+                    pos_str = '0'
+                
+                if float(pos_str) > 0:  # 只返回有持仓的记录
+                    # 安全转换所有数值字段
+                    avg_px_str = pos_data.get('avgPx', '0')
+                    mark_px_str = pos_data.get('markPx', '0')
+                    upl_str = pos_data.get('upl', '0')
+                    margin_str = pos_data.get('margin', '0')
+                    lever_str = pos_data.get('lever', '1')
+                    
                     position = Position(
                         symbol=pos_data.get('instId', ''),
                         side=pos_data.get('posSide', '').lower(),
-                        size=float(pos_data.get('pos', '0')),
-                        entry_price=float(pos_data.get('avgPx', '0')),
-                        mark_price=float(pos_data.get('markPx', '0')),
-                        unrealized_pnl=float(pos_data.get('upl', '0')),
-                        margin=float(pos_data.get('margin', '0')),
-                        leverage=float(pos_data.get('lever', '1')),
+                        size=float(pos_str),
+                        entry_price=float(avg_px_str if avg_px_str != '' else '0'),
+                        mark_price=float(mark_px_str if mark_px_str != '' else '0'),
+                        unrealized_pnl=float(upl_str if upl_str != '' else '0'),
+                        margin=float(margin_str if margin_str != '' else '0'),
+                        leverage=float(lever_str if lever_str != '' else '1'),
                         exchange=self.exchange_type
                     )
                     positions.append(position)

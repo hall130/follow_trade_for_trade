@@ -224,17 +224,29 @@ class BybitRESTClient(BaseRESTClient):
             if response.get('retCode') == 0 and response.get('result', {}).get('list'):
                 positions = []
                 for pos_data in response['result']['list']:
-                    size = float(pos_data.get('size', '0'))
+                    # 安全地转换数值，处理空字符串情况
+                    size_str = pos_data.get('size', '0')
+                    if size_str == '' or size_str is None:
+                        size_str = '0'
+                    
+                    size = float(size_str)
                     if size > 0:  # 只返回有持仓的记录
+                        # 安全转换所有数值字段
+                        avg_price_str = pos_data.get('avgPrice', '0')
+                        mark_price_str = pos_data.get('markPrice', '0')
+                        pnl_str = pos_data.get('unrealisedPnl', '0')
+                        balance_str = pos_data.get('positionBalance', '0')
+                        leverage_str = pos_data.get('leverage', '1')
+                        
                         position = Position(
                             symbol=pos_data.get('symbol', ''),
                             side=pos_data.get('side', '').lower(),
                             size=size,
-                            entry_price=float(pos_data.get('avgPrice', '0')),
-                            mark_price=float(pos_data.get('markPrice', '0')),
-                            unrealized_pnl=float(pos_data.get('unrealisedPnl', '0')),
-                            margin=float(pos_data.get('positionBalance', '0')),
-                            leverage=float(pos_data.get('leverage', '1')),
+                            entry_price=float(avg_price_str if avg_price_str != '' else '0'),
+                            mark_price=float(mark_price_str if mark_price_str != '' else '0'),
+                            unrealized_pnl=float(pnl_str if pnl_str != '' else '0'),
+                            margin=float(balance_str if balance_str != '' else '0'),
+                            leverage=float(leverage_str if leverage_str != '' else '1'),
                             exchange=self.exchange_type
                         )
                         positions.append(position)

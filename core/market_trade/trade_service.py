@@ -488,7 +488,13 @@ class ConnectionManager:
                 client = self._clients[client_key]
                 if client:
                     try:
-                        await client.close()
+                        # 检查close方法是否是异步的
+                        import asyncio
+                        if asyncio.iscoroutinefunction(client.close):
+                            await client.close()
+                        else:
+                            # 如果是同步方法，直接调用
+                            client.close()
                     except Exception as e:
                         logger.warning(f"关闭连接 {client_key} 时出错: {e}")
                 
@@ -888,7 +894,13 @@ class TradeService:
             if hasattr(client, 'ws') and client.ws and not getattr(client.ws, 'closed', False):
                 logger.info(f"🧹 关闭客户{customer_uid}的WebSocket连接...")
                 try:
-                    await client.ws.close()
+                    # 检查close方法是否是异步的
+                    import asyncio
+                    if asyncio.iscoroutinefunction(client.ws.close):
+                        await client.ws.close()
+                    else:
+                        # 如果是同步方法，直接调用
+                        client.ws.close()
                     logger.info(f"🧹 客户{customer_uid}的WebSocket连接已关闭")
                 except Exception as e:
                     logger.warning(f"🧹 关闭WebSocket连接时出现异常: {e}")
@@ -1485,14 +1497,15 @@ class TradeService:
                         order_start_time = time.time()
                         
                         res = await client.place_order(
-                            instId=symbol,
-                            tdMode='cross',
+                            symbol=symbol,
                             side=direction,
-                            ordType='market',
-                            sz=str(sz),
-                            clOrdId=clOrdId,
-                            reduceOnly='true' if reduceOnly else 'false',
+                            order_type='market',
+                            quantity=float(sz),
+                            client_order_id=clOrdId,
+                            # OKX 特定参数
+                            tdMode='cross',
                             posSide=pos_side,
+                            reduceOnly=reduceOnly,
                             tag='6618f740e7f1BCDE'
                         )
                         
@@ -3791,7 +3804,12 @@ class TradeService:
             # 清理临时连接
             if temp_client:
                 try:
-                    await temp_client.close()
+                    # 检查close方法是否是异步的
+                    import asyncio
+                    if asyncio.iscoroutinefunction(temp_client.close):
+                        await temp_client.close()
+                    else:
+                        temp_client.close()
                     logger.info(f"[自动修复] 已清理临时连接: {customer_uid}")
                 except Exception as e:
                     logger.error(f"[自动修复] 清理临时连接失败: {customer_uid}, error={e}")
@@ -4427,11 +4445,21 @@ class TradeService:
             positions_data = positions_response.get('positions', [])
             for pos in positions_data:
                 try:
-                    sz = float(pos.get('pos', '0') or '0')
+                    # 安全地转换数值，处理空字符串情况
+                    pos_str = pos.get('pos', '0')
+                    if pos_str == '' or pos_str is None:
+                        pos_str = '0'
+                    
+                    sz = float(pos_str)
                     if sz > 0:  # 有持仓
-                        avg_px = float(pos.get('avgPx', '0') or '0')
-                        upl = float(pos.get('upl', '0') or '0')
-                        margin = float(pos.get('margin', '0') or '0')
+                        # 安全转换所有数值字段
+                        avg_px_str = pos.get('avgPx', '0')
+                        upl_str = pos.get('upl', '0')
+                        margin_str = pos.get('margin', '0')
+                        
+                        avg_px = float(avg_px_str if avg_px_str != '' else '0')
+                        upl = float(upl_str if upl_str != '' else '0')
+                        margin = float(margin_str if margin_str != '' else '0')
                         
                         positions.append({
                             'symbol': pos.get('instId'),
@@ -4832,7 +4860,12 @@ class TradeService:
                         if old_subs:
                             logger.info(f"🔄 旧连接订阅列表: {old_subs}")
                     
-                    await old_client.close()
+                    # 检查close方法是否是异步的
+                    import asyncio
+                    if asyncio.iscoroutinefunction(old_client.close):
+                        await old_client.close()
+                    else:
+                        old_client.close()
                     logger.info(f"✅ 客户 {customer_uid} 旧连接已关闭")
                 except Exception as e:
                     logger.warning(f"⚠️ 关闭旧连接时出错: {e}")
@@ -4952,7 +4985,12 @@ class TradeService:
                         if old_subs:
                             logger.info(f"🔄 旧连接订阅列表: {old_subs}")
                     
-                    await old_client.close()
+                    # 检查close方法是否是异步的
+                    import asyncio
+                    if asyncio.iscoroutinefunction(old_client.close):
+                        await old_client.close()
+                    else:
+                        old_client.close()
                     logger.info(f"✅ 信号源 {source_uid} 旧连接已关闭")
                 except Exception as e:
                     logger.warning(f"⚠️ 关闭旧连接时出错: {e}")
@@ -6007,8 +6045,8 @@ class TradeService:
     async def _send_customer_stop_loss_notification(self, customer, old_init_assets, current_assets):
         """发送客户止损通知"""
         try:
-            customer_uid = customer.get('customer_uid')
-            customer_name = customer.get('customer_name', customer_uid)
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
+            customer_name = self._get_customer_field(customer, 'customer_name', customer_uid)
             
             notification_info = {
                 "title": "客户止损通知",
@@ -6440,8 +6478,20 @@ class TradeService:
             logger.info(f"[限价跟单] 处理策略: 客户={strategy['customer_uid']}, 信号源={signal_source_uid}")
             logger.info(f"[限价跟单] 策略详情: {strategy}")
             
+            # 🆕 检查是否需要反向跟单
+            reverse_direction = strategy.get('reverse_direction', 0)
+            if reverse_direction:
+                original_pos_side = pos_side
+                if pos_side == 'long':
+                    pos_side = 'short'
+                    logger.info(f"🔄 [限价跟单-反向] 客户{strategy['customer_uid']}: 信号源做多 → 跟单做空 (long→short)")
+                elif pos_side == 'short':
+                    pos_side = 'long'
+                    logger.info(f"🔄 [限价跟单-反向] 客户{strategy['customer_uid']}: 信号源做空 → 跟单做多 (short→long)")
+                logger.info(f"🔄 [限价跟单-反向] 最终方向: {original_pos_side} → {pos_side}")
+            
             # 1. 计算目标仓位（使用单次交易仓位，处理连续开仓情况）
-            signal_position = await self._get_signal_position_for_single_trade(signal_source_uid, symbol, pos_side)
+            signal_position = await self._get_signal_position_for_single_trade(signal_source_uid, symbol, pos_side if not reverse_direction else original_pos_side)
             if signal_position <= 0:
                 logger.warning(f"[限价跟单] 信号源无当前交易持仓，跳过处理")
                 return
@@ -7795,12 +7845,19 @@ class TradeService:
             total_closed = 0.0
             for strategy in strategies:
                 # 查询该策略下已成交的限价单
+                # 对于反向跟单，需要查找客户的实际持仓方向
+                customer_pos_side = pos_side
+                if strategy.get('reverse_direction', 0):
+                    # 反向跟单：客户持仓方向与信号源相反
+                    customer_pos_side = 'short' if pos_side == 'long' else 'long'
+                    logger.info(f"[限价跟单] 反向跟单策略 {strategy['id']}: 信号源{pos_side} → 客户{customer_pos_side}")
+                
                 filled_orders = self.db_pool.query(
                     """SELECT * FROM limit_follow_orders
                     WHERE strategy_id=%s AND symbol=%s AND pos_side=%s
                     AND status='filled'
                     ORDER BY created_at ASC""",
-                    (strategy['id'], symbol, pos_side)
+                    (strategy['id'], symbol, customer_pos_side)
                 )
                 
                 if filled_orders:
@@ -7810,7 +7867,7 @@ class TradeService:
                     total_need_close = sum(float(order['order_size']) for order in filled_orders)
                     
                     # 调用平仓方法
-                    closed = await self._close_filled_orders(strategy, symbol, pos_side, total_need_close)
+                    closed = await self._close_filled_orders(strategy, symbol, customer_pos_side, total_need_close)
                     total_closed += closed
                     
                     logger.info(f"[限价跟单] 策略 {strategy['id']} 平仓完成，平仓数量: {closed}")
@@ -7934,7 +7991,7 @@ class TradeService:
                 )
             
             if not filled_orders:
-                logger.info(f"[限价跟单] 没有已成交的限价单需要平仓")
+                logger.info(f"[限价跟单] 没有已成交的订单需要平仓")
                 return 0
             
             closed = 0.0
@@ -8731,7 +8788,7 @@ class TradeService:
                         'api_secret': api_secret,
                         'passphrase': passphrase,
                         'is_demo': is_demo,
-                        'exchange': customer.get('exchange', 'OKX')  # 支持多交易所
+                        'exchange': getattr(customer, 'exchange', 'OKX')  # 支持多交易所
                     }
                     rest_client = create_exchange_rest_client(customer_data)
                     
@@ -9702,11 +9759,11 @@ class TradeService:
     async def _get_customer_exchange_positions(self, customer):
         """获取客户交易所持仓"""
         try:
-            customer_uid = customer.get('customer_uid')
-            api_key = customer.get('api_key')
-            api_secret = customer.get('api_secret')
-            passphrase = customer.get('passphrase')
-            is_demo = customer.get('is_demo', False)
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
+            api_key = self._get_customer_field(customer, 'api_key')
+            api_secret = self._get_customer_field(customer, 'api_secret')
+            passphrase = self._get_customer_field(customer, 'passphrase')
+            is_demo = self._get_customer_field(customer, 'is_demo', False)
             
             if not api_key or not api_secret or not passphrase:
                 logger.warning(f"客户 {customer_uid} API配置不完整")
@@ -9718,7 +9775,7 @@ class TradeService:
                 'api_secret': api_secret,
                 'passphrase': passphrase,
                 'is_demo': is_demo,
-                'exchange': customer.get('exchange', 'OKX')  # 支持多交易所
+                'exchange': self._get_customer_field(customer, 'exchange', 'OKX')  # 支持多交易所
             }
             rest_client = create_exchange_rest_client(customer_data)
             
@@ -9731,7 +9788,7 @@ class TradeService:
             return [pos for pos in positions_response.get('positions', []) if float(pos.get('size', '0')) > 0]
             
         except Exception as e:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             logger.error(f"获取客户 {customer_uid} 交易所持仓失败: {e}")
             return []
 
@@ -9912,7 +9969,7 @@ class TradeService:
     async def _place_customer_open_order(self, customer, inst_id, pos_side, sz, px, signal_trade, execution_type, execution_reason):
         """为客户下开仓订单"""
         try:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             
             # 获取客户策略信息
             strategy_uid = None
@@ -10001,14 +10058,14 @@ class TradeService:
                 return {'success': False, 'error': error_msg}
             
         except Exception as e:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             logger.error(f"[客户补偿] 客户 {customer_uid} 开仓订单执行失败: {e}")
             return {'success': False, 'error': str(e)}
 
     async def _place_customer_close_order(self, customer, inst_id, pos_side, sz, px, signal_trade, execution_type, execution_reason):
         """为客户下平仓订单"""
         try:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             
             # 这里调用现有的客户平仓逻辑
             order_result = await self.async_place_order(
@@ -10032,14 +10089,14 @@ class TradeService:
                 return {'success': False, 'error': error_msg}
             
         except Exception as e:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             logger.error(f"[客户补偿] 客户 {customer_uid} 平仓订单执行失败: {e}")
             return {'success': False, 'error': str(e)}
 
     async def _place_customer_reduce_order(self, customer, inst_id, pos_side, sz, px, signal_trade, execution_type, execution_reason):
         """为客户下减仓订单"""
         try:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             
             # 这里调用现有的客户减仓逻辑
             order_result = await self.async_place_order(
@@ -10063,7 +10120,7 @@ class TradeService:
                 return {'success': False, 'error': error_msg}
             
         except Exception as e:
-            customer_uid = customer.get('customer_uid')
+            customer_uid = self._get_customer_field(customer, 'customer_uid')
             logger.error(f"[客户补偿] 客户 {customer_uid} 减仓订单执行失败: {e}")
             return {'success': False, 'error': str(e)}
 
@@ -10074,8 +10131,20 @@ class TradeService:
         try:
             logger.info(f"[带单员-市价跟单] 处理市价跟单策略: 客户={strategy['customer_uid']}, 信号源={signal_source_uid}")
             
+            # 🆕 检查是否需要反向跟单
+            reverse_direction = strategy.get('reverse_direction', 0)
+            if reverse_direction:
+                original_pos_side = pos_side
+                if pos_side == 'long':
+                    pos_side = 'short'
+                    logger.info(f"🔄 [市价跟单-反向] 客户{strategy['customer_uid']}: 信号源做多 → 跟单做空 (long→short)")
+                elif pos_side == 'short':
+                    pos_side = 'long'
+                    logger.info(f"🔄 [市价跟单-反向] 客户{strategy['customer_uid']}: 信号源做空 → 跟单做多 (short→long)")
+                logger.info(f"🔄 [市价跟单-反向] 最终方向: {original_pos_side} → {pos_side}")
+            
             # 1. 计算目标仓位
-            signal_position = await self._get_signal_position_for_single_trade(signal_source_uid, symbol, pos_side)
+            signal_position = await self._get_signal_position_for_single_trade(signal_source_uid, symbol, pos_side if not reverse_direction else original_pos_side)
             if signal_position <= 0:
                 logger.warning(f"[带单员-市价跟单] 信号源无当前交易持仓，跳过处理")
                 return
@@ -10149,20 +10218,20 @@ class TradeService:
                 logger.warning(f"[带单员-市价跟单] 调整后数量为0，跳过下单")
                 return False
             
-            # 构建订单参数
-            order_params = {
-                'instId': symbol,
-                'tdMode': 'cross',  # 全仓模式
-                'side': 'buy' if pos_side == 'long' else 'sell',
-                'posSide': pos_side,  # 开仓方向
-                'ordType': 'market',  # 市价单
-                'sz': str(adjusted_size),  # 调整后的数量
-                'clOrdId': order_uid,  # 客户端订单ID
-            }
-            
-            # 设置杠杆
+            # 构建订单参数 - 使用统一REST客户端的参数格式
             leverage = strategy.get('custom_leverage') or strategy.get('leverage', 10)
-            order_params['lever'] = str(leverage)
+            
+            order_params = {
+                'symbol': symbol,
+                'side': 'buy' if pos_side == 'long' else 'sell',
+                'order_type': 'market',  # 市价单
+                'quantity': float(adjusted_size),  # 调整后的数量（float）
+                'client_order_id': order_uid,  # 客户端订单ID
+                # OKX 特定参数
+                'tdMode': 'cross',  # 全仓模式
+                'posSide': pos_side,  # 开仓方向
+                'lever': str(leverage)  # 杠杆
+            }
             
             logger.info(f"[带单员-市价跟单] 下市价单参数: {order_params}")
             

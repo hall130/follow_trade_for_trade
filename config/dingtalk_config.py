@@ -5,7 +5,7 @@
 DINGTALK_CONFIG = {
     "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=975dac051a1123148bb57ead53fbef34705b52d3317ac43a20d966fab8135af7",
     "secret": "SECabf44154148d047463cec76ae4a0dbe09a1ba70d1fe260077ee0ee372dbd0e2a",
-    "enabled": True,  # 临时启用用于测试
+    "enabled": False,  # 临时启用用于测试
     "notifications": {
         "trade": {
             "enabled": True,

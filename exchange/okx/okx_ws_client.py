@@ -1046,8 +1046,10 @@ class OKXWebSocketClient:
                 logger.warning("缺少API密钥，跳过登录")
                 return
             
-            # 生成时间戳
+            # 生成时间戳 - WebSocket 登录使用 Unix 时间戳（秒）
             timestamp = str(int(time.time()))
+            
+            logger.debug(f"WebSocket登录时间戳: {timestamp}")
             
             # 构建登录消息
             login_msg = {
@@ -1072,17 +1074,24 @@ class OKXWebSocketClient:
             raise
 
     def _generate_signature(self, timestamp: str) -> str:
-        """生成签名"""
+        """生成签名 - WebSocket 登录专用"""
         try:
+            # OKX WebSocket 登录签名格式: timestamp + 'GET' + '/users/self/verify'
             message = timestamp + 'GET' + '/users/self/verify'
+            logger.debug(f"WebSocket签名消息: {message}")
+            logger.debug(f"API密钥长度: {len(self.api_secret)}")
+            
+            # WebSocket 登录使用原始编码方式
             mac = hmac.new(
                 bytes(self.api_secret, encoding='utf8'),
                 bytes(message, encoding='utf-8'),
                 digestmod='sha256'
             )
-            return base64.b64encode(mac.digest()).decode()
+            signature = base64.b64encode(mac.digest()).decode()
+            logger.debug(f"生成的WebSocket签名: {signature}")
+            return signature
         except Exception as e:
-            logger.error(f"签名生成异常: {e}")
+            logger.error(f"WebSocket签名生成异常: {e}")
             return ""
     
     async def _delayed_reconnect(self):

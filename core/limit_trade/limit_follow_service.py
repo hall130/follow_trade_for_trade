@@ -522,11 +522,12 @@ class EnhancedLimitFollowService:
     async def _check_position_status_consistency(self):
         """检查并修复订单与持仓状态的一致性"""
         try:
-            # 查找所有已成交但相关持仓已完全平仓的限价跟单订单
+            # 查找所有已成交但相关持仓已完全平仓的限价跟单订单（排除市价单）
             inconsistent_orders = self.db_pool.query("""
                 SELECT lfo.order_uid, lfo.customer_uid, lfo.symbol, lfo.pos_side, lfo.trader_unique_name
                 FROM limit_follow_orders lfo
                 WHERE lfo.status = 'filled'
+                AND lfo.order_type = 'limit'  -- 只检查限价单，不检查市价单
                 AND NOT EXISTS (
                     SELECT 1 FROM customer_trades ct 
                     WHERE ct.customer_uid = lfo.customer_uid 

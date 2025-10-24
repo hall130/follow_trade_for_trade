@@ -264,7 +264,7 @@ def start_limit_follow_background():
             logger.error(f"重新启动限价跟单监控失败: {retry_error}")
 
 def start_strategy_trade():
-    """启动策略交易模块"""
+    """启动策略交易模块（仅回测，不含实盘）"""
     logger.info("正在启动策略交易模块...")
     try:
         import asyncio
@@ -413,8 +413,8 @@ OKX交易所自动跟单系统启动器
 
 模式:
     trade                    - 仅启动交易模块（包含限价跟单监控）
-    strategy                 - 仅启动策略交易模块
-    api                      - 启动统一API服务器（包含限价跟单监控）
+    strategy                 - 仅启动策略交易模块（回测）
+    api                      - 启动统一API服务器（包含策略实盘服务）🆕
     limit-follow             - 仅启动限价跟单监控器
     all                      - 同时启动所有模块和前端界面 (默认)
     frontend                 - 仅启动前端界面
@@ -427,8 +427,8 @@ OKX交易所自动跟单系统启动器
 
 示例:
     python main.py trade --demo                    # 仅启动交易模块(模拟盘)
-    python main.py strategy --demo                 # 仅启动策略交易模块(模拟盘)
-    python main.py api                             # 启动统一API服务器
+    python main.py strategy --demo                 # 仅启动策略交易模块(回测)
+    python main.py api --demo                      # 启动API服务器(包含策略实盘) 🆕
     python main.py limit-follow                    # 仅启动跟单监控器
     python main.py all --real                      # 同时启动所有模块(实盘)
     python main.py all --demo --no-frontend        # 启动后端，不启动前端
@@ -492,7 +492,7 @@ def main():
         logger.info("�� 启动交易模块...")
         start_trade()
     elif mode == 'strategy':
-        logger.info("🚀 启动策略交易模块...")
+        logger.info("🚀 启动策略交易模块（回测）...")
         start_strategy_trade()
     elif mode == 'api':
         logger.info("🚀 启动统一API服务器...")

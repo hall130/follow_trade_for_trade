@@ -55,6 +55,10 @@ class OrderRequest:
     time_in_force: str = "GTC"
     client_order_id: Optional[str] = None
     reduce_only: bool = False
+    # OKX 特定参数
+    td_mode: Optional[str] = None  # 交易模式 (cross, isolated)
+    pos_side: Optional[str] = None  # 持仓方向 (long, short, net)
+    lever: Optional[str] = None    # 杠杆倍数
 
 
 @dataclass

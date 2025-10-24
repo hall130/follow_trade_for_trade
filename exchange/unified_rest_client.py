@@ -51,7 +51,23 @@ class UnifiedRESTClient:
             订单响应
         """
         try:
-            # 构建订单请求
+            # 从 kwargs 中提取 OrderRequest 支持的参数
+            order_request_params = {}
+            if 'reduce_only' in kwargs:
+                order_request_params['reduce_only'] = kwargs['reduce_only']
+            if 'stop_price' in kwargs:
+                order_request_params['stop_price'] = kwargs['stop_price']
+            if 'time_in_force' in kwargs:
+                order_request_params['time_in_force'] = kwargs['time_in_force']
+            # OKX 特定参数
+            if 'tdMode' in kwargs:
+                order_request_params['td_mode'] = kwargs['tdMode']
+            if 'posSide' in kwargs:
+                order_request_params['pos_side'] = kwargs['posSide']
+            if 'lever' in kwargs:
+                order_request_params['lever'] = kwargs['lever']
+            
+            # 构建订单请求（传递所有支持的参数）
             order_request = OrderRequest(
                 symbol=symbol,
                 side=OrderSide(side.lower()),
@@ -59,14 +75,30 @@ class UnifiedRESTClient:
                 quantity=quantity,
                 price=price,
                 client_order_id=client_order_id,
-                **kwargs
+                **order_request_params
             )
             
             # 调用底层客户端
             response = await self._client.place_order(order_request)
             
             # 转换为统一格式
-            return self._format_order_response(response)
+            formatted_response = self._format_order_response(response)
+            
+            # 为了向后兼容，同时返回 OKX 原始格式
+            if self.exchange == ExchangeType.OKX:
+                return {
+                    "code": "0",
+                    "data": [{
+                        "ordId": response.order_id,
+                        "clOrdId": response.client_order_id,
+                        "sCode": "0",
+                        "sMsg": "success"
+                    }],
+                    # 同时包含统一格式数据
+                    "unified_format": formatted_response
+                }
+            
+            return formatted_response
             
         except Exception as e:
             logger.error(f"下单失败: {e}")

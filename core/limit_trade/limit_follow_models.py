@@ -77,6 +77,7 @@ class LimitFollowStrategy:
     max_net_leverage: float = 10.0  # 最大净杠杆值
     proportional_position: bool = False  # 是否启用按比例开仓
     auto_cancel_on_signal_close: bool = True
+    reverse_direction: bool = False  # 🆕 是否反向跟单（信号源做多，跟单做空；信号源做空，跟单做多）
     enabled: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

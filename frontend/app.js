@@ -65,6 +65,9 @@ class OKXTradingApp {
         
         this.initAutoRefresh(); // 初始化自动刷新
         this.startAutoRefresh('kline'); // 启动K线图自动刷新
+        
+        // 初始化交易对搜索功能
+        this.initSymbolSearch();
     }
 
     bindEvents() {
@@ -735,6 +738,9 @@ class OKXTradingApp {
                 break;
             case 'strategy-trade':
                 this.loadStrategyTradeData();
+                break;
+            case 'message-forward':
+                this.loadMessageForwardData();
                 break;
             default:
                 console.warn('未知页面:', pageName);
@@ -2512,10 +2518,83 @@ class OKXTradingApp {
         }
     }
 
-    viewRuleDetails(ruleUid) {
+    async viewRuleDetails(ruleUid) {
+        try {
+            // 获取规则详情
+            const response = await fetch(`${this.apiBaseUrl}/rules/${ruleUid}`);
+            if (response.ok) {
+                const data = await response.json();
+                const rule = data.data;
+                
+                // 显示规则详情的模态框
+                this.showRuleDetailsModal(rule);
+            } else {
+                this.showToast('错误', '获取规则详情失败', 'danger');
+            }
+        } catch (error) {
+            console.error('获取规则详情失败:', error);
+            this.showToast('错误', '获取规则详情失败', 'danger');
+        }
+    }
 
-        // 这里可以实现查看详情的功能，比如显示一个只读的模态框
-        this.showToast('信息', `查看规则详情: ${ruleUid}`, 'info');
+    showRuleDetailsModal(rule) {
+        // 创建规则详情模态框
+        const modalHtml = `
+            <div class="modal fade" id="ruleDetailsModal" tabindex="-1" aria-labelledby="ruleDetailsModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="ruleDetailsModalLabel">规则详情</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6>基本信息</h6>
+                                    <table class="table table-sm">
+                                        <tr><td><strong>规则ID:</strong></td><td>${rule.rule_uid}</td></tr>
+                                        <tr><td><strong>规则名称:</strong></td><td>${rule.name || '未设置'}</td></tr>
+                                        <tr><td><strong>策略名称:</strong></td><td>${rule.strategy_name || '未关联'}</td></tr>
+                                        <tr><td><strong>策略类型:</strong></td><td>${rule.strategy_type || '未设置'}</td></tr>
+                                        <tr><td><strong>状态:</strong></td><td>
+                                            <span class="badge bg-${rule.enabled ? 'success' : 'secondary'}">
+                                                ${rule.enabled ? '启用' : '禁用'}
+                                            </span>
+                                        </td></tr>
+                                    </table>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6>交易参数</h6>
+                                    <table class="table table-sm">
+                                        <tr><td><strong>仓位比例:</strong></td><td>${rule.position_ratio || '未设置'}</td></tr>
+                                        <tr><td><strong>最大杠杆:</strong></td><td>${rule.max_leverage || '未设置'}</td></tr>
+                                        <tr><td><strong>创建时间:</strong></td><td>${rule.created_at || '未知'}</td></tr>
+                                        <tr><td><strong>更新时间:</strong></td><td>${rule.updated_at || '未知'}</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                            <button type="button" class="btn btn-primary" onclick="app.editRule('${rule.rule_uid}')" data-bs-dismiss="modal">编辑规则</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // 移除已存在的模态框
+        const existingModal = document.getElementById('ruleDetailsModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+        
+        // 添加新的模态框到页面
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('ruleDetailsModal'));
+        modal.show();
     }
 
     async toggleRuleStatus(ruleUid) {
@@ -4852,8 +4931,102 @@ class OKXTradingApp {
     }
 
     // 查看信号源交易详情
-    viewSignalTradeDetails(tradeUid) {
-        this.showToast('信息', `查看信号源交易详情: ${tradeUid}`, 'info');
+    async viewSignalTradeDetails(tradeUid) {
+        try {
+            // 获取信号源交易详情
+            const response = await fetch(`${this.apiBaseUrl}/signal-trades/${tradeUid}`);
+            if (response.ok) {
+                const data = await response.json();
+                const trade = data.data;
+                
+                // 显示信号源交易详情的模态框
+                this.showSignalTradeDetailsModal(trade);
+            } else {
+                this.showToast('错误', '获取信号源交易详情失败', 'danger');
+            }
+        } catch (error) {
+            console.error('获取信号源交易详情失败:', error);
+            this.showToast('错误', '获取信号源交易详情失败', 'danger');
+        }
+    }
+
+    showSignalTradeDetailsModal(trade) {
+        // 创建信号源交易详情模态框
+        const modalHtml = `
+            <div class="modal fade" id="signalTradeDetailsModal" tabindex="-1" aria-labelledby="signalTradeDetailsModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="signalTradeDetailsModalLabel">信号源交易详情</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6>基本信息</h6>
+                                    <table class="table table-sm">
+                                        <tr><td><strong>交易ID:</strong></td><td>${trade.trade_uid}</td></tr>
+                                        <tr><td><strong>信号源:</strong></td><td>${trade.signal_source_uid || '未知'}</td></tr>
+                                        <tr><td><strong>交易对:</strong></td><td>${trade.symbol || '未知'}</td></tr>
+                                        <tr><td><strong>持仓方向:</strong></td><td>
+                                            <span class="badge bg-${trade.pos_side === 'long' ? 'success' : 'danger'}">
+                                                ${trade.pos_side === 'long' ? '多头' : '空头'}
+                                            </span>
+                                        </td></tr>
+                                        <tr><td><strong>状态:</strong></td><td>
+                                            <span class="badge bg-${trade.status === 'open' ? 'primary' : 'secondary'}">
+                                                ${trade.status === 'open' ? '持仓中' : '已平仓'}
+                                            </span>
+                                        </td></tr>
+                                    </table>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6>交易参数</h6>
+                                    <table class="table table-sm">
+                                        <tr><td><strong>合约数量:</strong></td><td>${trade.volume_contract || '0'}</td></tr>
+                                        <tr><td><strong>开仓价格:</strong></td><td>${trade.open_px || '未知'}</td></tr>
+                                        <tr><td><strong>平仓价格:</strong></td><td>${trade.close_px || '未平仓'}</td></tr>
+                                        <tr><td><strong>已平仓数量:</strong></td><td>${trade.close_volume_contract || '0'}</td></tr>
+                                        <tr><td><strong>盈亏:</strong></td><td>
+                                            <span class="text-${trade.profit >= 0 ? 'success' : 'danger'}">
+                                                ${trade.profit || '0'} USDT
+                                            </span>
+                                        </td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="row mt-3">
+                                <div class="col-12">
+                                    <h6>时间信息</h6>
+                                    <table class="table table-sm">
+                                        <tr><td><strong>创建时间:</strong></td><td>${trade.created_at || '未知'}</td></tr>
+                                        <tr><td><strong>更新时间:</strong></td><td>${trade.updated_at || '未知'}</td></tr>
+                                        <tr><td><strong>平仓时间:</strong></td><td>${trade.closed_at || '未平仓'}</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                            ${trade.status === 'open' ? `<button type="button" class="btn btn-warning" onclick="app.closeSignalTrade('${trade.trade_uid}')" data-bs-dismiss="modal">平仓</button>` : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // 移除已存在的模态框
+        const existingModal = document.getElementById('signalTradeDetailsModal');
+        if (existingModal) {
+            existingModal.remove();
+        }
+        
+        // 添加新的模态框到页面
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('signalTradeDetailsModal'));
+        modal.show();
     }
 
     // 平仓信号源交易
@@ -5965,9 +6138,9 @@ class OKXTradingApp {
             
             // 获取所有客户和信号源的未成交订单
             const allOrders = [];
-            
+            const isDemo = document.getElementById('manualIsDemo').checked ? 1 : 0;
             // 获取客户未成交订单
-            const customersResponse = await fetch(`${this.apiBaseUrl}/customers?is_demo=1`);
+            const customersResponse = await fetch(`${this.apiBaseUrl}/customers?is_demo=${isDemo}`);
             if (customersResponse.ok) {
                 const customersData = await customersResponse.json();
                 const customers = customersData.data?.customers || [];
@@ -6765,7 +6938,10 @@ class OKXTradingApp {
             
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td>${strategy.strategy_name || strategy.name || '未命名策略'}</td>
+                <td>
+                    ${strategy.strategy_name || strategy.name || '未命名策略'}
+                    ${strategy.reverse_direction ? '<br><span class="badge bg-warning text-dark mt-1"><i class="bi bi-arrow-left-right"></i> 反向跟单</span>' : ''}
+                </td>
                 <td>${followSourceDisplay}</td>
                 <td>
                     ${strategy.customers && strategy.customers.length > 0 
@@ -6776,7 +6952,10 @@ class OKXTradingApp {
                     }
                 </td>
                 <td>${strategy.symbol}</td>
-                <td><span class="badge bg-${strategy.pos_side === 'both' ? 'info' : (strategy.pos_side === 'long' ? 'success' : 'danger')}">${strategy.pos_side === 'both' ? '双向' : (strategy.pos_side === 'long' ? '多仓' : '空仓')}</span></td>
+                <td>
+                    <span class="badge bg-${strategy.pos_side === 'both' ? 'info' : (strategy.pos_side === 'long' ? 'success' : 'danger')}">${strategy.pos_side === 'both' ? '双向' : (strategy.pos_side === 'long' ? '多仓' : '空仓')}</span>
+                    ${strategy.reverse_direction ? '<br><small class="text-muted">（反向）</small>' : ''}
+                </td>
                 <td>${strategy.follow_type === 'percentage' ? '价格偏移' : '固定价格'}</td>
                 <td>${strategy.follow_value}% (${strategy.min_follow_value}% - ${strategy.max_follow_value}%)</td>
                 <td>
@@ -7173,6 +7352,7 @@ class OKXTradingApp {
             document.getElementById('limitFollowStrategyMinFollowValue').value = strategy.min_follow_value || 0.5;
             document.getElementById('limitFollowStrategyMaxFollowValue').value = strategy.max_follow_value || 5.0;
             document.getElementById('limitFollowStrategyAutoCancelOnSignalClose').value = strategy.auto_cancel_on_signal_close ? 'true' : 'false';
+            document.getElementById('limitFollowStrategyReverseDirection').checked = strategy.reverse_direction || false;  // 🆕 反向跟单
             
             // 设置跟单订单类型
             document.getElementById('followOrderTypes').value = strategy.follow_order_types || 'limit_only';
@@ -8249,6 +8429,7 @@ class OKXTradingApp {
             max_net_leverage: parseFloat(document.getElementById('limitFollowStrategyMaxNetLeverage').value),
             proportional_position: document.getElementById('limitFollowStrategyProportionalPosition').checked,
             auto_cancel_on_signal_close: document.getElementById('limitFollowStrategyAutoCancelOnSignalClose').value === 'true',
+            reverse_direction: document.getElementById('limitFollowStrategyReverseDirection').checked ?? false,  // 🆕 反向跟单
             enabled: document.getElementById('limitFollowStrategyEnabled').checked ?? true
         };
         
@@ -10276,6 +10457,628 @@ class OKXTradingApp {
         }
     }
     
+    // 刷新策略列表（重新扫描策略文件）
+    async refreshStrategies() {
+        try {
+            this.showToast('信息', '正在扫描策略文件...', 'info');
+            
+            // 调用策略扫描 API
+            const response = await fetch(`${this.apiBaseUrl}/strategy/scan`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    const count = data.data.count || 0;
+                    const strategies = data.data.strategies || [];
+                    
+                    this.showToast('成功', `扫描完成！发现 ${count} 个策略`, 'success');
+                    
+                    // 刷新策略交易页面（如果在策略交易页面）
+                    const currentPage = document.querySelector('.page-content.active');
+                    if (currentPage && currentPage.id === 'strategy-trade-page') {
+                        await this.loadStrategyTradeData();
+                    }
+                    
+                    // 刷新策略管理页面（如果在策略管理页面）
+                    if (currentPage && currentPage.id === 'strategies-page') {
+                        await this.loadStrategiesData();
+                    }
+                    
+                    // 重新加载策略选项（用于创建策略时的下拉框）
+                    await this.loadStrategiesOptions();
+                    
+                } else {
+                    this.showToast('错误', data.message || '扫描策略失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '扫描策略请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('刷新策略失败:', error);
+            this.showToast('错误', '刷新策略失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 加载策略模板列表
+    async loadStrategyTemplates() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/strategy/templates`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    console.log('✅ 策略模板已更新:', Object.keys(data.data).length, '个');
+                }
+            }
+        } catch (error) {
+            console.error('加载策略模板失败:', error);
+        }
+    }
+    
+    // ==================== 消息转发模块 ====================
+    
+    // 加载消息转发数据
+    async loadMessageForwardData() {
+        try {
+            // 加载服务状态
+            await this.loadMessageForwardStatus();
+            
+            // 加载平台列表
+            await this.loadPlatformsList();
+            
+            // 加载转发规则
+            await this.loadForwardRulesList();
+            
+            // 加载消息历史
+            await this.loadMessageHistory();
+            
+        } catch (error) {
+            console.error('加载消息转发数据失败:', error);
+            this.showToast('错误', '加载消息转发数据失败', 'danger');
+        }
+    }
+
+    // 加载服务状态
+    async loadMessageForwardStatus() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/status`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    const status = data.data;
+                    
+                    // 更新服务状态
+                    const statusBadge = document.getElementById('mf-service-status');
+                    if (statusBadge) {
+                        if (status.running) {
+                            statusBadge.innerHTML = '<span class="badge bg-success">运行中</span>';
+                        } else {
+                            statusBadge.innerHTML = '<span class="badge bg-secondary">未启动</span>';
+                        }
+                    }
+                    
+                    // 更新统计数据
+                    document.getElementById('mf-connected-platforms').textContent = status.connected_platforms || 0;
+                    document.getElementById('mf-active-rules').textContent = status.active_rules || 0;
+                    document.getElementById('mf-today-forwarded').textContent = status.today_forwarded || 0;
+                }
+            }
+        } catch (error) {
+            console.error('加载服务状态失败:', error);
+        }
+    }
+
+    // 加载平台列表
+    async loadPlatformsList() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.renderPlatformsList(data.data || []);
+                }
+            }
+        } catch (error) {
+            console.error('加载平台列表失败:', error);
+        }
+    }
+
+    // 渲染平台列表
+    renderPlatformsList(platforms) {
+        const tbody = document.getElementById('platformsTableBody');
+        if (!tbody) return;
+        
+        if (platforms.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">暂无平台配置</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = '';
+        platforms.forEach(platform => {
+            const row = document.createElement('tr');
+            
+            // 平台图标
+            let platformIcon = '';
+            switch (platform.platform_type) {
+                case 'telegram':
+                    platformIcon = '<i class="bi bi-telegram text-primary"></i> Telegram';
+                    break;
+                case 'dingtalk':
+                    platformIcon = '<i class="bi bi-chat-dots text-info"></i> 钉钉';
+                    break;
+                case 'wechat':
+                    platformIcon = '<i class="bi bi-wechat text-success"></i> 微信';
+                    break;
+                default:
+                    platformIcon = platform.platform_type;
+            }
+            
+            // 状态徽章
+            let statusBadge = '';
+            if (platform.status === 'active') {
+                statusBadge = '<span class="badge bg-success">已连接</span>';
+            } else if (platform.status === 'error') {
+                statusBadge = `<span class="badge bg-danger" title="${platform.error_message || ''}">错误</span>`;
+            } else {
+                statusBadge = '<span class="badge bg-secondary">未连接</span>';
+            }
+            
+            // 格式化时间
+            const lastConnected = platform.last_connected_at ? 
+                new Date(platform.last_connected_at).toLocaleString('zh-CN') : 
+                '从未连接';
+            
+            row.innerHTML = `
+                <td>${platformIcon}</td>
+                <td>${platform.platform_name}</td>
+                <td>${statusBadge}</td>
+                <td>${lastConnected}</td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        ${platform.enabled ? 
+                            `<button class="btn btn-warning" onclick="window.app.disablePlatform(${platform.id})">
+                                <i class="bi bi-pause-fill"></i> 禁用
+                            </button>` :
+                            `<button class="btn btn-success" onclick="window.app.enablePlatform(${platform.id})">
+                                <i class="bi bi-play-fill"></i> 启用
+                            </button>`
+                        }
+                        <button class="btn btn-info" onclick="window.app.editPlatform(${platform.id})">
+                            <i class="bi bi-pencil"></i> 编辑
+                        </button>
+                        <button class="btn btn-danger" onclick="window.app.deletePlatform(${platform.id}, '${platform.platform_name}')">
+                            <i class="bi bi-trash"></i> 删除
+                        </button>
+                    </div>
+                </td>
+            `;
+            
+            tbody.appendChild(row);
+        });
+    }
+
+    // 加载转发规则列表
+    async loadForwardRulesList() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.renderForwardRulesList(data.data || []);
+                }
+            }
+        } catch (error) {
+            console.error('加载转发规则失败:', error);
+        }
+    }
+
+    // 渲染转发规则列表
+    renderForwardRulesList(rules) {
+        const tbody = document.getElementById('rulesTableBody');
+        if (!tbody) return;
+        
+        if (rules.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无转发规则</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = '';
+        rules.forEach(rule => {
+            const row = document.createElement('tr');
+            
+            // 目标平台
+            const targetPlatforms = Array.isArray(rule.target_platforms) ? 
+                rule.target_platforms.join(', ') : 
+                (rule.target_platforms || '');
+            
+            // 状态
+            const statusBadge = rule.enabled ? 
+                '<span class="badge bg-success">启用</span>' : 
+                '<span class="badge bg-secondary">禁用</span>';
+            
+            row.innerHTML = `
+                <td>${rule.rule_name}</td>
+                <td><span class="badge bg-primary">${rule.source_platform || '所有'}</span></td>
+                <td>${targetPlatforms}</td>
+                <td>${statusBadge}</td>
+                <td>${rule.messages_forwarded || 0}</td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        ${rule.enabled ? 
+                            `<button class="btn btn-warning" onclick="window.app.disableRule('${rule.rule_id}')">
+                                <i class="bi bi-pause-fill"></i> 禁用
+                            </button>` :
+                            `<button class="btn btn-success" onclick="window.app.enableRule('${rule.rule_id}')">
+                                <i class="bi bi-play-fill"></i> 启用
+                            </button>`
+                        }
+                        <button class="btn btn-info" onclick="window.app.editRule('${rule.rule_id}')">
+                            <i class="bi bi-pencil"></i> 编辑
+                        </button>
+                        <button class="btn btn-danger" onclick="window.app.deleteRule('${rule.rule_id}', '${rule.rule_name}')">
+                            <i class="bi bi-trash"></i> 删除
+                        </button>
+                    </div>
+                </td>
+            `;
+            
+            tbody.appendChild(row);
+        });
+    }
+
+    // 加载消息历史
+    async loadMessageHistory() {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/history?limit=100`);
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.renderMessageHistory(data.data || []);
+                }
+            }
+        } catch (error) {
+            console.error('加载消息历史失败:', error);
+        }
+    }
+
+    // 渲染消息历史
+    renderMessageHistory(messages) {
+        const tbody = document.getElementById('historyTableBody');
+        if (!tbody) return;
+        
+        if (messages.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">暂无消息历史</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = '';
+        messages.forEach(msg => {
+            const row = document.createElement('tr');
+            
+            const timestamp = new Date(msg.timestamp).toLocaleString('zh-CN');
+            const content = msg.content.length > 50 ? msg.content.substring(0, 50) + '...' : msg.content;
+            const forwardedTo = Array.isArray(msg.forwarded_to) ? msg.forwarded_to.join(', ') : (msg.forwarded_to || '-');
+            
+            row.innerHTML = `
+                <td>${timestamp}</td>
+                <td><span class="badge bg-primary">${msg.source_platform}</span></td>
+                <td>${content}</td>
+                <td>${forwardedTo}</td>
+            `;
+            
+            tbody.appendChild(row);
+        });
+    }
+
+    // 保存新平台
+    async savePlatform() {
+        try {
+            const platformType = document.getElementById('platformType').value;
+            const platformName = document.getElementById('platformName').value;
+            const platformEnabled = document.getElementById('platformEnabled').checked;
+            
+            if (!platformType || !platformName) {
+                this.showToast('错误', '请填写所有必填项', 'warning');
+                return;
+            }
+            
+            // 构建配置对象
+            let config = {};
+            
+            switch (platformType) {
+                case 'telegram':
+                    config.bot_token = document.getElementById('telegramBotToken').value;
+                    if (!config.bot_token) {
+                        this.showToast('错误', '请填写 Bot Token', 'warning');
+                        return;
+                    }
+                    break;
+                
+                case 'dingtalk':
+                    config.webhook_url = document.getElementById('dingtalkWebhook').value;
+                    config.secret = document.getElementById('dingtalkSecret').value || '';
+                    if (!config.webhook_url) {
+                        this.showToast('错误', '请填写 Webhook URL', 'warning');
+                        return;
+                    }
+                    break;
+                
+                case 'wechat':
+                    config.hot_reload = document.getElementById('wechatHotReload').checked;
+                    break;
+            }
+            
+            // 发送请求
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    platform_type: platformType,
+                    platform_name: platformName,
+                    enabled: platformEnabled,
+                    config: config
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showToast('成功', '平台添加成功', 'success');
+                
+                // 关闭模态框
+                const modal = bootstrap.Modal.getInstance(document.getElementById('addPlatformModal'));
+                modal.hide();
+                
+                // 重置表单
+                document.getElementById('addPlatformForm').reset();
+                
+                // 刷新列表
+                await this.loadPlatformsList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '添加平台失败', 'danger');
+            }
+            
+        } catch (error) {
+            console.error('保存平台失败:', error);
+            this.showToast('错误', '保存平台失败: ' + error.message, 'danger');
+        }
+    }
+
+    // 启用/禁用平台
+    async enablePlatform(platformId) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms/${platformId}/enable`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                this.showToast('成功', '平台已启用', 'success');
+                await this.loadPlatformsList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '启用平台失败', 'danger');
+            }
+        } catch (error) {
+            console.error('启用平台失败:', error);
+            this.showToast('错误', '启用平台失败', 'danger');
+        }
+    }
+
+    async disablePlatform(platformId) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms/${platformId}/disable`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                this.showToast('成功', '平台已禁用', 'success');
+                await this.loadPlatformsList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '禁用平台失败', 'danger');
+            }
+        } catch (error) {
+            console.error('禁用平台失败:', error);
+            this.showToast('错误', '禁用平台失败', 'danger');
+        }
+    }
+
+    // 删除平台
+    async deletePlatform(platformId, platformName) {
+        if (!confirm(`确定要删除平台"${platformName}"吗？此操作不可恢复。`)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms/${platformId}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                this.showToast('成功', '平台已删除', 'success');
+                await this.loadPlatformsList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '删除平台失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除平台失败:', error);
+            this.showToast('错误', '删除平台失败', 'danger');
+        }
+    }
+
+    // 保存转发规则
+    async saveForwardRule() {
+        try {
+            const ruleName = document.getElementById('ruleName').value;
+            const ruleEnabled = document.getElementById('ruleEnabled').checked;
+            const sourcePlatform = document.getElementById('sourcePlatform').value;
+            const sourceChatIds = document.getElementById('sourceChatIds').value;
+            
+            if (!ruleName || !sourcePlatform) {
+                this.showToast('错误', '请填写规则名称和源平台', 'warning');
+                return;
+            }
+            
+            // 获取目标平台
+            const targetPlatforms = [];
+            const targetChatIds = {};
+            
+            document.querySelectorAll('.target-platform:checked').forEach(checkbox => {
+                const platform = checkbox.value;
+                targetPlatforms.push(platform);
+                
+                // 获取对应的chat_ids
+                const chatIdsInput = document.getElementById(`${platform}TargetChatIds`);
+                if (chatIdsInput && chatIdsInput.value) {
+                    targetChatIds[platform] = chatIdsInput.value.split(',').map(id => id.trim()).filter(id => id);
+                } else {
+                    targetChatIds[platform] = [];
+                }
+            });
+            
+            if (targetPlatforms.length === 0) {
+                this.showToast('错误', '请至少选择一个目标平台', 'warning');
+                return;
+            }
+            
+            // 构建规则对象
+            const ruleData = {
+                rule_name: ruleName,
+                enabled: ruleEnabled,
+                source_platform: sourcePlatform,
+                source_chat_ids: sourceChatIds ? sourceChatIds.split(',').map(id => id.trim()).filter(id => id) : [],
+                target_platforms: targetPlatforms,
+                target_chat_ids: targetChatIds,
+                keywords: document.getElementById('keywords').value ? 
+                    document.getElementById('keywords').value.split(',').map(k => k.trim()).filter(k => k) : [],
+                exclude_keywords: document.getElementById('excludeKeywords').value ? 
+                    document.getElementById('excludeKeywords').value.split(',').map(k => k.trim()).filter(k => k) : [],
+                add_prefix: document.getElementById('addPrefix').value || '',
+                add_suffix: document.getElementById('addSuffix').value || '',
+                enable_markdown: document.getElementById('enableMarkdown').checked
+            };
+            
+            // 发送请求
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(ruleData)
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showToast('成功', '转发规则添加成功', 'success');
+                
+                // 关闭模态框
+                const modal = bootstrap.Modal.getInstance(document.getElementById('addForwardRuleModal'));
+                modal.hide();
+                
+                // 重置表单
+                document.getElementById('addForwardRuleForm').reset();
+                
+                // 刷新列表
+                await this.loadForwardRulesList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '添加规则失败', 'danger');
+            }
+            
+        } catch (error) {
+            console.error('保存规则失败:', error);
+            this.showToast('错误', '保存规则失败: ' + error.message, 'danger');
+        }
+    }
+
+    // 启用/禁用规则
+    async enableRule(ruleId) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules/${ruleId}/enable`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                this.showToast('成功', '规则已启用', 'success');
+                await this.loadForwardRulesList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '启用规则失败', 'danger');
+            }
+        } catch (error) {
+            console.error('启用规则失败:', error);
+            this.showToast('错误', '启用规则失败', 'danger');
+        }
+    }
+
+    async disableRule(ruleId) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules/${ruleId}/disable`, {
+                method: 'POST'
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                this.showToast('成功', '规则已禁用', 'success');
+                await this.loadForwardRulesList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '禁用规则失败', 'danger');
+            }
+        } catch (error) {
+            console.error('禁用规则失败:', error);
+            this.showToast('错误', '禁用规则失败', 'danger');
+        }
+    }
+
+    // 删除规则
+    async deleteRule(ruleId, ruleName) {
+        if (!confirm(`确定要删除规则"${ruleName}"吗？此操作不可恢复。`)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules/${ruleId}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                this.showToast('成功', '规则已删除', 'success');
+                await this.loadForwardRulesList();
+                await this.loadMessageForwardStatus();
+            } else {
+                this.showToast('错误', data.message || '删除规则失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除规则失败:', error);
+            this.showToast('错误', '删除规则失败', 'danger');
+        }
+    }
+
+    // 编辑平台（占位符，待实现）
+    editPlatform(platformId) {
+        this.showToast('提示', '编辑功能开发中', 'info');
+    }
+
+    // 编辑规则（占位符，待实现）
+    editRule(ruleId) {
+        this.showToast('提示', '编辑功能开发中', 'info');
+    }
+    
     // 创建策略交易
     async createStrategyTrade() {
         try {
@@ -10426,6 +11229,9 @@ class OKXTradingApp {
     showEditStrategyTradeParams(strategyType, config) {
         const paramsContainer = document.getElementById('editStrategyTradeSpecificParams');
         if (!paramsContainer) return;
+    
+        // 确保 config 存在，如果不存在则使用空对象
+        config = config || {};
     
         // 清空现有内容
         paramsContainer.innerHTML = '<h6><i class="bi bi-gear"></i> 策略参数</h6><hr>';
@@ -11241,6 +12047,149 @@ class OKXTradingApp {
             this.showToast('错误', `回测运行失败: ${error.message}`, 'danger');
         }
     }
+
+    // 搜索交易对
+    async searchSymbols(query = '') {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/symbols?q=${encodeURIComponent(query)}&limit=50`);
+            if (response.ok) {
+                const data = await response.json();
+                return data.data || [];
+            } else {
+                console.error('搜索交易对失败:', response.statusText);
+                return [];
+            }
+        } catch (error) {
+            console.error('搜索交易对失败:', error);
+            return [];
+        }
+    }
+
+    // 加载交易对到选择框
+    async loadSymbolsToSelect(query = '') {
+        const symbols = await this.searchSymbols(query);
+        const selectElement = document.getElementById('limitFollowStrategySymbols');
+        
+        if (!selectElement) return;
+        
+        // 保存当前已选择的选项
+        const selectedValues = Array.from(selectElement.selectedOptions).map(opt => opt.value);
+        
+        // 清空现有选项
+        selectElement.innerHTML = '';
+        
+        if (symbols.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = query ? '未找到匹配的交易对' : '请输入搜索条件';
+            option.disabled = true;
+            selectElement.appendChild(option);
+            return;
+        }
+        
+        // 添加搜索结果
+        symbols.forEach(symbol => {
+            const option = document.createElement('option');
+            option.value = symbol;
+            option.textContent = symbol;
+            
+            // 如果这个选项之前被选中过，保持选中状态
+            if (selectedValues.includes(symbol)) {
+                option.selected = true;
+            }
+            
+            selectElement.appendChild(option);
+        });
+        
+        // 显示当前选择状态
+        if (selectedValues.length > 0) {
+            console.log(`当前已选择 ${selectedValues.length} 个交易对:`, selectedValues);
+        }
+    }
+
+    // 初始化交易对搜索功能
+    initSymbolSearch() {
+        const searchInput = document.getElementById('symbolSearchInput');
+        const searchBtn = document.getElementById('searchSymbolsBtn');
+        const symbolsSelect = document.getElementById('limitFollowStrategySymbols');
+        
+        if (!searchInput || !searchBtn || !symbolsSelect) return;
+        
+        // 搜索按钮点击事件
+        searchBtn.addEventListener('click', async () => {
+            const query = searchInput.value.trim();
+            await this.loadSymbolsToSelect(query);
+        });
+        
+        // 输入框回车事件
+        searchInput.addEventListener('keypress', async (e) => {
+            if (e.key === 'Enter') {
+                const query = searchInput.value.trim();
+                await this.loadSymbolsToSelect(query);
+            }
+        });
+        
+        // 输入框实时搜索（防抖）
+        let searchTimeout;
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(async () => {
+                const query = searchInput.value.trim();
+                if (query.length >= 2) { // 至少输入2个字符才开始搜索
+                    await this.loadSymbolsToSelect(query);
+                } else if (query.length === 0) {
+                    // 清空搜索时显示提示
+                    await this.loadSymbolsToSelect('');
+                }
+            }, 300); // 300ms防抖
+        });
+        
+        // 选择框变化事件
+        symbolsSelect.addEventListener('change', () => {
+            const selectedOptions = Array.from(symbolsSelect.selectedOptions);
+            if (selectedOptions.length > 0) {
+                console.log('已选择的交易对:', selectedOptions.map(opt => opt.value));
+                // 显示选择状态提示
+                this.showSelectionStatus(selectedOptions.length);
+            } else {
+                this.hideSelectionStatus();
+            }
+        });
+        
+        // 初始加载一些热门交易对
+        this.loadSymbolsToSelect('BTC');
+    }
+
+    // 显示选择状态
+    showSelectionStatus(count) {
+        let statusDiv = document.getElementById('symbolSelectionStatus');
+        if (!statusDiv) {
+            // 创建状态显示元素
+            statusDiv = document.createElement('div');
+            statusDiv.id = 'symbolSelectionStatus';
+            statusDiv.className = 'alert alert-info mt-2';
+            statusDiv.style.fontSize = '14px';
+            
+            // 插入到选择框后面
+            const symbolsSelect = document.getElementById('limitFollowStrategySymbols');
+            symbolsSelect.parentNode.insertBefore(statusDiv, symbolsSelect.nextSibling);
+        }
+        
+        statusDiv.innerHTML = `
+            <i class="bi bi-check-circle"></i> 
+            <strong>已选择 ${count} 个交易对</strong> 
+            <span class="text-muted">(按住Ctrl键可继续多选)</span>
+        `;
+        statusDiv.style.display = 'block';
+    }
+
+    // 隐藏选择状态
+    hideSelectionStatus() {
+        const statusDiv = document.getElementById('symbolSelectionStatus');
+        if (statusDiv) {
+            statusDiv.style.display = 'none';
+        }
+    }
 }
 
 // 页面加载完成后初始化应用
@@ -11382,6 +12331,16 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
+    // 刷新策略按钮
+    const refreshStrategiesBtn = document.getElementById('refreshStrategiesBtn');
+    if (refreshStrategiesBtn) {
+        refreshStrategiesBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.refreshStrategies();
+            }
+        });
+    }
+    
     // 创建策略按钮
     const createStrategyBtn = document.getElementById('createStrategyBtn');
     if (createStrategyBtn) {
@@ -11441,6 +12400,67 @@ document.addEventListener('DOMContentLoaded', function() {
         saveStrategyTradeBtn.addEventListener('click', () => {
             if (window.app) {
                 window.app.saveStrategyTradeEdit();
+            }
+        });
+    }
+    
+    // ==================== 消息转发事件监听 ====================
+    
+    // 平台类型切换
+    const platformTypeSelect = document.getElementById('platformType');
+    if (platformTypeSelect) {
+        platformTypeSelect.addEventListener('change', function(e) {
+            // 隐藏所有配置
+            document.querySelectorAll('.platform-config').forEach(el => el.style.display = 'none');
+            
+            // 显示对应的配置
+            const platformType = e.target.value;
+            if (platformType) {
+                const configDiv = document.getElementById(`${platformType}Config`);
+                if (configDiv) {
+                    configDiv.style.display = 'block';
+                }
+            }
+        });
+    }
+    
+    // 目标平台复选框切换
+    document.querySelectorAll('.target-platform').forEach(checkbox => {
+        checkbox.addEventListener('change', function(e) {
+            const platform = e.target.value;
+            const container = document.getElementById(`${platform}TargetContainer`);
+            if (container) {
+                container.style.display = e.target.checked ? 'block' : 'none';
+            }
+        });
+    });
+    
+    // 保存平台按钮
+    const savePlatformBtn = document.getElementById('savePlatformBtn');
+    if (savePlatformBtn) {
+        savePlatformBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.savePlatform();
+            }
+        });
+    }
+    
+    // 保存规则按钮
+    const saveForwardRuleBtn = document.getElementById('saveForwardRuleBtn');
+    if (saveForwardRuleBtn) {
+        saveForwardRuleBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.saveForwardRule();
+            }
+        });
+    }
+    
+    // 刷新按钮
+    const refreshMessageForwardBtn = document.getElementById('refreshMessageForwardBtn');
+    if (refreshMessageForwardBtn) {
+        refreshMessageForwardBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.loadMessageForwardData();
             }
         });
     }
