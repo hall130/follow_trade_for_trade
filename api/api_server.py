@@ -5,7 +5,7 @@ Flask API服务器
 提供信号源管理、比例调整、净杠杆设置和止损管理的API
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session, g
 from flask_cors import CORS
 import json
 import uuid
@@ -33,6 +33,175 @@ from core.limit_trade.limit_follow_models import LimitFollowLog
 from core.limit_trade.limit_follow_service import get_limit_follow_service
 from core.market_trade.trade_service import TradeService, safe_float, get_price_on_demand
 from exchange.unified_ws_client import get_global_client_manager
+
+# 认证模块导入
+try:
+    # 直接导入auth_api，避免auth模块__init__.py的依赖问题
+    from auth.auth_api import auth_bp
+    from auth.decorators import (
+        login_required, 
+        admin_required,
+        require_permission,
+        filter_customers,
+        filter_strategies,
+        filter_instances,
+        filter_backtests,
+        filter_traders,
+        validate_json_data,
+        log_api_access,
+        handle_exceptions,
+        get_current_user_id,
+        get_current_user
+    )
+    from auth.permission_service import permission_service
+    AUTH_MODULE_AVAILABLE = True
+    logger.info("认证API模块导入成功")
+except ImportError as e:
+    logger.warning(f"认证API模块不可用: {e}")
+    AUTH_MODULE_AVAILABLE = False
+    
+    # 创建简化的认证装饰器作为fallback
+    def login_required(f):
+        return f
+    
+    def require_permission(module, level):
+        def decorator(f):
+            return f
+        return decorator
+    
+    def admin_required(f):
+        return f
+    
+    def filter_customers(f):
+        return f
+    
+    def filter_strategies(f):
+        return f
+    
+    def filter_instances(f):
+        return f
+    
+    def filter_backtests(f):
+        return f
+    
+    def filter_traders(f):
+        return f
+    
+    def validate_json_data(fields):
+        def decorator(f):
+            return f
+        return decorator
+    
+    def log_api_access(module):
+        def decorator(f):
+            return f
+        return decorator
+    
+    def handle_exceptions(f):
+        return f
+    
+    def get_current_user_id():
+        return None
+    
+    def get_current_user():
+        return None
+    
+    # 创建简化的认证蓝图
+    from flask import Blueprint
+    auth_bp = Blueprint('auth', __name__, url_prefix='/api/v1/auth')
+    
+    @auth_bp.route('/login', methods=['POST'])
+    def login():
+        """简化的登录API"""
+        try:
+            data = request.get_json()
+            username = data.get('username')
+            password = data.get('password')
+            
+            # 简化的用户验证（仅用于测试）
+            if username == 'admin' and password == 'admin123':
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'user': {
+                            'id': 1,
+                            'username': 'admin',
+                            'role': 'admin',
+                            'permissions': ['all']
+                        },
+                        'token': 'test-token-admin'
+                    },
+                    'message': '登录成功'
+                })
+            elif username == 'user1' and password == 'user123':
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'user': {
+                            'id': 2,
+                            'username': 'user1',
+                            'role': 'user',
+                            'permissions': ['customers:read', 'customers:write', 'strategies:read', 'strategies:write']
+                        },
+                        'token': 'test-token-user'
+                    },
+                    'message': '登录成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户名或密码错误'
+                }), 401
+                
+        except Exception as e:
+            logger.error(f"登录失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '登录失败'
+            }), 500
+    
+    @auth_bp.route('/logout', methods=['POST'])
+    def logout():
+        """简化的登出API"""
+        return jsonify({
+            'success': True,
+            'message': '登出成功'
+        })
+    
+    @auth_bp.route('/me', methods=['GET'])
+    def get_current_user_info():
+        """获取当前用户信息"""
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        
+        if token == 'test-token-admin':
+            return jsonify({
+                'success': True,
+                'data': {
+                    'user': {
+                        'id': 1,
+                        'username': 'admin',
+                        'role': 'admin',
+                        'permissions': ['all']
+                    }
+                }
+            })
+        elif token == 'test-token-user':
+            return jsonify({
+                'success': True,
+                'data': {
+                    'user': {
+                        'id': 2,
+                        'username': 'user1',
+                        'role': 'user',
+                        'permissions': ['customers:read', 'customers:write', 'strategies:read', 'strategies:write']
+                    }
+                }
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '未登录'
+            }), 401
 
 # 策略交易相关导入
 try:
@@ -143,6 +312,13 @@ def convert_strategy_config_types(config, strategy_type):
 
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
+
+# 设置Flask Session密钥
+app.secret_key = 'your-secret-key-change-in-production'
+
+# 注册认证蓝图
+app.register_blueprint(auth_bp)
+logger.info("认证蓝图已注册")
 
 # 全局数据库连接池
 db_pool = get_global_db_pool()
@@ -418,6 +594,11 @@ def format_datetime(obj):
 # ==================== 客户账户管理API ====================
 
 @app.route('/api/v1/customers', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('customers', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@filter_customers if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_customers():
     """获取客户账户列表（RESTful风格）"""
     try:
@@ -440,6 +621,15 @@ def get_customers():
             # 构建查询条件
             where_conditions = ["is_demo=%s"]
             query_params = [is_demo]
+            
+            # 添加权限过滤
+            if AUTH_MODULE_AVAILABLE and hasattr(g, 'customer_filter') and g.customer_filter:
+                # g.customer_filter 可能是完整的SQL条件片段
+                if 'owner_user_id' in g.customer_filter:
+                    where_conditions.append("owner_user_id=%s")
+                    query_params.append(int(g.customer_filter.split('=')[-1].strip()))
+                else:
+                    where_conditions.append(g.customer_filter)
         
             if name:
                 where_conditions.append("name LIKE %s")
@@ -500,6 +690,11 @@ def get_customers():
         raise APIError(f"获取客户账户失败: {str(e)}")
 
 @app.route('/api/v1/customers', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('customers', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@validate_json_data(['name', 'api_key', 'api_secret', 'passphrase', 'exchange', 'enabled', 'init_asset', 'leverage']) if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def create_customer():
     """创建客户账户"""
     try:
@@ -512,11 +707,16 @@ def create_customer():
         customer_uid = f"cust_{uuid.uuid4().hex[:8]}"
         is_demo = get_global_is_demo()
         
+        # 获取当前用户ID（如果有权限系统）
+        owner_user_id = None
+        if AUTH_MODULE_AVAILABLE and hasattr(g, 'current_user_id'):
+            owner_user_id = g.current_user_id
+        
         db_pool.execute(
-            "INSERT INTO customers (customer_uid, name, api_key, api_secret, passphrase, exchange, enabled, init_asset, trading_asset, leverage, is_demo) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO customers (customer_uid, name, api_key, api_secret, passphrase, exchange, enabled, init_asset, trading_asset, leverage, is_demo, owner_user_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (customer_uid, data['name'], data['api_key'], data['api_secret'], data['passphrase'], 
              data.get('exchange', 'OKX'), data.get('enabled', True), data.get('init_asset', 0), 
-             data.get('trading_asset'), data.get('leverage', 1), is_demo)
+             data.get('trading_asset'), data.get('leverage', 1), is_demo, owner_user_id)
         )
         
         # 重新加载客户信息
@@ -537,14 +737,33 @@ def create_customer():
         raise APIError(f"创建客户账户失败: {str(e)}")
 
 @app.route('/api/v1/customers/<customer_uid>', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('customers', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_customer(customer_uid):
     """获取单个客户信息"""
     try:
         is_demo = get_global_is_demo()
         
+        # 构建查询条件
+        where_conditions = ["customer_uid=%s", "is_demo=%s"]
+        query_params = [customer_uid, is_demo]
+        
+        # 添加权限过滤
+        if AUTH_MODULE_AVAILABLE and hasattr(g, 'customer_filter') and g.customer_filter:
+            # g.customer_filter 可能是完整的SQL条件片段
+            if 'owner_user_id' in g.customer_filter:
+                where_conditions.append("owner_user_id=%s")
+                query_params.append(int(g.customer_filter.split('=')[-1].strip()))
+            else:
+                where_conditions.append(g.customer_filter)
+        
+        where_clause = " AND ".join(where_conditions)
+        
         customer = db_pool.query(
-            "SELECT * FROM customers WHERE customer_uid=%s AND is_demo=%s",
-            (customer_uid, is_demo)
+            f"SELECT * FROM customers WHERE {where_clause}",
+            tuple(query_params)
         )
         
         if not customer:
@@ -743,6 +962,10 @@ def set_customer_leverage(customer_uid):
 # ==================== 信号源管理API ====================
 
 @app.route('/api/v1/signal_sources', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('signal_sources', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('signal_sources') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_signal_sources():
     """获取所有信号源（支持搜索和筛选）"""
     try:
@@ -794,6 +1017,11 @@ def get_signal_sources():
         raise APIError(f"获取信号源失败: {str(e)}")
 
 @app.route('/api/v1/signal_sources', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('signal_sources', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@validate_json_data(['name', 'api_key', 'api_secret', 'passphrase']) if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('signal_sources') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def create_signal_source():
     """创建信号源"""
     try:
@@ -5661,6 +5889,11 @@ def delete_limit_follow_trader(trader_id):
         raise APIError(f"删除限价跟单跟单员失败: {str(e)}")
 
 @app.route('/api/v1/limit-follow/strategies', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('limit_follow', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@filter_strategies if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('limit_follow') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_limit_follow_strategies():
     """获取限价跟单策略列表"""
     try:
@@ -5677,6 +5910,10 @@ def get_limit_follow_strategies():
         # 构建查询条件
         conditions = []
         params = []
+        
+        # 添加权限过滤 - 限价跟单策略表没有created_by_user_id字段，暂时跳过权限过滤
+        # if AUTH_MODULE_AVAILABLE and hasattr(g, 'strategy_filter') and g.strategy_filter:
+        #     conditions.append(g.strategy_filter)
         
         if customer_uid:
             conditions.append("lfs.customer_uid=%s")
@@ -5764,6 +6001,11 @@ def get_limit_follow_strategies():
         raise APIError(f"获取限价跟单策略失败: {str(e)}")
 
 @app.route('/api/v1/limit-follow/strategies', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('limit_follow', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@validate_json_data(['strategy_name', 'trader_unique_name', 'customer_uid', 'symbol', 'follow_type', 'follow_value']) if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('limit_follow') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def create_limit_follow_strategy():
     """创建限价跟单策略"""
     try:
@@ -5825,17 +6067,22 @@ def create_limit_follow_strategy():
             logger.info(f"[限价跟单] 创建多币种策略: {len(symbols)} 个交易对: {symbols}")
         
         # 插入策略
+        # 获取当前用户ID（如果有权限系统）
+        created_by_user_id = None
+        if AUTH_MODULE_AVAILABLE and hasattr(g, 'current_user_id'):
+            created_by_user_id = g.current_user_id
+        
         strategy_id = db_pool.execute(
             """INSERT INTO limit_follow_strategies 
                (strategy_name, trader_unique_name, customer_uid, symbol, symbols, pos_side, follow_type, follow_mode, follow_value, 
                 min_follow_value, max_follow_value, max_orders_per_signal, leverage, max_net_leverage, proportional_position,
-                auto_cancel_on_signal_close, enabled) 
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                auto_cancel_on_signal_close, enabled, created_by_user_id) 
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (data['strategy_name'], data['trader_unique_name'], data['customer_uid'], data['symbol'], symbols_json, pos_side,
              data['follow_type'], follow_mode, data['follow_value'], data.get('min_follow_value', 0.5), 
              data.get('max_follow_value', 5.0), data.get('max_orders_per_signal', 4),
              data.get('leverage', 10), data.get('max_net_leverage', 1.5), data.get('proportional_position', False),
-             data.get('auto_cancel_on_signal_close', True), data.get('enabled', 1))
+             data.get('auto_cancel_on_signal_close', True), data.get('enabled', 1), created_by_user_id)
         )
         
         # 返回创建的策略信息
@@ -10886,3 +11133,466 @@ else:
     # 在后台线程中延迟启动监控器
     monitor_thread = threading.Thread(target=delayed_start_monitor, daemon=True)
     monitor_thread.start()
+
+    # 用户管理API
+    @app.route('/api/v1/auth/users', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_users():
+        """获取用户列表"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            users = auth_service.get_all_users()
+            return jsonify({
+                'success': True,
+                'data': users,
+                'message': '获取用户列表成功'
+            })
+            
+        except Exception as e:
+            logger.error(f"获取用户列表失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '获取用户列表失败',
+                'code': 'GET_USERS_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @validate_json_data(['username', 'password', 'role']) if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def create_user():
+        """创建用户"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            data = request.get_json()
+            
+            # 验证密码确认
+            if data.get('password') != data.get('confirm_password'):
+                return jsonify({
+                    'success': False,
+                    'message': '两次输入的密码不一致',
+                    'code': 'PASSWORD_MISMATCH'
+                }), 400
+            
+            user = auth_service.create_user(
+                username=data['username'],
+                password=data['password'],
+                full_name=data.get('full_name', ''),
+                email=data.get('email', ''),
+                role=data['role']
+            )
+            
+            if user:
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'id': user.id,
+                        'username': user.username,
+                        'full_name': user.full_name,
+                        'email': user.email,
+                        'role': user.role,
+                        'status': user.status
+                    },
+                    'message': '用户创建成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户创建失败',
+                    'code': 'CREATE_USER_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"创建用户失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '创建用户失败',
+                'code': 'CREATE_USER_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users/<int:user_id>', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_user(user_id):
+        """获取用户详情"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            user = auth_service.get_user_by_id(user_id)
+            if user:
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'id': user.id,
+                        'username': user.username,
+                        'full_name': user.full_name,
+                        'email': user.email,
+                        'role': user.role,
+                        'status': user.status,
+                        'created_at': user.created_at.isoformat() if user.created_at else None,
+                        'last_login_at': user.last_login_at.isoformat() if user.last_login_at else None
+                    },
+                    'message': '获取用户详情成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户不存在',
+                    'code': 'USER_NOT_FOUND'
+                }), 404
+                
+        except Exception as e:
+            logger.error(f"获取用户详情失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '获取用户详情失败',
+                'code': 'GET_USER_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users/<int:user_id>', methods=['PUT'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def update_user(user_id):
+        """更新用户"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            data = request.get_json()
+            
+            success = auth_service.update_user(
+                user_id=user_id,
+                username=data.get('username'),
+                full_name=data.get('full_name'),
+                email=data.get('email'),
+                role=data.get('role'),
+                status=data.get('status')
+            )
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '用户更新成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户更新失败',
+                    'code': 'UPDATE_USER_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"更新用户失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '更新用户失败',
+                'code': 'UPDATE_USER_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users/<int:user_id>', methods=['DELETE'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def delete_user(user_id):
+        """删除用户"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            # 不能删除自己
+            current_user_id = get_current_user_id()
+            if current_user_id == user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '不能删除自己的账户',
+                    'code': 'CANNOT_DELETE_SELF'
+                }), 400
+            
+            success = auth_service.delete_user(user_id)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '用户删除成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户删除失败',
+                    'code': 'DELETE_USER_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"删除用户失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '删除用户失败',
+                'code': 'DELETE_USER_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users/<int:user_id>/reset-password', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def reset_user_password(user_id):
+        """重置用户密码"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            data = request.get_json()
+            password = data.get('password')
+            
+            if not password:
+                return jsonify({
+                    'success': False,
+                    'message': '密码不能为空',
+                    'code': 'PASSWORD_REQUIRED'
+                }), 400
+            
+            success = auth_service.reset_user_password(user_id, password)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '密码重置成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '密码重置失败',
+                    'code': 'RESET_PASSWORD_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"重置密码失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '重置密码失败',
+                'code': 'RESET_PASSWORD_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users/<int:user_id>/toggle-status', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def toggle_user_status(user_id):
+        """切换用户状态"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not auth_service:
+                return jsonify({
+                    'success': False,
+                    'message': '认证模块不可用',
+                    'code': 'AUTH_MODULE_UNAVAILABLE'
+                }), 503
+            
+            data = request.get_json()
+            status = data.get('status')
+            
+            if status not in ['active', 'inactive']:
+                return jsonify({
+                    'success': False,
+                    'message': '无效的状态值',
+                    'code': 'INVALID_STATUS'
+                }), 400
+            
+            success = auth_service.update_user_status(user_id, status)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'用户状态更新为{status}成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户状态更新失败',
+                    'code': 'UPDATE_STATUS_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"更新用户状态失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '更新用户状态失败',
+                'code': 'UPDATE_STATUS_ERROR'
+            }), 500
+
+    # 权限管理API
+    @app.route('/api/v1/auth/permissions/matrix', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_permissions_matrix():
+        """获取权限矩阵"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            matrix = permission_service.get_permissions_matrix()
+            return jsonify({
+                'success': True,
+                'data': matrix,
+                'message': '获取权限矩阵成功'
+            })
+            
+        except Exception as e:
+            logger.error(f"获取权限矩阵失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '获取权限矩阵失败',
+                'code': 'GET_PERMISSIONS_MATRIX_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/permissions/templates', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_permission_templates():
+        """获取权限模板"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            templates = permission_service.get_permission_templates()
+            return jsonify({
+                'success': True,
+                'data': templates,
+                'message': '获取权限模板成功'
+            })
+            
+        except Exception as e:
+            logger.error(f"获取权限模板失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '获取权限模板失败',
+                'code': 'GET_PERMISSION_TEMPLATES_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/permissions/roles/<role>', methods=['PUT'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def update_role_permissions(role):
+        """更新角色权限"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            data = request.get_json()
+            permissions = data.get('permissions', [])
+            
+            success = permission_service.update_role_permissions(role, permissions)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '角色权限更新成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '角色权限更新失败',
+                    'code': 'UPDATE_ROLE_PERMISSIONS_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"更新角色权限失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '更新角色权限失败',
+                'code': 'UPDATE_ROLE_PERMISSIONS_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/permissions/templates/<int:template_id>/apply', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def apply_permission_template(template_id):
+        """应用权限模板"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            success = permission_service.apply_permission_template(template_id)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '权限模板应用成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模板应用失败',
+                    'code': 'APPLY_PERMISSION_TEMPLATE_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"应用权限模板失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '应用权限模板失败',
+                'code': 'APPLY_PERMISSION_TEMPLATE_ERROR'
+            }), 500

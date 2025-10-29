@@ -17,28 +17,51 @@ from utils.logger import logger
 # 直接导入DBUtils，避免循环导入
 try:
     from dbutils.pooled_db import PooledDB
+    DBUTILS_AVAILABLE = True
 except ImportError:
-    try:
-        from dbutils.pooled_db import PooledDB
-    except ImportError:
-        logger.error("无法导入DBUtils或dbutils，请安装DBUtils包")
-        raise
+    logger.warning("DBUtils不可用，将使用简化的数据库连接")
+    DBUTILS_AVAILABLE = False
+    PooledDB = None
 
 class MySQLPool:
     """MySQL连接池包装类"""
     def __init__(self, host, user, password, db, port=3306, mincached=2, maxcached=10):
-        self.pool = PooledDB(
-            creator=pymysql,
-            host=host, user=user, password=password, db=db, port=port,
-            mincached=mincached, maxcached=maxcached,
-            charset='utf8mb4',
-            cursorclass=pymysql.cursors.DictCursor,
-            autocommit=True
-        )
+        self.host = host
+        self.user = user
+        self.password = password
+        self.db = db
+        self.port = port
+        
+        if DBUTILS_AVAILABLE and PooledDB:
+            self.pool = PooledDB(
+                creator=pymysql,
+                host=host, user=user, password=password, db=db, port=port,
+                mincached=mincached, maxcached=maxcached,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True
+            )
+        else:
+            # Fallback: 使用简单的连接
+            self.pool = None
+            logger.warning("使用简化的数据库连接（无连接池）")
     
     def get_conn(self):
         """获取数据库连接"""
-        return self.pool.connection()
+        if self.pool:
+            return self.pool.connection()
+        else:
+            # Fallback: 直接创建连接
+            return pymysql.connect(
+                host=self.host,
+                user=self.user,
+                password=self.password,
+                db=self.db,
+                port=self.port,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True
+            )
     
     def query(self, sql, args=None):
         """执行查询"""

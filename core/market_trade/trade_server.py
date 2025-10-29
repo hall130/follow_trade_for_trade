@@ -13,7 +13,15 @@ import traceback
 from utils.dingtalk_bot import init_dingtalk_bot, get_dingtalk_bot
 from config.dingtalk_config import get_dingtalk_config
 import time
-import psutil
+
+# 可选导入psutil
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    logger.warning("psutil不可用，将跳过系统监控功能")
+    PSUTIL_AVAILABLE = False
+    psutil = None
 
 class TradeServer:
     """交易服务器类，提供交易接口"""
@@ -332,33 +340,36 @@ async def memory_monitor():
     while True:
         try:
             
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            memory_mb = memory_info.rss / 1024 / 1024
+            if PSUTIL_AVAILABLE and psutil:
+                process = psutil.Process()
+                memory_info = process.memory_info()
+                memory_mb = memory_info.rss / 1024 / 1024
             
-            if memory_mb > 800:  # 超过800MB严重警告
-                logger.error(f"🚨 内存使用严重过高: {memory_mb:.2f} MB，建议立即重启")
-                # 发送钉钉告警
-                try:
-                    from utils.dingtalk_bot import get_dingtalk_bot
-                    bot = get_dingtalk_bot()
-                    if bot:
-                        alert_info = {
-                            "title": "内存使用严重过高告警",
-                            "level": "ERROR",
-                            "message": f"系统内存使用已达到 {memory_mb:.2f} MB",
-                            "account": "系统级别",
-                            "strategy": "内存监控",
-                            "symbol": "系统资源",
-                            "suggestion": "建议立即重启系统或检查内存泄漏"
-                        }
-                        asyncio.create_task(bot.send_alert_notification_async("error", alert_info))
-                except Exception as e:
-                    logger.error(f"发送钉钉告警失败: {e}")
-            elif memory_mb > 500:  # 超过500MB警告
-                logger.warning(f"⚠️ 内存使用过高: {memory_mb:.2f} MB")
+                if memory_mb > 800:  # 超过800MB严重警告
+                    logger.error(f"🚨 内存使用严重过高: {memory_mb:.2f} MB，建议立即重启")
+                    # 发送钉钉告警
+                    try:
+                        from utils.dingtalk_bot import get_dingtalk_bot
+                        bot = get_dingtalk_bot()
+                        if bot:
+                            alert_info = {
+                                "title": "内存使用严重过高告警",
+                                "level": "ERROR",
+                                "message": f"系统内存使用已达到 {memory_mb:.2f} MB",
+                                "account": "系统级别",
+                                "strategy": "内存监控",
+                                "symbol": "系统资源",
+                                "suggestion": "建议立即重启系统或检查内存泄漏"
+                            }
+                            asyncio.create_task(bot.send_alert_notification_async("error", alert_info))
+                    except Exception as e:
+                        logger.error(f"发送钉钉告警失败: {e}")
+                elif memory_mb > 500:  # 超过500MB警告
+                    logger.warning(f"⚠️ 内存使用过高: {memory_mb:.2f} MB")
+                else:
+                    logger.info(f"📊 内存使用正常: {memory_mb:.2f} MB")
             else:
-                logger.info(f"📊 内存使用正常: {memory_mb:.2f} MB")
+                logger.debug("psutil不可用，跳过内存监控")
             
             await asyncio.sleep(60)  # 每分钟检查一次
         except Exception as e:

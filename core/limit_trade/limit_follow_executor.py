@@ -17,6 +17,7 @@ from core.limit_trade.limit_follow_models import LimitFollowStrategy, LimitFollo
 from core.limit_trade.limit_follow_db import LimitFollowDB
 from config.contract_config import get_contract_min_sz
 import requests
+from exchange.exchange_factory import create_exchange_client
 
 
 class LimitFollowExecutor:
@@ -628,23 +629,85 @@ class LimitFollowExecutor:
 
     async def _cancel_limit_order(self, strategy: LimitFollowStrategy, order_uid: str, exchange_order_id: str):
         """撤销限价单"""
-        try:
-            if not exchange_order_id:
-                logger.warning(f"订单 {order_uid} 没有交易所订单ID，无法撤单")
-                return
-            
-            # 这里需要调用交易所API撤销订单
-            # 暂时只更新数据库状态
-            self.db_pool.execute("""
-                UPDATE limit_follow_orders 
-                SET status = 'cancelled', updated_at = NOW()
-                WHERE order_uid = %s
-            """, (order_uid,))
-            
-            logger.info(f"订单 {order_uid} 撤单成功")
-            
-        except Exception as e:
-            logger.error(f"撤销订单 {order_uid} 失败: {e}")
+        max_retries = 3
+        retry_delay = 1  # 秒
+        
+        for attempt in range(max_retries):
+            try:
+                if not exchange_order_id:
+                    logger.warning(f"订单 {order_uid} 没有交易所订单ID，无法撤单")
+                    return
+                
+                # 获取订单信息
+                order_info = self.db_pool.query(
+                    "SELECT symbol FROM limit_follow_orders WHERE order_uid = %s",
+                    (order_uid,)
+                )
+                
+                if not order_info:
+                    logger.warning(f"订单 {order_uid} 不存在")
+                    return
+                
+                symbol = order_info[0]['symbol']
+                
+                # 获取客户账户信息
+                customer_info = self.db_pool.query(
+                    "SELECT api_key, api_secret, passphrase, is_demo FROM customers WHERE customer_uid = %s",
+                    (strategy.customer_uid,)
+                )
+                
+                if not customer_info:
+                    logger.error(f"客户 {strategy.customer_uid} 不存在")
+                    return
+                
+                customer_data = customer_info[0]
+                
+                # 创建REST客户端
+                rest_client = create_exchange_client(
+                    exchange='okx',
+                    client_type='rest',
+                    api_key=customer_data['api_key'],
+                    api_secret=customer_data['api_secret'],
+                    passphrase=customer_data['passphrase'],
+                    is_demo=customer_data['is_demo']
+                )
+                
+                # 调用交易所API撤销订单
+                logger.info(f"[撤单] 调用REST API撤单: instId={symbol}, ordId={exchange_order_id} (尝试 {attempt + 1}/{max_retries})")
+                cancel_result = await rest_client.cancel_order(symbol, ordId=exchange_order_id)
+                
+                if cancel_result and cancel_result.get('code') == '0':
+                    # 更新数据库状态
+                    self.db_pool.execute("""
+                        UPDATE limit_follow_orders 
+                        SET status = 'canceled', updated_at = NOW()
+                        WHERE order_uid = %s
+                    """, (order_uid,))
+                    
+                    logger.info(f"订单 {order_uid} 撤单成功")
+                    return  # 成功，退出重试循环
+                else:
+                    error_msg = cancel_result.get('msg', '未知错误') if cancel_result else '请求失败'
+                    logger.warning(f"订单 {order_uid} 撤单失败: {error_msg} (尝试 {attempt + 1}/{max_retries})")
+                    
+                    # 如果是最后一次尝试，记录最终失败
+                    if attempt == max_retries - 1:
+                        logger.error(f"订单 {order_uid} 撤单最终失败，已重试 {max_retries} 次")
+                        return
+                    
+                    # 等待后重试
+                    await asyncio.sleep(retry_delay)
+                    
+            except Exception as e:
+                logger.error(f"撤销订单 {order_uid} 失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                
+                # 如果是最后一次尝试，记录最终失败
+                if attempt == max_retries - 1:
+                    logger.error(f"订单 {order_uid} 撤单最终失败，已重试 {max_retries} 次")
+                    return
+                
+                # 等待后重试
+                await asyncio.sleep(retry_delay)
 
     async def _close_filled_order(self, strategy: LimitFollowStrategy, order_uid: str, filled_size: float, symbol: str, pos_side: str):
         """平仓已成交的订单"""
@@ -1193,7 +1256,7 @@ class LimitFollowExecutor:
                     logger.warning(f"未知的跟单类型: {strategy.follow_order_types}，使用默认限价模式")
                     orders = await self._create_limit_orders(strategy, trade, follow_side, follow_size, avg_px, ord_id)
                 
-                # for i in range(max_orders):
+                for i in range(max_orders):
                     # 计算价格偏移百分比 (1%, 2%, 3%, 4%)
                     price_offset_percent = (i + 1) * strategy.min_follow_value / 100.0
                     

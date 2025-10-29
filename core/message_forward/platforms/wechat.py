@@ -1,11 +1,14 @@
 """
 微信消息平台实现
-使用 itchat 库（需要扫码登录）
+使用 itchat-uos 库（解决登录问题）
 """
 
 from typing import Callable, Dict, List, Optional, Any
 import asyncio
 import threading
+import time
+import json
+import os
 
 from ..base import MessagePlatform
 from ..models import Message, MessageType, PlatformType
@@ -14,25 +17,35 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 class WeChatPlatform(MessagePlatform):
-    """微信消息平台"""
+    """微信消息平台（基于itchat-uos）"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(PlatformType.WECHAT, config)
         
         self.hot_reload = config.get('hot_reload', True)  # 热登录
         self.qr_callback = config.get('qr_callback')  # 二维码回调
+        self.config_file = config.get('config_file', 'wechat_listener_config.json')
         
         self.itchat = None
         self.login_thread = None
         self.is_logged_in = False
+        self.chatrooms = []  # 缓存的群聊信息
+        self.friends = []    # 缓存的好友信息
         
-        # 检查是否安装了 itchat
+        # 检查是否安装了 itchat-uos
         try:
-            import itchat
+            import itchat_uos as itchat
             self.itchat = itchat
+            logger.info("✅ 使用 itchat-uos 库")
         except ImportError:
-            logger.error("未安装 itchat 库，请运行: pip install itchat")
-            self.enabled = False
+            try:
+                import itchat
+                self.itchat = itchat
+                logger.warning("⚠️  使用原版 itchat 库，建议安装 itchat-uos")
+            except ImportError:
+                logger.error("❌ 未安装 itchat 或 itchat-uos 库")
+                logger.error("请运行: pip install itchat-uos==1.5.0.dev0")
+                self.enabled = False
     
     async def connect(self) -> bool:
         """连接到微信"""
@@ -72,27 +85,47 @@ class WeChatPlatform(MessagePlatform):
     def _login_sync(self):
         """同步登录（在后台线程中运行）"""
         try:
-            # 注册消息处理器
-            @self.itchat.msg_register(self.itchat.content.TEXT)
-            def text_handler(msg):
-                self._handle_wechat_message(msg, MessageType.TEXT)
-            
-            @self.itchat.msg_register(self.itchat.content.PICTURE)
-            def picture_handler(msg):
-                self._handle_wechat_message(msg, MessageType.IMAGE)
-            
-            @self.itchat.msg_register(self.itchat.content.ATTACHMENT)
-            def file_handler(msg):
-                self._handle_wechat_message(msg, MessageType.FILE)
+            # 注册消息处理器（兼容itchat-uos和原版itchat）
+            if hasattr(self.itchat, 'content'):
+                # 原版itchat
+                @self.itchat.msg_register(self.itchat.content.TEXT)
+                def text_handler(msg):
+                    self._handle_wechat_message(msg, MessageType.TEXT)
+                
+                @self.itchat.msg_register(self.itchat.content.PICTURE)
+                def picture_handler(msg):
+                    self._handle_wechat_message(msg, MessageType.IMAGE)
+                
+                @self.itchat.msg_register(self.itchat.content.ATTACHMENT)
+                def file_handler(msg):
+                    self._handle_wechat_message(msg, MessageType.FILE)
+            else:
+                # itchat-uos使用字符串
+                @self.itchat.msg_register('Text')
+                def text_handler(msg):
+                    self._handle_wechat_message(msg, MessageType.TEXT)
+                
+                @self.itchat.msg_register('Picture')
+                def picture_handler(msg):
+                    self._handle_wechat_message(msg, MessageType.IMAGE)
+                
+                @self.itchat.msg_register('Attachment')
+                def file_handler(msg):
+                    self._handle_wechat_message(msg, MessageType.FILE)
             
             # 登录
             self.itchat.auto_login(
                 hotReload=self.hot_reload,
+                enableCmdQR=2,  # 在终端显示二维码
+                picDir='itchat_uos_pics',
                 qrCallback=self.qr_callback
             )
             
             self.is_logged_in = True
             logger.info("微信登录成功，开始监听消息...")
+            
+            # 缓存群聊和好友信息
+            self._cache_chat_info()
             
             # 开始运行（阻塞）
             self.itchat.run()
@@ -100,6 +133,62 @@ class WeChatPlatform(MessagePlatform):
         except Exception as e:
             logger.error(f"微信登录失败: {e}")
             self.is_logged_in = False
+    
+    def _cache_chat_info(self):
+        """缓存群聊和好友信息"""
+        try:
+            # 获取群聊信息
+            self.chatrooms = self.itchat.get_chatrooms()
+            logger.info(f"缓存了 {len(self.chatrooms)} 个群聊")
+            
+            # 获取好友信息
+            self.friends = self.itchat.get_friends()
+            logger.info(f"缓存了 {len(self.friends)} 个好友")
+            
+        except Exception as e:
+            logger.error(f"缓存聊天信息失败: {e}")
+    
+    def get_chatrooms(self) -> List[Dict[str, Any]]:
+        """获取群聊列表"""
+        return self.chatrooms
+    
+    def get_friends(self) -> List[Dict[str, Any]]:
+        """获取好友列表"""
+        return self.friends
+    
+    def discover_groups(self) -> List[Dict[str, Any]]:
+        """发现微信群（返回群聊信息）"""
+        groups = []
+        for chatroom in self.chatrooms:
+            if chatroom.get('UserName', '').startswith('@@'):
+                groups.append({
+                    'name': chatroom.get('NickName', 'Unknown'),
+                    'id': chatroom.get('UserName', ''),
+                    'member_count': len(chatroom.get('MemberList', [])),
+                    'type': 'group'
+                })
+        return groups
+    
+    def load_config(self) -> Optional[Dict[str, Any]]:
+        """加载配置文件"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.error(f"加载配置文件失败: {e}")
+        return None
+    
+    def save_config(self, config: Dict[str, Any]) -> bool:
+        """保存配置文件"""
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            logger.info(f"配置已保存到: {self.config_file}")
+            return True
+        except Exception as e:
+            logger.error(f"保存配置文件失败: {e}")
+            return False
     
     def _handle_wechat_message(self, msg, message_type: MessageType):
         """处理微信消息"""

@@ -12,6 +12,7 @@ import websockets
 from typing import Dict, Any, Optional, List, Callable
 from utils.logger import logger
 from ..base_client import BaseWebSocketClient, ExchangeType
+from ..websocket_state_machine import WebSocketStatus, WebSocketStateMachine
 
 
 class BybitWebSocketClient(BaseWebSocketClient):
@@ -254,3 +255,27 @@ class BybitWebSocketClient(BaseWebSocketClient):
             'private_connected': self._private_connected,
             'overall_connected': self.is_connected()
         }
+    
+    async def subscribe_balance(self, callback: Callable):
+        """订阅余额数据"""
+        try:
+            if not self._private_connected:
+                logger.warning("私有WebSocket未连接，无法订阅余额数据")
+                return False
+            
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅Bybit余额数据")
+            return True
+        except Exception as e:
+            logger.error(f"订阅Bybit余额数据失败: {e}")
+            return False
+    
+    async def unsubscribe(self, channel: str) -> bool:
+        """取消订阅"""
+        try:
+            # 这里应该实现具体的取消订阅逻辑
+            logger.info(f"取消订阅Bybit频道: {channel}")
+            return True
+        except Exception as e:
+            logger.error(f"取消订阅Bybit频道失败: {e}")
+            return False

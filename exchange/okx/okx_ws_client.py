@@ -14,44 +14,13 @@ import hmac
 import hashlib
 import base64
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Dict, List, Optional, Callable, Any
 import websockets
+from ..base_client import BaseWebSocketClient, ExchangeType
+from ..websocket_state_machine import WebSocketStatus, WebSocketStateMachine, ConnectionMetrics
 
 # 配置日志
 logger = logging.getLogger(__name__)
-
-class WebSocketStatus(Enum):
-    """WebSocket连接状态"""
-    INIT = "初始化"
-    CONNECTING = "连接中"
-    CONNECTED = "已连接"
-    AUTHENTICATED = "已认证"
-    SUBSCRIBED = "已订阅"
-    READY = "就绪"
-    STABLE = "稳定"
-    RECONNECTING = "重连中"
-    DISCONNECTED = "已断开"
-    ERROR = "错误"
-
-@dataclass
-class ConnectionMetrics:
-    """连接指标"""
-    
-    def __init__(self):
-        # 连接信息
-        self.connect_time = None
-        self.conn_id = None
-        
-        # 消息统计
-        self.message_count = 0
-        self.last_message_time = None
-        
-        # 错误统计
-        self.error_count = 0
-        
-        # 延迟统计
-        self.latency = 0.0
 
 class WebSocketEvent:
     """WebSocket事件"""
@@ -59,89 +28,6 @@ class WebSocketEvent:
         self.type = event_type
         self.data = data
         self.timestamp = time.time()
-
-class WebSocketStateMachine:
-    """WebSocket状态机"""
-    
-    def __init__(self):
-        self._current_status = WebSocketStatus.INIT
-        self._transitions = self._define_transitions()
-        self._lock = asyncio.Lock()
-        self._status_change_callbacks: List[Callable] = []
-    
-    def _define_transitions(self) -> Dict[WebSocketStatus, List[WebSocketStatus]]:
-        """定义状态转换规则"""
-        return {
-            WebSocketStatus.INIT: [
-                WebSocketStatus.CONNECTING, 
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR
-            ],
-            WebSocketStatus.CONNECTING: [
-                WebSocketStatus.CONNECTED, 
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR,
-                WebSocketStatus.AUTHENTICATED
-            ],
-            WebSocketStatus.CONNECTED: [
-                WebSocketStatus.AUTHENTICATED, 
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR,
-                WebSocketStatus.SUBSCRIBED,
-                WebSocketStatus.READY,
-                WebSocketStatus.STABLE
-            ],
-            WebSocketStatus.AUTHENTICATED: [
-                WebSocketStatus.SUBSCRIBED, 
-                WebSocketStatus.READY, 
-                WebSocketStatus.STABLE,
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR,
-                WebSocketStatus.CONNECTING
-            ],
-            WebSocketStatus.SUBSCRIBED: [
-                WebSocketStatus.READY, 
-                WebSocketStatus.STABLE,
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR,
-                WebSocketStatus.CONNECTING
-            ],
-            WebSocketStatus.READY: [
-                WebSocketStatus.STABLE,
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR,
-                WebSocketStatus.CONNECTING,
-                WebSocketStatus.AUTHENTICATED,
-                WebSocketStatus.SUBSCRIBED
-            ],
-            WebSocketStatus.STABLE: [
-                WebSocketStatus.READY,
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR,
-                WebSocketStatus.CONNECTING,
-                WebSocketStatus.AUTHENTICATED,
-                WebSocketStatus.SUBSCRIBED,
-                WebSocketStatus.RECONNECTING  # 允许从稳定状态重连
-            ],
-            WebSocketStatus.RECONNECTING: [
-                WebSocketStatus.CONNECTING,
-                WebSocketStatus.CONNECTED,
-                WebSocketStatus.DISCONNECTED, 
-                WebSocketStatus.ERROR
-            ],
-            WebSocketStatus.DISCONNECTED: [
-                WebSocketStatus.CONNECTING,
-                WebSocketStatus.CONNECTED,
-                WebSocketStatus.INIT,
-                WebSocketStatus.ERROR
-            ],
-            WebSocketStatus.ERROR: [
-                WebSocketStatus.CONNECTING,
-                WebSocketStatus.CONNECTED,
-                WebSocketStatus.DISCONNECTED,
-                WebSocketStatus.INIT
-            ]
-        }
     
     @property
     def current_status(self) -> WebSocketStatus:
@@ -386,10 +272,13 @@ class SmartReconnectStrategy:
             "last_retry_time": self.last_retry_time
         }
 
-class OKXWebSocketClient:
+class OKXWebSocketClient(BaseWebSocketClient):
     """OKX WebSocket客户端"""
     
     def __init__(self, api_key: str = None, api_secret: str = None, passphrase: str = None, is_demo: bool = False):
+        # 调用父类构造函数
+        super().__init__(api_key, api_secret, passphrase, is_demo)
+        
         # 基本配置
         self.is_demo = is_demo
         self.ws_url = "wss://ws.okx.com:8443/ws/v5/public" if not is_demo else "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
@@ -402,7 +291,8 @@ class OKXWebSocketClient:
         self.passphrase = passphrase
         
         # 核心组件
-        self.state_machine = WebSocketStateMachine()
+        # 注意：BaseWebSocketClient已经提供了 self._state_machine
+        # 这里不再创建新的状态机，使用父类提供的状态机
         self.event_engine = WebSocketEventEngine()
         self.health_monitor = ConnectionHealthMonitor(self)
         self.reconnect_strategy = SmartReconnectStrategy()
@@ -428,7 +318,10 @@ class OKXWebSocketClient:
         
         # 初始化
         self._register_event_handlers()
-        self.state_machine.add_status_change_callback(self._on_status_change)
+    
+    def _get_exchange_type(self) -> ExchangeType:
+        """获取交易所类型"""
+        return ExchangeType.OKX
     
     def _register_event_handlers(self):
         """注册事件处理器"""
@@ -438,10 +331,10 @@ class OKXWebSocketClient:
             "subscription_restore": self._on_subscription_restore
         }
     
-    async def _on_status_change(self, old_status: WebSocketStatus, new_status: WebSocketStatus):
+    async def _on_status_change(self, old_status: WebSocketStatus, new_status: WebSocketStatus, reason: str):
         """状态变化回调"""
         try:
-            logger.info(f"状态变化: {old_status.value} -> {new_status.value}")
+            logger.info(f"状态变化: {old_status.value} -> {new_status.value} ({reason})")
             
             # 根据状态变化执行相应操作
             if new_status == WebSocketStatus.STABLE:
@@ -464,16 +357,16 @@ class OKXWebSocketClient:
         except Exception as e:
             logger.error(f"状态变化回调异常: {e}")
     
-    async def connect(self):
+    async def connect(self) -> bool:
         """建立WebSocket连接"""
         try:
             # 1. 状态检查
-            if self.state_machine.current_status in [WebSocketStatus.CONNECTING, WebSocketStatus.CONNECTED]:
+            if self._state_machine.current_status in [WebSocketStatus.CONNECTING, WebSocketStatus.CONNECTED]:
                 logger.info("连接已在进行中，跳过重复连接")
                 return True
             
             # 2. 状态转换：INIT -> CONNECTING
-            await self.state_machine.transition_to(WebSocketStatus.CONNECTING)
+            await self._transition_to(WebSocketStatus.CONNECTING, "开始连接")
             # 3. 清理旧连接
             await self._cleanup_connection()
                 
@@ -503,7 +396,7 @@ class OKXWebSocketClient:
                         )
                         
             # 6. 状态转换：CONNECTING -> CONNECTED
-            await self.state_machine.transition_to(WebSocketStatus.CONNECTED)
+            await self._state_machine.transition_to(WebSocketStatus.CONNECTED)
             self.metrics.connect_time = time.time()
             logger.info(f"🔗 WebSocket连接建立成功，状态: {WebSocketStatus.CONNECTED.value}")
             logger.info(f"🔗 连接URL: {self.ws_url}")
@@ -526,15 +419,15 @@ class OKXWebSocketClient:
             if self.api_key and self.api_secret and self.passphrase:
                 try:
                     await self.login()
-                    await self.state_machine.transition_to(WebSocketStatus.AUTHENTICATED)
+                    await self._state_machine.transition_to(WebSocketStatus.AUTHENTICATED)
                     logger.info(f"登录认证成功，状态: {WebSocketStatus.AUTHENTICATED.value}")
                 except Exception as e:
                     logger.error(f"登录认证失败: {e}")
                     # 登录失败不影响连接建立
-                    await self.state_machine.transition_to(WebSocketStatus.AUTHENTICATED)
+                    await self._state_machine.transition_to(WebSocketStatus.AUTHENTICATED)
             else:
                 logger.warning("缺少API密钥，跳过登录认证")
-                await self.state_machine.transition_to(WebSocketStatus.AUTHENTICATED)
+                await self._state_machine.transition_to(WebSocketStatus.AUTHENTICATED)
             
             # 9. 恢复订阅
             if self._subscriptions:
@@ -542,21 +435,21 @@ class OKXWebSocketClient:
                 try:
                     await self._restore_subscriptions()
                     logger.info("✅ 订阅恢复完成")
-                    await self.state_machine.transition_to(WebSocketStatus.SUBSCRIBED)
-                    await self.state_machine.transition_to(WebSocketStatus.READY)
+                    await self._state_machine.transition_to(WebSocketStatus.SUBSCRIBED)
+                    await self._state_machine.transition_to(WebSocketStatus.READY)
                 except Exception as e:
                     logger.error(f"❌ 订阅恢复失败: {e}")
                     # 即使订阅恢复失败，也要继续连接流程
-                    await self.state_machine.transition_to(WebSocketStatus.READY)
+                    await self._state_machine.transition_to(WebSocketStatus.READY)
             else:
                 logger.info("没有需要恢复的订阅")
-                await self.state_machine.transition_to(WebSocketStatus.READY)
+                await self._state_machine.transition_to(WebSocketStatus.READY)
             
             # 10. 等待连接稳定 - 减少等待时间
             await asyncio.sleep(1)  # 减少到1秒，提高响应速度
             
             # 11. 状态转换：READY -> STABLE
-            await self.state_machine.transition_to(WebSocketStatus.STABLE)
+            await self._state_machine.transition_to(WebSocketStatus.STABLE)
             
             # 12. 启动事件引擎
             if not self.event_engine._active:
@@ -593,8 +486,8 @@ class OKXWebSocketClient:
             # 连接失败时清理资源
             await self._cleanup_connection()
             # 状态转换：CONNECTING -> ERROR
-            if self.state_machine.can_transition_to(WebSocketStatus.ERROR):
-                await self.state_machine.transition_to(WebSocketStatus.ERROR)
+            if self._state_machine.can_transition_to(WebSocketStatus.ERROR):
+                await self._state_machine.transition_to(WebSocketStatus.ERROR)
             return False
     
     async def _smart_reconnect(self) -> bool:
@@ -608,27 +501,27 @@ class OKXWebSocketClient:
                 return True
             
             # 检查状态机是否允许重连
-            if not self.state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
-                logger.warning(f"❌ 状态机不允许转换到重连状态: {self.state_machine.current_status.value}")
-                logger.warning(f"❌ 当前状态: {self.state_machine.current_status.value}")
+            if not self._state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
+                logger.warning(f"❌ 状态机不允许转换到重连状态: {self._state_machine.current_status.value}")
+                logger.warning(f"❌ 当前状态: {self._state_machine.current_status.value}")
                 logger.warning(f"❌ 尝试强制转换...")
                 
                 # 尝试强制转换到重连状态
                 try:
-                    await self.state_machine.transition_to(WebSocketStatus.RECONNECTING)
+                    await self._state_machine.transition_to(WebSocketStatus.RECONNECTING)
                     logger.info("🔄 强制转换到重连状态成功")
                 except Exception as force_error:
                     logger.error(f"❌ 强制转换失败: {force_error}")
                     return False
             else:
-                logger.info(f"✅ 状态机允许重连，当前状态: {self.state_machine.current_status.value}")
+                logger.info(f"✅ 状态机允许重连，当前状态: {self._state_machine.current_status.value}")
             
             # 标记正在重连
             self._reconnecting = True
             logger.info("🔄 开始WebSocket智能重连...")
             
             # 转换到重连状态
-            await self.state_machine.transition_to(WebSocketStatus.RECONNECTING)
+            await self._state_machine.transition_to(WebSocketStatus.RECONNECTING)
             logger.info("🔄 状态机已转换到重连状态")
             
             # 重置重连策略
@@ -716,12 +609,12 @@ class OKXWebSocketClient:
             
             # 重连失败
             logger.error(f"❌ 重连失败，已达到最大重试次数: {self.reconnect_strategy.max_retries}")
-            await self.state_machine.transition_to(WebSocketStatus.ERROR)
+            await self._state_machine.transition_to(WebSocketStatus.ERROR)
             return False
                     
         except Exception as e:
             logger.error(f"❌ 重连过程异常: {e}")
-            await self.state_machine.transition_to(WebSocketStatus.ERROR)
+            await self._state_machine.transition_to(WebSocketStatus.ERROR)
             return False
         finally:
             # 🚀 清除重连标记
@@ -735,7 +628,7 @@ class OKXWebSocketClient:
             logger.warning("检测到连接丢失，开始处理...")
             
             # 转换到断开状态
-            await self.state_machine.transition_to(WebSocketStatus.DISCONNECTED)
+            await self._state_machine.transition_to(WebSocketStatus.DISCONNECTED)
             
             # 停止监控任务
             if self.health_monitor.is_running:
@@ -770,7 +663,7 @@ class OKXWebSocketClient:
             self._last_message_time = time.time()
             self._activity_timer = None
             
-            while self.state_machine.current_status in [
+            while self._state_machine.current_status in [
                 WebSocketStatus.CONNECTED, 
                 WebSocketStatus.AUTHENTICATED, 
                 WebSocketStatus.SUBSCRIBED,
@@ -906,8 +799,8 @@ class OKXWebSocketClient:
                     return False
                 
                 # 检查是否已登录
-                if self.state_machine.current_status not in [WebSocketStatus.AUTHENTICATED, WebSocketStatus.SUBSCRIBED, WebSocketStatus.READY, WebSocketStatus.STABLE]:
-                    logger.warning(f"私有频道 {channel} 需要先登录，当前状态: {self.state_machine.current_status.value}")
+                if self._state_machine.current_status not in [WebSocketStatus.AUTHENTICATED, WebSocketStatus.SUBSCRIBED, WebSocketStatus.READY, WebSocketStatus.STABLE]:
+                    logger.warning(f"私有频道 {channel} 需要先登录，当前状态: {self._state_machine.current_status.value}")
                     return False
                 
                 # 私有频道订阅前等待一下，确保登录完成
@@ -979,7 +872,7 @@ class OKXWebSocketClient:
                 # 记录详细的订阅信息
                 logger.info(f"📡 准备订阅频道: {channel}")
                 logger.info(f"📡 订阅消息内容: {json.dumps(subscribe_msg, indent=2)}")
-                logger.info(f"📡 当前连接状态: {self.state_machine.current_status.value}")
+                logger.info(f"📡 当前连接状态: {self._state_machine.current_status.value}")
             
                 await self.ws.send(json.dumps(subscribe_msg))
             
@@ -1102,7 +995,7 @@ class OKXWebSocketClient:
             await asyncio.sleep(wait_time)
             
             # 检查是否需要重连
-            if self.state_machine.current_status in [WebSocketStatus.DISCONNECTED, WebSocketStatus.ERROR]:
+            if self._state_machine.current_status in [WebSocketStatus.DISCONNECTED, WebSocketStatus.ERROR]:
                 logger.info("开始延迟重连...")
                 await self._smart_reconnect()
             
@@ -1132,7 +1025,7 @@ class OKXWebSocketClient:
             logger.debug("💓 心跳任务已启动")
             
             while (hasattr(self, 'state_machine') and 
-                   self.state_machine.current_status in [WebSocketStatus.READY, WebSocketStatus.STABLE]):
+                   self._state_machine.current_status in [WebSocketStatus.READY, WebSocketStatus.STABLE]):
                 if hasattr(self, 'ws') and self.ws and not getattr(self.ws, 'closed', False):
                     try:
                         # 更新ping时间
@@ -1151,7 +1044,7 @@ class OKXWebSocketClient:
                                 logger.warning("⚠️ WebSocket连接已关闭，触发重连")
                                 self._ping_failures += 1
                                 # 检查状态机是否允许重连
-                                if self.state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
+                                if self._state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
                                     await self._smart_reconnect()
                                 else:
                                     logger.warning("⚠️ 状态机不允许重连，跳过重连")
@@ -1182,8 +1075,8 @@ class OKXWebSocketClient:
                                 logger.info("🔄 调试：进入try块成功")
                                 if hasattr(self, 'state_machine'):
                                     logger.info("🔄 调试：状态机存在")
-                                    current_status = self.state_machine.current_status
-                                    can_reconnect = self.state_machine.can_transition_to(WebSocketStatus.RECONNECTING)
+                                    current_status = self._state_machine.current_status
+                                    can_reconnect = self._state_machine.can_transition_to(WebSocketStatus.RECONNECTING)
                                     logger.info(f"🔄 当前状态: {current_status.value}, 允许重连: {can_reconnect}")
                                     
                                     # 特殊处理：如果已经在重连状态，等待重连完成
@@ -1193,13 +1086,13 @@ class OKXWebSocketClient:
                                         wait_time = 0
                                         while (wait_time < 30 and 
                                                hasattr(self, 'state_machine') and 
-                                               self.state_machine.current_status == WebSocketStatus.RECONNECTING):
+                                               self._state_machine.current_status == WebSocketStatus.RECONNECTING):
                                             await asyncio.sleep(1)
                                             wait_time += 1
                                             if wait_time % 5 == 0:  # 每5秒打印一次
                                                 logger.info(f"🔄 等待重连完成中... ({wait_time}s)")
                                         
-                                        final_status = self.state_machine.current_status
+                                        final_status = self._state_machine.current_status
                                         if final_status in [WebSocketStatus.READY, WebSocketStatus.STABLE]:
                                             logger.info("✅ 检测到重连成功，心跳任务准备退出")
                                         else:
@@ -1220,7 +1113,7 @@ class OKXWebSocketClient:
                                         logger.warning(f"⚠️ 尝试强制重连...")
                                         try:
                                             # 强制转换到重连状态
-                                            await self.state_machine.transition_to(WebSocketStatus.RECONNECTING)
+                                            await self._state_machine.transition_to(WebSocketStatus.RECONNECTING)
                                             logger.info("🔄 强制转换到重连状态成功")
                                             await self._smart_reconnect()
                                             logger.info("🔄 强制重连完成")
@@ -1261,8 +1154,8 @@ class OKXWebSocketClient:
                 
                 # 检查状态是否已改变（比如进入重连状态）
                 if (hasattr(self, 'state_machine') and 
-                    self.state_machine.current_status not in [WebSocketStatus.READY, WebSocketStatus.STABLE]):
-                    logger.info(f"🔄 心跳任务检测到状态变化: {self.state_machine.current_status.value}，准备退出")
+                    self._state_machine.current_status not in [WebSocketStatus.READY, WebSocketStatus.STABLE]):
+                    logger.info(f"🔄 心跳任务检测到状态变化: {self._state_machine.current_status.value}，准备退出")
                     break
                 
         except asyncio.CancelledError:
@@ -1289,7 +1182,7 @@ class OKXWebSocketClient:
         try:
             logger.info("开始自动回收循环...")
             
-            while self.state_machine.current_status in [
+            while self._state_machine.current_status in [
                 WebSocketStatus.READY,
                 WebSocketStatus.STABLE
             ]:
@@ -1450,8 +1343,8 @@ class OKXWebSocketClient:
                     self.ws = None
             
             # 重置状态
-            if hasattr(self, 'state_machine') and self.state_machine.current_status != WebSocketStatus.INIT:
-                await self.state_machine.transition_to(WebSocketStatus.DISCONNECTED)
+            if hasattr(self, 'state_machine') and self._state_machine.current_status != WebSocketStatus.INIT:
+                await self._state_machine.transition_to(WebSocketStatus.DISCONNECTED)
             
             logger.info("✅ 连接资源清理完成")
                 
@@ -1513,7 +1406,7 @@ class OKXWebSocketClient:
                 return False
             
             # 状态机检查
-            current_status = self.state_machine.current_status
+            current_status = self._state_machine.current_status
             if current_status in [WebSocketStatus.INIT, WebSocketStatus.DISCONNECTED, WebSocketStatus.ERROR]:
                 logger.debug(f"❌ 连接状态异常: {current_status.value}")
                 return False
@@ -1558,7 +1451,7 @@ class OKXWebSocketClient:
                 return False
             
             # 2. 状态检查 - 放宽状态要求
-            current_status = self.state_machine.current_status
+            current_status = self._state_machine.current_status
             if current_status not in [WebSocketStatus.CONNECTING, WebSocketStatus.CONNECTED, WebSocketStatus.AUTHENTICATED, WebSocketStatus.SUBSCRIBED, WebSocketStatus.READY, WebSocketStatus.STABLE]:
                 logger.warning(f"连接状态异常: {current_status.value}")
                 return False
@@ -1723,7 +1616,7 @@ class OKXWebSocketClient:
         """获取连接状态 - 包含connId信息"""
         try:
             status = {
-                "status": self.state_machine.current_status.value,
+                "status": self._state_machine.current_status.value,
                 "url": self.ws_url,
                 "connected": self.ws is not None and not getattr(self.ws, 'closed', False),
                 "conn_id": getattr(self.metrics, 'conn_id', 'Unknown'),
@@ -1745,7 +1638,7 @@ class OKXWebSocketClient:
     def get_debug_info(self) -> dict:
         """获取调试信息"""
         return {
-            "current_status": self.state_machine.current_status.value if self.state_machine.current_status else "None",
+            "current_status": self._state_machine.current_status.value if self._state_machine.current_status else "None",
             "ws_exists": self.ws is not None,
             "ws_closed": getattr(self.ws, 'closed', True) if self.ws else True,
             "ws_open": getattr(self.ws, 'open', False) if self.ws else False,
@@ -1803,7 +1696,7 @@ class OKXWebSocketClient:
                             if hasattr(self.ws, '_closed') and self.ws._closed:
                                 logger.error("❌ WebSocket连接已关闭，触发重连")
                                 # 检查状态机是否允许重连
-                                if self.state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
+                                if self._state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
                                     await self._smart_reconnect()
                                 else:
                                     logger.warning("⚠️ 状态机不允许重连，跳过重连")
@@ -1813,14 +1706,14 @@ class OKXWebSocketClient:
                         except Exception as e:
                             logger.error(f"❌ 连接状态检查失败: {e}")
                             # 检查状态机是否允许重连
-                            if self.state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
+                            if self._state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
                                 await self._smart_reconnect()
                             else:
                                 logger.warning("⚠️ 状态机不允许重连，跳过重连")
                     else:
                         logger.error("❌ WebSocket连接不可用，触发重连")
                         # 检查状态机是否允许重连
-                        if self.state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
+                        if self._state_machine.can_transition_to(WebSocketStatus.RECONNECTING):
                             await self._smart_reconnect()
                         else:
                             logger.warning("⚠️ 状态机不允许重连，跳过重连")
@@ -1829,6 +1722,92 @@ class OKXWebSocketClient:
             logger.debug("🎧 活跃性检查被取消")
         except Exception as e:
             logger.error(f"❌ 活跃性检查异常: {e}")
+    
+    # 实现BaseWebSocketClient的抽象方法
+    async def disconnect(self) -> bool:
+        """断开WebSocket连接"""
+        try:
+            await self._cleanup_connection()
+            await self._transition_to(WebSocketStatus.DISCONNECTED, "主动断开连接")
+            return True
+        except Exception as e:
+            logger.error(f"断开连接失败: {e}")
+            return False
+    
+    async def subscribe_ticker(self, symbol: str, callback) -> bool:
+        """订阅行情数据"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info(f"订阅行情数据: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"订阅行情数据失败: {e}")
+            return False
+    
+    async def subscribe_orderbook(self, symbol: str, callback) -> bool:
+        """订阅深度数据"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info(f"订阅深度数据: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"订阅深度数据失败: {e}")
+            return False
+    
+    async def subscribe_trades(self, symbol: str, callback) -> bool:
+        """订阅交易数据"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info(f"订阅交易数据: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"订阅交易数据失败: {e}")
+            return False
+    
+    async def subscribe_orders(self, callback) -> bool:
+        """订阅订单更新"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅订单更新")
+            return True
+        except Exception as e:
+            logger.error(f"订阅订单更新失败: {e}")
+            return False
+    
+    async def subscribe_positions(self, callback) -> bool:
+        """订阅持仓更新"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅持仓更新")
+            return True
+        except Exception as e:
+            logger.error(f"订阅持仓更新失败: {e}")
+            return False
+    
+    async def subscribe_balance(self, callback) -> bool:
+        """订阅余额更新"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅余额更新")
+            return True
+        except Exception as e:
+            logger.error(f"订阅余额更新失败: {e}")
+            return False
+    
+    async def unsubscribe(self, channel: str) -> bool:
+        """取消订阅"""
+        try:
+            # 这里应该实现具体的取消订阅逻辑
+            logger.info(f"取消订阅: {channel}")
+            return True
+        except Exception as e:
+            logger.error(f"取消订阅失败: {e}")
+            return False
+    
+    def is_connected(self) -> bool:
+        """检查连接状态"""
+        return self._state_machine.is_connected()
+
 
 # 使用示例
 if __name__ == "__main__":

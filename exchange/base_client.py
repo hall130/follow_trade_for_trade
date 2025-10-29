@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, List, Union
 from enum import Enum
 from dataclasses import dataclass
 from utils.logger import logger
+from .websocket_state_machine import WebSocketStateMachine, WebSocketStatus
 
 
 class ExchangeType(Enum):
@@ -319,6 +320,46 @@ class BaseWebSocketClient(ABC):
         self.exchange_type = self._get_exchange_type()
         self._subscriptions = {}
         self._callbacks = {}
+        
+        # 初始化状态机
+        self._state_machine = WebSocketStateMachine(self.exchange_type.value)
+        self._setup_state_callbacks()
+    
+    def _setup_state_callbacks(self):
+        """设置状态变化回调"""
+        self._state_machine.add_status_change_callback(self._on_status_change)
+    
+    def _on_status_change(self, old_status: WebSocketStatus, new_status: WebSocketStatus, reason: str):
+        """状态变化回调"""
+        logger.info(f"[{self.exchange_type.value}] WebSocket状态变化: {old_status.value} -> {new_status.value} ({reason})")
+    
+    @property
+    def status(self) -> WebSocketStatus:
+        """获取当前状态"""
+        return self._state_machine.current_status
+    
+    @property
+    def is_connected(self) -> bool:
+        """检查是否已连接"""
+        return self._state_machine.is_connected()
+    
+    @property
+    def is_ready(self) -> bool:
+        """检查是否就绪"""
+        return self._state_machine.is_ready()
+    
+    @property
+    def is_stable(self) -> bool:
+        """检查是否稳定"""
+        return self._state_machine.is_stable()
+    
+    def get_status_info(self) -> Dict[str, Any]:
+        """获取状态信息"""
+        return self._state_machine.get_status_info()
+    
+    async def _transition_to(self, status: WebSocketStatus, reason: str = "") -> bool:
+        """转换状态"""
+        return await self._state_machine.transition_to(status, reason)
     
     @abstractmethod
     def _get_exchange_type(self) -> ExchangeType:

@@ -31,7 +31,7 @@ class ExecutionStatus(Enum):
     EXECUTING = 'executing'  # 执行中
     COMPLETED = 'completed'  # 已完成
     FAILED = 'failed'        # 执行失败
-    CANCELLED = 'cancelled'  # 已取消
+    CANCELLED = 'canceled'  # 已取消
 
 class FollowType(Enum):
     """跟单类型枚举"""

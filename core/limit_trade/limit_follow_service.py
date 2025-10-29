@@ -21,6 +21,7 @@ from core.limit_trade.limit_follow_models import LimitFollowOrder, LimitFollowSt
 from core.limit_trade.limit_follow_monitor_config import (
     get_monitor_config, MonitorStatus, MonitorMetrics, OrderSyncResult
 )
+from core.market_trade.trade_service import get_global_is_demo, make_clOrdId
 from database.global_db_manager import get_global_db_pool
 
 class EnhancedLimitFollowService:
@@ -237,7 +238,6 @@ class EnhancedLimitFollowService:
                 return
             
             # 创建统一交易所客户端
-            from trade_service import get_global_is_demo
             customer_data = {
                 'api_key': customer['api_key'],
                 'api_secret': customer.get('secret_key') or customer.get('api_secret'),
@@ -466,7 +466,6 @@ class EnhancedLimitFollowService:
                 return False
             
             # 创建统一REST客户端
-            from trade_service import get_global_is_demo
             
             customer_data = {
                 'api_key': customer_info['api_key'],
@@ -504,7 +503,7 @@ class EnhancedLimitFollowService:
             # 更新本地订单状态为已取消
             success = self.db.db_pool.execute("""
                 UPDATE limit_follow_orders 
-                SET status='cancelled', updated_at=NOW()
+                SET status='canceled', updated_at=NOW()
                 WHERE order_uid=%s
             """, (order['order_uid'],))
             
@@ -727,7 +726,6 @@ class EnhancedLimitFollowService:
         """获取客户或信号源信息"""
         try:
             # 获取当前盘口模式
-            from trade_service import get_global_is_demo
             is_demo = get_global_is_demo()
             
             # 先尝试从客户表查询（根据当前盘口模式）
@@ -757,7 +755,6 @@ class EnhancedLimitFollowService:
         """获取活跃客户列表"""
         try:
             # 获取当前盘口模式
-            from trade_service import get_global_is_demo
             is_demo = get_global_is_demo()
             
             return self.db.db_pool.query(
@@ -832,7 +829,6 @@ class EnhancedLimitFollowService:
                 return []
             
             # 获取统一交易所客户端
-            from trade_service import get_global_is_demo
             customer_data = {
                 'api_key': customer['api_key'],
                 'api_secret': customer.get('secret_key') or customer.get('api_secret'),
@@ -888,7 +884,6 @@ class EnhancedLimitFollowService:
                 return None
             
             # 获取统一交易所客户端
-            from trade_service import get_global_is_demo
             customer_data = {
                 'api_key': customer['api_key'],
                 'api_secret': customer.get('secret_key') or customer.get('api_secret'),
@@ -978,7 +973,6 @@ class EnhancedLimitFollowService:
                 return False
             
             # 创建统一REST客户端
-            from trade_service import get_global_is_demo
             
             customer_data = {
                 'api_key': customer_info['api_key'],
@@ -1047,7 +1041,6 @@ class EnhancedLimitFollowService:
                     adjusted_price = float(f"{adjusted_price:.{price_precision}f}")
             
             # 生成符合OKX要求的客户端订单ID
-            from trade_service import make_clOrdId
             import time
             
             timestamp = str(int(time.time() * 1000))[-8:]

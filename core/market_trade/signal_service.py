@@ -569,7 +569,7 @@ class SignalService:
                     break
                     
         # 清理资源
-        if client:
+        if client and hasattr(client, 'close'):
             try:
                 await client.close()
                 logger.info(f"[信号源监听] 信号源 {signal_account.source_uid} 客户端已关闭")

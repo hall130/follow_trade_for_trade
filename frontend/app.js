@@ -6,6 +6,11 @@ class OKXTradingApp {
         this.currentTradesPage = 1;
         this.tradesSearchParams = {};
         
+        // 用户和权限信息
+        this.currentUser = null;
+        this.userPermissions = {};
+        this.isLoggedIn = false;
+        
         // 防重复点击标志
         this.isUpdatingAssets = false;
         // 系统日志分页
@@ -58,6 +63,9 @@ class OKXTradingApp {
     }
 
     init() {
+        // 首先检查登录状态
+        this.checkLoginStatus();
+        
         this.bindEvents();
         this.loadDashboardData();
         this.setupCharts();
@@ -70,12 +78,320 @@ class OKXTradingApp {
         this.initSymbolSearch();
     }
 
+    // 检查登录状态
+    async checkLoginStatus() {
+        try {
+            // 从localStorage获取登录状态
+            const loginStatus = localStorage.getItem('loginStatus');
+            if (!loginStatus) {
+                this.redirectToLogin();
+                return;
+            }
+            
+            const status = JSON.parse(loginStatus);
+            if (!status.isLoggedIn || status.expiresAt <= Date.now()) {
+                this.redirectToLogin();
+                return;
+            }
+            
+            // 验证Token是否有效
+            const response = await fetch(`${this.apiBaseUrl}/auth/me`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${status.token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                this.redirectToLogin();
+                return;
+            }
+            
+            const result = await response.json();
+            if (result.success) {
+                this.currentUser = result.data;
+                this.userPermissions = status.permissions;
+                this.isLoggedIn = true;
+                
+                // 更新用户显示
+                this.updateUserDisplay();
+                
+                // 应用权限控制
+                this.applyPermissionControl();
+            } else {
+                this.redirectToLogin();
+            }
+            
+        } catch (error) {
+            console.error('检查登录状态失败:', error);
+            this.redirectToLogin();
+        }
+    }
+    
+    // 通用API请求方法
+    async apiRequest(url, options = {}) {
+        try {
+            // 获取登录状态
+            const loginStatus = localStorage.getItem('loginStatus');
+            if (!loginStatus) {
+                this.redirectToLogin();
+                return null;
+            }
+            
+            const status = JSON.parse(loginStatus);
+            
+            if (!status.isLoggedIn || status.expiresAt <= Date.now()) {
+                this.redirectToLogin();
+                return null;
+            }
+            
+            // 设置默认headers
+            const defaultHeaders = {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${status.token}`
+            };
+            
+            
+            // 合并headers
+            const headers = {
+                ...defaultHeaders,
+                ...(options.headers || {})
+            };
+            
+            // 发起请求
+            const response = await fetch(url, {
+                ...options,
+                headers
+            });
+            
+            
+            // 如果返回401，说明token过期或无效
+            if (response.status === 401) {
+                this.redirectToLogin();
+                return null;
+            }
+            
+            return response;
+            
+        } catch (error) {
+            return null;
+        }
+    }
+    
+    // 显示用户资料
+    showUserProfile() {
+        if (!this.currentUser) {
+            this.showToast('错误', '用户信息未加载', 'danger');
+            return;
+        }
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">用户资料</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label class="form-label">用户名</label>
+                                <input type="text" class="form-control" value="${this.currentUser.username || ''}" readonly>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">姓名</label>
+                                <input type="text" class="form-control" value="${this.currentUser.full_name || ''}" readonly>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label class="form-label">邮箱</label>
+                                <input type="email" class="form-control" value="${this.currentUser.email || ''}" readonly>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">角色</label>
+                                <input type="text" class="form-control" value="${this.currentUser.role || ''}" readonly>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label class="form-label">状态</label>
+                                <input type="text" class="form-control" value="${this.currentUser.status || ''}" readonly>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">最后登录</label>
+                                <input type="text" class="form-control" value="${this.currentUser.last_login_at || '未知'}" readonly>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // 模态框关闭后移除DOM元素
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.body.removeChild(modal);
+        });
+    }
+    
+    // 更新用户显示
+    updateUserDisplay() {
+        const userDisplayName = document.getElementById('userDisplayName');
+        if (userDisplayName && this.currentUser) {
+            const displayName = this.currentUser.full_name || this.currentUser.username;
+            const roleBadge = this.currentUser.role === 'admin' ? ' <span class="badge bg-danger">管理员</span>' : '';
+            userDisplayName.innerHTML = displayName + roleBadge;
+        }
+    }
+    
+    // 应用权限控制
+    applyPermissionControl() {
+        // 隐藏无权限的菜单项
+        document.querySelectorAll('[data-permission]').forEach(element => {
+            const requiredPermission = element.getAttribute('data-permission');
+            if (!this.hasPermission(requiredPermission)) {
+                element.style.display = 'none';
+            }
+        });
+        
+        // 显示管理员专用菜单
+        if (this.currentUser && this.currentUser.role === 'admin') {
+            const adminMenus = document.querySelectorAll('#admin-menu-users, #admin-menu-permissions');
+            adminMenus.forEach(menu => {
+                menu.style.display = 'block';
+            });
+        }
+    }
+    
+    // 加载用户权限
+    async loadUserPermissions() {
+        try {
+            if (!this.currentUser) {
+                this.userPermissions = {};
+                return;
+            }
+            
+            // 管理员拥有所有权限
+            if (this.currentUser.role === 'admin') {
+                this.userPermissions = {
+                    'customers': 'admin',
+                    'signal_sources': 'admin',
+                    'strategies': 'admin',
+                    'limit_follow': 'admin',
+                    'system_settings': 'admin',
+                    'users': 'admin'
+                };
+                return;
+            }
+            
+            // 普通用户通过API获取权限
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/permissions/user/${this.currentUser.id}`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.userPermissions = data.data;
+                } else {
+                    this.userPermissions = {};
+                }
+            } else {
+                this.userPermissions = {};
+            }
+            
+            console.log('用户权限加载完成:', this.userPermissions);
+            
+        } catch (error) {
+            console.error('加载用户权限失败:', error);
+            this.userPermissions = {};
+        }
+    }
+
+    // 检查权限
+    hasPermission(moduleCode, requiredLevel = 'read') {
+        if (!this.currentUser) return false;
+        
+        // 管理员拥有所有权限
+        if (this.currentUser.role === 'admin') return true;
+        
+        // 检查具体权限
+        const userPermission = this.userPermissions[moduleCode];
+        if (!userPermission) return false;
+        
+        // 权限级别比较
+        const permissionLevels = {
+            'none': 0,
+            'read': 1,
+            'write': 2,
+            'admin': 3
+        };
+        
+        const requiredWeight = permissionLevels[requiredLevel] || 0;
+        const userWeight = permissionLevels[userPermission] || 0;
+        
+        return userWeight >= requiredWeight;
+    }
+    
+    // 权限检查装饰器
+    requirePermission(moduleCode, requiredLevel = 'read') {
+        return (target, propertyKey, descriptor) => {
+            const originalMethod = descriptor.value;
+            descriptor.value = function(...args) {
+                if (!this.hasPermission(moduleCode, requiredLevel)) {
+                    this.showError('没有访问权限');
+                    return;
+                }
+                return originalMethod.apply(this, args);
+            };
+        };
+    }
+    
+    // 登出
+    async logout() {
+        try {
+            const loginStatus = JSON.parse(localStorage.getItem('loginStatus') || '{}');
+            
+            if (loginStatus.sessionId) {
+                await fetch(`${this.apiBaseUrl}/auth/logout`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${loginStatus.token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+            }
+            
+        } catch (error) {
+            console.error('登出请求失败:', error);
+        } finally {
+            // 清除本地状态并跳转
+            localStorage.removeItem('loginStatus');
+            this.redirectToLogin();
+        }
+    }
+
     bindEvents() {
         // 导航事件
         document.querySelectorAll('[data-page]').forEach(link => {
             link.addEventListener('click', (e) => {
                 e.preventDefault();
-                this.navigateToPage(e.target.dataset.page);
+                // 获取最近的带有data-page属性的元素
+                const targetElement = e.target.closest('[data-page]');
+                const pageName = targetElement ? targetElement.dataset.page : null;
+                
+                if (pageName) {
+                    this.navigateToPage(pageName);
+                } else {
+                    console.warn('页面不存在:', pageName);
+                }
             });
         });
 
@@ -103,6 +419,24 @@ class OKXTradingApp {
             logoutBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 this.logout();
+            });
+        }
+        
+        // 个人资料
+        const userProfileBtn = document.getElementById('userProfile');
+        if (userProfileBtn) {
+            userProfileBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.showUserProfile();
+            });
+        }
+        
+        // 修改密码
+        const changePasswordBtn = document.getElementById('changePassword');
+        if (changePasswordBtn) {
+            changePasswordBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.showChangePasswordModal();
             });
         }
 
@@ -565,8 +899,8 @@ class OKXTradingApp {
     // 动态加载信号源下拉选项
     async loadSignalSourcesOptions() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/signal_sources`);
-            if (response.ok) {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/signal_sources`);
+            if (response && response.ok) {
                 const data = await response.json();
                 const signalSources = Array.isArray(data.data) ? data.data : (data.data?.sources || []);
                 
@@ -595,8 +929,8 @@ class OKXTradingApp {
     // 加载客户选项
     async loadCustomersOptions() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/customers`);
-            if (response.ok) {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/customers`);
+            if (response && response.ok) {
                 const data = await response.json();
                 const select = document.getElementById('strategyCustomers');
                 if (select) {
@@ -624,8 +958,8 @@ class OKXTradingApp {
     // 动态加载策略下拉选项
     async loadStrategiesOptions() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/strategies`);
-            if (response.ok) {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/strategies`);
+            if (response && response.ok) {
                 const data = await response.json();
                 const strategies = Array.isArray(data.data) ? data.data : (data.data?.strategies || []);
                 
@@ -742,6 +1076,12 @@ class OKXTradingApp {
             case 'message-forward':
                 this.loadMessageForwardData();
                 break;
+            case 'user-management':
+                this.loadUserManagementData();
+                break;
+            case 'permission-management':
+                this.loadPermissionManagementData();
+                break;
             default:
                 console.warn('未知页面:', pageName);
         }
@@ -751,15 +1091,15 @@ class OKXTradingApp {
     async loadDashboardData() {
         try {
             // 加载概览统计
-            const statsResponse = await fetch(`${this.apiBaseUrl}/stats/overview`);
-            if (statsResponse.ok) {
+            const statsResponse = await this.apiRequest(`${this.apiBaseUrl}/stats/overview`);
+            if (statsResponse && statsResponse.ok) {
                 const statsData = await statsResponse.json();
                 this.updateDashboardStats(statsData.data);
             }
 
             // 加载最近活动
-            const activitiesResponse = await fetch(`${this.apiBaseUrl}/activities/recent`);
-            if (activitiesResponse.ok) {
+            const activitiesResponse = await this.apiRequest(`${this.apiBaseUrl}/activities/recent`);
+            if (activitiesResponse && activitiesResponse.ok) {
                 const activitiesData = await activitiesResponse.json();
                 this.updateRecentActivities(activitiesData.data);
             }
@@ -1484,8 +1824,8 @@ class OKXTradingApp {
                 page_size: pageSize
             });
             
-            const response = await fetch(`${this.apiBaseUrl}/customers?${params}`);
-            if (response.ok) {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/customers?${params}`);
+            if (response && response.ok) {
                 const data = await response.json();
                 
                 
@@ -3339,7 +3679,7 @@ class OKXTradingApp {
     // 加载其他页面数据
     async loadSignalSourcesData() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/signal_sources`);
+            const response = await this.apiRequest(`${this.apiBaseUrl}/signal_sources`);
             if (response.ok) {
                 const data = await response.json();
                 
@@ -3366,7 +3706,7 @@ class OKXTradingApp {
 
     async loadStrategiesData() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/strategies`);
+            const response = await this.apiRequest(`${this.apiBaseUrl}/strategies`);
             if (response.ok) {
                 const data = await response.json();
                 
@@ -3393,7 +3733,7 @@ class OKXTradingApp {
 
     async loadRulesData() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/rules`);
+            const response = await this.apiRequest(`${this.apiBaseUrl}/rules`);
             if (response.ok) {
                 const data = await response.json();
                 
@@ -3420,7 +3760,7 @@ class OKXTradingApp {
 
     async loadRiskControlData() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/risk/config`);
+            const response = await this.apiRequest(`${this.apiBaseUrl}/risk/config`);
             if (response.ok) {
                 const data = await response.json();
                 this.updateRiskControlForm(data.data);
@@ -3433,7 +3773,7 @@ class OKXTradingApp {
     async loadSystemData() {
         try {
             
-            const healthResponse = await fetch(`${this.apiBaseUrl}/health`);
+            const healthResponse = await this.apiRequest(`${this.apiBaseUrl}/health`);
             if (healthResponse.ok) {
                 const healthData = await healthResponse.json();
                 this.updateSystemHealth(healthData.data);
@@ -3443,7 +3783,7 @@ class OKXTradingApp {
                 this.updateHealthCheckResults(null, '系统健康检查失败');
             }
 
-            const statsResponse = await fetch(`${this.apiBaseUrl}/stats/system`);
+            const statsResponse = await this.apiRequest(`${this.apiBaseUrl}/stats/system`);
             if (statsResponse.ok) {
                 const statsData = await statsResponse.json();
                 this.updateSystemStats(statsData.data);
@@ -3452,7 +3792,7 @@ class OKXTradingApp {
             }
 
             // 加载系统日志
-            const logsResponse = await fetch(`${this.apiBaseUrl}/system/logs?limit=${this.systemLogsPageSize}&page=${this.systemLogsPage}`);
+            const logsResponse = await this.apiRequest(`${this.apiBaseUrl}/system/logs?limit=${this.systemLogsPageSize}&page=${this.systemLogsPage}`);
             if (logsResponse.ok) {
                 const logsData = await logsResponse.json();
                 this.updateSystemLogs(logsData.data || []);
@@ -4071,7 +4411,22 @@ class OKXTradingApp {
 
     logout() {
         if (confirm('确定要退出登录吗？')) {
-            this.showToast('信息', '退出登录功能开发中...', 'info');
+            try {
+                // 清除本地存储的登录状态
+                localStorage.removeItem('loginStatus');
+                
+                // 显示退出成功消息
+                this.showToast('成功', '已退出登录', 'success');
+                
+                // 延迟跳转到登录页面
+                setTimeout(() => {
+                    window.location.href = 'login.html';
+                }, 1000);
+                
+            } catch (error) {
+                console.error('退出登录失败:', error);
+                this.showToast('错误', '退出登录失败', 'danger');
+            }
         }
     }
 
@@ -4326,7 +4681,7 @@ class OKXTradingApp {
 
             const url = `${this.apiBaseUrl}/signal_sources${params.toString() ? '?' + params.toString() : ''}`;
 
-            const response = await fetch(url);
+            const response = await this.apiRequest(url);
             if (response.ok) {
                 const data = await response.json();
                 
@@ -6140,7 +6495,7 @@ class OKXTradingApp {
             const allOrders = [];
             const isDemo = document.getElementById('manualIsDemo').checked ? 1 : 0;
             // 获取客户未成交订单
-            const customersResponse = await fetch(`${this.apiBaseUrl}/customers?is_demo=${isDemo}`);
+            const customersResponse = await this.apiRequest(`${this.apiBaseUrl}/customers?is_demo=${isDemo}`);
             if (customersResponse.ok) {
                 const customersData = await customersResponse.json();
                 const customers = customersData.data?.customers || [];
@@ -6166,7 +6521,7 @@ class OKXTradingApp {
             }
             
             // 获取信号源未成交订单
-            const signalSourcesResponse = await fetch(`${this.apiBaseUrl}/signal_sources?is_demo=1`);
+            const signalSourcesResponse = await this.apiRequest(`${this.apiBaseUrl}/signal_sources?is_demo=1`);
             if (signalSourcesResponse.ok) {
                 const signalSourcesData = await signalSourcesResponse.json();
                 const signalSources = signalSourcesData.data || [];
@@ -6893,8 +7248,8 @@ class OKXTradingApp {
     // 加载限价跟单策略列表
     async loadLimitFollowStrategies() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/limit-follow/strategies`);
-            if (response.ok) {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/limit-follow/strategies`);
+            if (response && response.ok) {
                 const result = await response.json();
                 if (result.success === 200) {
                     this.renderLimitFollowStrategiesTable(result.data);
@@ -6999,8 +7354,8 @@ class OKXTradingApp {
     // 加载限价跟单订单列表
     async loadLimitFollowOrders() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/limit-follow/orders`);
-            if (response.ok) {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/limit-follow/orders`);
+            if (response && response.ok) {
                 const result = await response.json();
                 if (result.success === 200) {
                     this.renderLimitFollowOrdersTable(result.data);
@@ -7052,8 +7407,8 @@ class OKXTradingApp {
     async loadLimitFollowOptions() {
         try {
             // 加载跟单员列表
-            const tradersResponse = await fetch(`${this.apiBaseUrl}/limit-follow/traders`);
-            if (tradersResponse.ok) {
+            const tradersResponse = await this.apiRequest(`${this.apiBaseUrl}/limit-follow/traders`);
+            if (tradersResponse && tradersResponse.ok) {
                 const result = await tradersResponse.json();
                 if (result.success === 200 && result.data) {
                     this.populateSelectOptions('limitFollowStrategyTrader', result.data, 'unique_name', 'name');
@@ -7066,8 +7421,8 @@ class OKXTradingApp {
             
             // 加载客户列表 - 用于跟单员模式下的跟单账户
             // 获取所有客户数据（不分页）
-            const customersResponse = await fetch(`${this.apiBaseUrl}/customers?page_size=100`);
-            if (customersResponse.ok) {
+            const customersResponse = await this.apiRequest(`${this.apiBaseUrl}/customers?page_size=100`);
+            if (customersResponse && customersResponse.ok) {
                 const result = await customersResponse.json();
                 if (result.success === 200 && result.data && result.data.customers) {
                     // 存储客户数据，稍后根据模式分配
@@ -7076,12 +7431,12 @@ class OKXTradingApp {
                     console.warn('客户API返回失败:', result);
                 }
             } else {
-                console.warn('客户API请求失败:', customersResponse.status);
+                console.warn('客户API请求失败:', customersResponse ? customersResponse.status : 'null');
             }
             
             // 加载信号源列表
-            const signalSourcesResponse = await fetch(`${this.apiBaseUrl}/signal_sources`);
-            if (signalSourcesResponse.ok) {
+            const signalSourcesResponse = await this.apiRequest(`${this.apiBaseUrl}/signal_sources`);
+            if (signalSourcesResponse && signalSourcesResponse.ok) {
                 const result = await signalSourcesResponse.json();
                 if (result.success === 200 && result.data) {
                     // 存储信号源数据，稍后根据模式分配
@@ -10118,7 +10473,6 @@ class OKXTradingApp {
         
         if (markers.length > 0 && series && typeof series.setMarkers === 'function') {
             series.setMarkers(markers);
-            console.log(`✅ 价格图表已添加 ${markers.length} 个交易标记`);
         }
     }
 
@@ -10510,9 +10864,6 @@ class OKXTradingApp {
             const response = await fetch(`${this.apiBaseUrl}/strategy/templates`);
             if (response.ok) {
                 const data = await response.json();
-                if (data.success) {
-                    console.log('✅ 策略模板已更新:', Object.keys(data.data).length, '个');
-                }
             }
         } catch (error) {
             console.error('加载策略模板失败:', error);
@@ -10539,6 +10890,871 @@ class OKXTradingApp {
         } catch (error) {
             console.error('加载消息转发数据失败:', error);
             this.showToast('错误', '加载消息转发数据失败', 'danger');
+        }
+    }
+
+    // 加载用户管理数据
+    async loadUserManagementData() {
+        try {
+            // 加载用户列表
+            await this.loadUsersList();
+            
+        } catch (error) {
+            console.error('加载用户管理数据失败:', error);
+            this.showToast('错误', '加载用户管理数据失败', 'danger');
+        }
+    }
+
+    // 加载用户列表
+    async loadUsersList() {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users`);
+            if (response && response.ok) {
+                const data = await response.json();
+                console.log('用户列表API响应:', data); // 调试信息
+                if (data.success && data.data && data.data.users) {
+                    this.renderUsersTable(data.data.users);
+                } else {
+                    console.log('用户列表数据格式错误:', data);
+                    this.renderUsersTable([]);
+                }
+            } else {
+                this.renderUsersTable([]);
+            }
+        } catch (error) {
+            console.error('加载用户列表失败:', error);
+            this.renderUsersTable([]);
+        }
+    }
+
+    // 渲染用户表格
+    renderUsersTable(users) {
+        const tbody = document.querySelector('#usersTable tbody');
+        if (!tbody) return;
+
+        // 确保users是数组
+        if (!Array.isArray(users)) {
+            console.error('renderUsersTable: users不是数组:', users);
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">数据格式错误</td></tr>';
+            return;
+        }
+
+        if (users.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无用户数据</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = users.map(user => `
+            <tr>
+                <td>${user.id}</td>
+                <td>${user.username}</td>
+                <td>${user.full_name || '-'}</td>
+                <td>${user.email || '-'}</td>
+                <td>
+                    <span class="badge ${user.role === 'admin' ? 'bg-danger' : 'bg-primary'}">
+                        ${user.role === 'admin' ? '管理员' : '普通用户'}
+                    </span>
+                </td>
+                <td>
+                    <span class="badge ${user.status === 'active' ? 'bg-success' : 'bg-secondary'}">
+                        ${user.status === 'active' ? '启用' : '禁用'}
+                    </span>
+                </td>
+                <td>${user.created_at ? new Date(user.created_at).toLocaleString() : '-'}</td>
+                <td>${user.last_login_at ? new Date(user.last_login_at).toLocaleString() : '从未登录'}</td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary edit-user" data-user-id="${user.id}">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-warning toggle-user" data-user-id="${user.id}" data-status="${user.status}">
+                            <i class="bi bi-${user.status === 'active' ? 'pause' : 'play'}"></i>
+                        </button>
+                        <button class="btn btn-outline-info reset-password" data-user-id="${user.id}">
+                            <i class="bi bi-key"></i>
+                        </button>
+                        <button class="btn btn-outline-danger delete-user" data-user-id="${user.id}">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+
+        // 绑定事件
+        this.bindUserManagementEvents();
+    }
+
+    // 绑定用户管理事件
+    bindUserManagementEvents() {
+        // 添加用户按钮
+        const addUserBtn = document.getElementById('addUserBtn');
+        if (addUserBtn) {
+            addUserBtn.addEventListener('click', () => this.showAddUserModal());
+        }
+
+        // 编辑用户按钮
+        document.querySelectorAll('.edit-user').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const userId = e.target.closest('.edit-user').dataset.userId;
+                this.showEditUserModal(userId);
+            });
+        });
+
+        // 启用/禁用用户按钮
+        document.querySelectorAll('.toggle-user').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const userId = e.target.closest('.toggle-user').dataset.userId;
+                const currentStatus = e.target.closest('.toggle-user').dataset.status;
+                this.toggleUserStatus(userId, currentStatus);
+            });
+        });
+
+        // 重置密码按钮
+        document.querySelectorAll('.reset-password').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const userId = e.target.closest('.reset-password').dataset.userId;
+                this.showResetPasswordModal(userId);
+            });
+        });
+
+        // 删除用户按钮
+        document.querySelectorAll('.delete-user').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const userId = e.target.closest('.delete-user').dataset.userId;
+                this.showDeleteUserModal(userId);
+            });
+        });
+    }
+
+    // 显示添加用户模态框
+    showAddUserModal() {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">添加用户</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="addUserForm">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">用户名 <span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control" name="username" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">姓名</label>
+                                        <input type="text" class="form-control" name="full_name">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">邮箱</label>
+                                        <input type="email" class="form-control" name="email">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">角色 <span class="text-danger">*</span></label>
+                                        <select class="form-select" name="role" required>
+                                            <option value="">请选择角色</option>
+                                            <option value="admin">管理员</option>
+                                            <option value="user">普通用户</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">密码 <span class="text-danger">*</span></label>
+                                        <input type="password" class="form-control" name="password" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">确认密码 <span class="text-danger">*</span></label>
+                                        <input type="password" class="form-control" name="confirm_password" required>
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary" id="saveUserBtn">保存</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // 保存按钮事件
+        document.getElementById('saveUserBtn').addEventListener('click', () => {
+            this.saveUser();
+        });
+        
+        // 模态框关闭后移除DOM元素
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.body.removeChild(modal);
+        });
+    }
+
+    // 显示编辑用户模态框
+    async showEditUserModal(userId) {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users/${userId}`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    const user = data.data;
+                    this.showEditUserForm(user);
+                } else {
+                    this.showToast('错误', '获取用户信息失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '获取用户信息失败', 'danger');
+            }
+        } catch (error) {
+            console.error('获取用户信息失败:', error);
+            this.showToast('错误', '获取用户信息失败', 'danger');
+        }
+    }
+
+    // 显示编辑用户表单
+    showEditUserForm(user) {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">编辑用户</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="editUserForm">
+                            <input type="hidden" name="user_id" value="${user.id}">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">用户名 <span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control" name="username" value="${user.username}" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">姓名</label>
+                                        <input type="text" class="form-control" name="full_name" value="${user.full_name || ''}">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">邮箱</label>
+                                        <input type="email" class="form-control" name="email" value="${user.email || ''}">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">角色 <span class="text-danger">*</span></label>
+                                        <select class="form-select" name="role" required>
+                                            <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>管理员</option>
+                                            <option value="user" ${user.role === 'user' ? 'selected' : ''}>普通用户</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">状态</label>
+                                        <select class="form-select" name="status">
+                                            <option value="active" ${user.status === 'active' ? 'selected' : ''}>启用</option>
+                                            <option value="inactive" ${user.status === 'inactive' ? 'selected' : ''}>禁用</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary" id="updateUserBtn">更新</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // 更新按钮事件
+        document.getElementById('updateUserBtn').addEventListener('click', () => {
+            this.updateUser();
+        });
+        
+        // 模态框关闭后移除DOM元素
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.body.removeChild(modal);
+        });
+    }
+
+    // 显示重置密码模态框
+    showResetPasswordModal(userId) {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">重置密码</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="resetPasswordForm">
+                            <input type="hidden" name="user_id" value="${userId}">
+                            <div class="mb-3">
+                                <label class="form-label">新密码 <span class="text-danger">*</span></label>
+                                <input type="password" class="form-control" name="password" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">确认密码 <span class="text-danger">*</span></label>
+                                <input type="password" class="form-control" name="confirm_password" required>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-warning" id="resetPasswordBtn">重置密码</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // 重置密码按钮事件
+        document.getElementById('resetPasswordBtn').addEventListener('click', () => {
+            this.resetPassword();
+        });
+        
+        // 模态框关闭后移除DOM元素
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.body.removeChild(modal);
+        });
+    }
+
+    // 显示删除用户确认模态框
+    showDeleteUserModal(userId) {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.innerHTML = `
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">删除用户</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>确定要删除这个用户吗？此操作不可撤销。</p>
+                        <input type="hidden" name="user_id" value="${userId}">
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-danger" id="deleteUserBtn">删除</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // 删除按钮事件
+        document.getElementById('deleteUserBtn').addEventListener('click', () => {
+            this.deleteUser(userId);
+        });
+        
+        // 模态框关闭后移除DOM元素
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.body.removeChild(modal);
+        });
+    }
+
+    // 保存用户
+    async saveUser() {
+        const form = document.getElementById('addUserForm');
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData);
+        
+        // 验证密码
+        if (data.password !== data.confirm_password) {
+            this.showToast('错误', '两次输入的密码不一致', 'danger');
+            return;
+        }
+        
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users`, {
+                method: 'POST',
+                body: JSON.stringify(data)
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '用户创建成功', 'success');
+                    this.loadUsersList(); // 重新加载用户列表
+                    bootstrap.Modal.getInstance(document.querySelector('.modal')).hide();
+                } else {
+                    this.showToast('错误', result.message || '创建用户失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '创建用户失败', 'danger');
+            }
+        } catch (error) {
+            console.error('创建用户失败:', error);
+            this.showToast('错误', '创建用户失败', 'danger');
+        }
+    }
+
+    // 更新用户
+    async updateUser() {
+        const form = document.getElementById('editUserForm');
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData);
+        
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users/${data.user_id}`, {
+                method: 'PUT',
+                body: JSON.stringify(data)
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '用户更新成功', 'success');
+                    this.loadUsersList(); // 重新加载用户列表
+                    bootstrap.Modal.getInstance(document.querySelector('.modal')).hide();
+                } else {
+                    this.showToast('错误', result.message || '更新用户失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '更新用户失败', 'danger');
+            }
+        } catch (error) {
+            console.error('更新用户失败:', error);
+            this.showToast('错误', '更新用户失败', 'danger');
+        }
+    }
+
+    // 重置密码
+    async resetPassword() {
+        const form = document.getElementById('resetPasswordForm');
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData);
+        
+        // 验证密码
+        if (data.password !== data.confirm_password) {
+            this.showToast('错误', '两次输入的密码不一致', 'danger');
+            return;
+        }
+        
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users/${data.user_id}/reset-password`, {
+                method: 'POST',
+                body: JSON.stringify({ password: data.password })
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '密码重置成功', 'success');
+                    bootstrap.Modal.getInstance(document.querySelector('.modal')).hide();
+                } else {
+                    this.showToast('错误', result.message || '重置密码失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '重置密码失败', 'danger');
+            }
+        } catch (error) {
+            console.error('重置密码失败:', error);
+            this.showToast('错误', '重置密码失败', 'danger');
+        }
+    }
+
+    // 切换用户状态
+    async toggleUserStatus(userId, currentStatus) {
+        const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+        const action = newStatus === 'active' ? '启用' : '禁用';
+        
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users/${userId}/toggle-status`, {
+                method: 'POST',
+                body: JSON.stringify({ status: newStatus })
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', `用户${action}成功`, 'success');
+                    this.loadUsersList(); // 重新加载用户列表
+                } else {
+                    this.showToast('错误', result.message || `${action}用户失败`, 'danger');
+                }
+            } else {
+                this.showToast('错误', `${action}用户失败`, 'danger');
+            }
+        } catch (error) {
+            console.error(`${action}用户失败:`, error);
+            this.showToast('错误', `${action}用户失败`, 'danger');
+        }
+    }
+
+    // 删除用户
+    async deleteUser(userId) {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users/${userId}`, {
+                method: 'DELETE'
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '用户删除成功', 'success');
+                    this.loadUsersList(); // 重新加载用户列表
+                    bootstrap.Modal.getInstance(document.querySelector('.modal')).hide();
+                } else {
+                    this.showToast('错误', result.message || '删除用户失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '删除用户失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除用户失败:', error);
+            this.showToast('错误', '删除用户失败', 'danger');
+        }
+    }
+
+    // 加载权限管理数据
+    async loadPermissionManagementData() {
+        try {
+            // 加载用户权限矩阵
+            await this.loadUserPermissionsMatrix();
+            
+            // 加载权限模板
+            await this.loadPermissionTemplates();
+            
+        } catch (error) {
+            console.error('加载权限管理数据失败:', error);
+            this.showToast('错误', '加载权限管理数据失败', 'danger');
+        }
+    }
+
+    // 加载用户权限矩阵
+    async loadUserPermissionsMatrix() {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/permissions/matrix`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.renderPermissionsMatrix(data.data);
+                } else {
+                    this.renderPermissionsMatrix([]);
+                }
+            } else {
+                this.renderPermissionsMatrix([]);
+            }
+        } catch (error) {
+            console.error('加载用户权限矩阵失败:', error);
+            this.renderPermissionsMatrix([]);
+        }
+    }
+
+    // 渲染权限矩阵
+    renderPermissionsMatrix(matrixData) {
+        const rolesTable = document.querySelector('#rolesTable tbody');
+        if (!rolesTable) return;
+
+        if (!matrixData || matrixData.length === 0) {
+            rolesTable.innerHTML = '<tr><td colspan="3" class="text-center text-muted">暂无权限数据</td></tr>';
+            return;
+        }
+
+        rolesTable.innerHTML = matrixData.map(role => `
+            <tr>
+                <td>${role.role_name}</td>
+                <td>
+                    <div class="d-flex flex-wrap gap-1">
+                        ${role.permissions.map(perm => `
+                            <span class="badge bg-success">${perm}</span>
+                        `).join('')}
+                    </div>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary edit-role-permissions" data-role="${role.role}">
+                        <i class="bi bi-pencil"></i> 编辑
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+
+        // 绑定编辑权限事件
+        document.querySelectorAll('.edit-role-permissions').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const role = e.target.closest('.edit-role-permissions').dataset.role;
+                this.showEditRolePermissionsModal(role);
+            });
+        });
+    }
+
+    // 加载权限模板
+    async loadPermissionTemplates() {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/permissions/templates`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.renderPermissionTemplates(data.data);
+                } else {
+                    this.renderPermissionTemplates([]);
+                }
+            } else {
+                this.renderPermissionTemplates([]);
+            }
+        } catch (error) {
+            console.error('加载权限模板失败:', error);
+            this.renderPermissionTemplates([]);
+        }
+    }
+
+    // 渲染权限模板
+    renderPermissionTemplates(templates) {
+        const permissionsList = document.getElementById('permissionsList');
+        if (!permissionsList) return;
+
+        if (!templates || templates.length === 0) {
+            permissionsList.innerHTML = '<div class="list-group-item text-center text-muted">暂无权限模板</div>';
+            return;
+        }
+
+        permissionsList.innerHTML = templates.map(template => `
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>${template.name}</strong>
+                    <small class="text-muted d-block">${template.description}</small>
+                </div>
+                <div>
+                    <span class="badge ${template.status === 'active' ? 'bg-success' : 'bg-secondary'}">
+                        ${template.status === 'active' ? '已授权' : '未授权'}
+                    </span>
+                    <button class="btn btn-sm btn-outline-primary ms-2 apply-template" data-template-id="${template.id}">
+                        <i class="bi bi-check-circle"></i> 应用
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        // 绑定应用模板事件
+        document.querySelectorAll('.apply-template').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const templateId = e.target.closest('.apply-template').dataset.templateId;
+                this.applyPermissionTemplate(templateId);
+            });
+        });
+    }
+
+    // 显示编辑角色权限模态框
+    showEditRolePermissionsModal(role) {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.id = 'editRolePermissionsModal';
+        modal.innerHTML = `
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">编辑角色权限 - ${role}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="editRolePermissionsForm">
+                            <input type="hidden" name="role" value="${role}">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6>客户管理</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="customers:read" id="customers_read">
+                                        <label class="form-check-label" for="customers_read">查看客户</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="customers:write" id="customers_write">
+                                        <label class="form-check-label" for="customers_write">编辑客户</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6>信号源管理</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="signal_sources:read" id="signal_sources_read">
+                                        <label class="form-check-label" for="signal_sources_read">查看信号源</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="signal_sources:write" id="signal_sources_write">
+                                        <label class="form-check-label" for="signal_sources_write">编辑信号源</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mt-3">
+                                <div class="col-md-6">
+                                    <h6>策略管理</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="strategies:read" id="strategies_read">
+                                        <label class="form-check-label" for="strategies_read">查看策略</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="strategies:write" id="strategies_write">
+                                        <label class="form-check-label" for="strategies_write">编辑策略</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6>限价跟单</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="limit_follow:read" id="limit_follow_read">
+                                        <label class="form-check-label" for="limit_follow_read">查看跟单</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="limit_follow:write" id="limit_follow_write">
+                                        <label class="form-check-label" for="limit_follow_write">编辑跟单</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mt-3">
+                                <div class="col-md-6">
+                                    <h6>系统设置</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="system_settings:read" id="system_settings_read">
+                                        <label class="form-check-label" for="system_settings_read">查看设置</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="system_settings:write" id="system_settings_write">
+                                        <label class="form-check-label" for="system_settings_write">编辑设置</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6>用户管理</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="users:read" id="users_read">
+                                        <label class="form-check-label" for="users_read">查看用户</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="permissions" value="users:write" id="users_write">
+                                        <label class="form-check-label" for="users_write">编辑用户</label>
+                                    </div>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary" id="saveRolePermissionsBtn">保存权限</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        // 保存权限按钮事件
+        document.getElementById('saveRolePermissionsBtn').addEventListener('click', () => {
+            this.saveRolePermissions();
+        });
+        
+        // 模态框关闭后移除DOM元素
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.body.removeChild(modal);
+        });
+    }
+
+    // 保存角色权限
+    async saveRolePermissions() {
+        const form = document.getElementById('editRolePermissionsForm');
+        const formData = new FormData(form);
+        const role = formData.get('role');
+        const permissions = formData.getAll('permissions');
+        
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/permissions/roles/${role}`, {
+                method: 'PUT',
+                body: JSON.stringify({ permissions })
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '角色权限更新成功', 'success');
+                    this.loadUserPermissionsMatrix(); // 重新加载权限矩阵
+                    
+                    // 安全地关闭模态框
+                    const modalElement = document.querySelector('#editRolePermissionsModal');
+                    if (modalElement) {
+                        const modalInstance = bootstrap.Modal.getInstance(modalElement);
+                        if (modalInstance) {
+                            modalInstance.hide();
+                        } else {
+                            // 如果没有实例，直接移除模态框
+                            modalElement.remove();
+                        }
+                    }
+                } else {
+                    this.showToast('错误', result.message || '更新角色权限失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '更新角色权限失败', 'danger');
+            }
+        } catch (error) {
+            console.error('更新角色权限失败:', error);
+            this.showToast('错误', '更新角色权限失败', 'danger');
+        }
+    }
+
+    // 应用权限模板
+    async applyPermissionTemplate(templateId) {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/permissions/templates/${templateId}/apply`, {
+                method: 'POST'
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '权限模板应用成功', 'success');
+                    this.loadPermissionTemplates(); // 重新加载权限模板
+                } else {
+                    this.showToast('错误', result.message || '应用权限模板失败', 'danger');
+                }
+            } else {
+                this.showToast('错误', '应用权限模板失败', 'danger');
+            }
+        } catch (error) {
+            console.error('应用权限模板失败:', error);
+            this.showToast('错误', '应用权限模板失败', 'danger');
         }
     }
 
@@ -11587,7 +12803,6 @@ class OKXTradingApp {
                 `;
                 
             } else {
-                console.log('❌ 策略参数表单生成失败');
                 paramsContainer.innerHTML = `
                     <hr>
                     <h6>策略参数 - ${template.display_name}</h6>
@@ -12148,7 +13363,6 @@ class OKXTradingApp {
         symbolsSelect.addEventListener('change', () => {
             const selectedOptions = Array.from(symbolsSelect.selectedOptions);
             if (selectedOptions.length > 0) {
-                console.log('已选择的交易对:', selectedOptions.map(opt => opt.value));
                 // 显示选择状态提示
                 this.showSelectionStatus(selectedOptions.length);
             } else {
@@ -12189,6 +13403,15 @@ class OKXTradingApp {
         if (statusDiv) {
             statusDiv.style.display = 'none';
         }
+    }
+    
+    // 跳转到登录页面
+    redirectToLogin() {
+        // 清除本地存储的登录状态
+        localStorage.removeItem('loginStatus');
+        
+        // 跳转到登录页面
+        window.location.href = 'login.html';
     }
 }
 

@@ -5,6 +5,7 @@ from database.db import (
 from exchange.exchange_factory import create_exchange_client
 from exchange.base_client import ExchangeType
 from exchange.unified_ws_client import get_global_client_manager
+from exchange.websocket_state_machine import WebSocketStatus
 from model.models import Customer, Rule, CustomerTrade
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -19,10 +20,18 @@ import time
 from threading import Lock
 import threading
 from datetime import datetime
-import psutil
 import gc
 import tracemalloc
 import traceback
+
+# 可选导入psutil
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    logger.warning("psutil不可用，将跳过系统监控功能")
+    PSUTIL_AVAILABLE = False
+    psutil = None
 
 from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier, get_contract_info, get_contract_value_in_usdt, get_contract_sz_precision
 from database.db import get_enabled_customers, get_enabled_signal_accounts
@@ -1118,18 +1127,20 @@ class TradeService:
             
             # 强制内存清理
             try:
-                import psutil
-                process = psutil.Process()
-                memory_before = process.memory_info().rss / 1024 / 1024
-                
-                # 等待一段时间让GC生效
-                await asyncio.sleep(5)
-                
-                memory_after = process.memory_info().rss / 1024 / 1024
-                logger.info(f"内存清理效果: {memory_before:.2f} MB -> {memory_after:.2f} MB")
-                
-            except ImportError:
-                logger.info("psutil未安装，跳过内存清理效果检查")
+                if PSUTIL_AVAILABLE and psutil:
+                    process = psutil.Process()
+                    memory_before = process.memory_info().rss / 1024 / 1024
+                    
+                    # 等待一段时间让GC生效
+                    await asyncio.sleep(5)
+                    
+                    memory_after = process.memory_info().rss / 1024 / 1024
+                    logger.info(f"内存清理效果: {memory_before:.2f} MB -> {memory_after:.2f} MB")
+                else:
+                    logger.info("psutil不可用，跳过内存清理效果检查")
+                    
+            except Exception as e:
+                logger.warning(f"内存清理效果检查失败: {e}")
             
             logger.info("✅ 关键任务重启完成")
             
@@ -1140,18 +1151,18 @@ class TradeService:
     async def check_memory_and_restart(self):
         """检查内存使用并在必要时重启关键任务"""
         try:
-            import psutil
-            process = psutil.Process()
-            memory_mb = process.memory_info().rss / 1024 / 1024
-            
-            if memory_mb > 800:  # 超过800MB时自动重启
-                logger.error(f"🚨 内存使用严重过高({memory_mb:.2f} MB)，自动重启关键任务...")
-                await self.restart_critical_tasks()
-            elif memory_mb > 600:  # 超过600MB时警告
-                logger.warning(f"⚠️ 内存使用较高({memory_mb:.2f} MB)，建议关注")
+            if PSUTIL_AVAILABLE and psutil:
+                process = psutil.Process()
+                memory_mb = process.memory_info().rss / 1024 / 1024
                 
-        except ImportError:
-            logger.debug("psutil未安装，跳过内存检查")
+                if memory_mb > 800:  # 超过800MB时自动重启
+                    logger.error(f"🚨 内存使用严重过高({memory_mb:.2f} MB)，自动重启关键任务...")
+                    await self.restart_critical_tasks()
+                elif memory_mb > 600:  # 超过600MB时警告
+                    logger.warning(f"⚠️ 内存使用较高({memory_mb:.2f} MB)，建议关注")
+            else:
+                logger.debug("psutil不可用，跳过内存检查")
+                
         except Exception as e:
             logger.error(f"内存检查和重启失败: {e}")
 
@@ -1334,6 +1345,10 @@ class TradeService:
                 # 生成唯一 clOrdId
                 clOrdId = make_clOrdId(trade_uid, attempt)
                 client = await self.get_client(customer)
+                if not client:
+                    logger.error(f"无法获取客户 {get_customer_uid(customer)} 的客户端")
+                    return False
+                
                 max_retry = 3
                 if not trade_uid:
                     trade_uid = uuid.uuid4().hex[:16]
@@ -1364,9 +1379,13 @@ class TradeService:
                                 # 如果重连失败，尝试重新获取客户端
                                 try:
                                     client = await self.get_client(customer)
+                                    if not client:
+                                        logger.error(f"❌ 重试前重新获取客户端失败: 客户端为None")
+                                        break
                                     logger.info(f"✅ 重试前重新获取客户端成功")
                                 except Exception as get_client_error:
                                     logger.error(f"❌ 重试前重新获取客户端失败: {get_client_error}")
+                                    break
                                     continue  # 继续下一次重试
                     
                     try:
@@ -1437,6 +1456,9 @@ class TradeService:
                                 # 如果重连失败，尝试重新获取客户端
                                 try:
                                     client = await self.get_client(customer)
+                                    if not client:
+                                        logger.error(f"❌ 重新获取客户端失败: 客户端为None")
+                                        return {'target_uid': trade_uid, 'error': f'连接失败，无法获取客户端'}
                                     logger.info(f"✅ 客户{get_customer_uid(customer)}重新获取客户端成功")
                                 except Exception as get_client_error:
                                     logger.error(f"❌ 重新获取客户端失败: {get_client_error}")
@@ -1488,6 +1510,9 @@ class TradeService:
                                     # 如果重连失败，尝试重新获取客户端
                                     try:
                                         client = await self.get_client(customer)
+                                        if not client:
+                                            logger.error(f"❌ 心跳异常后重新获取客户端失败: 客户端为None")
+                                            return {'target_uid': trade_uid, 'error': f'心跳异常，无法获取客户端'}
                                         logger.info(f"✅ 客户{get_customer_uid(customer)}心跳异常后重新获取客户端成功")
                                     except Exception as get_client_error:
                                         logger.error(f"❌ 心跳异常后重新获取客户端失败: {get_client_error}")
@@ -1557,6 +1582,9 @@ class TradeService:
                                     # 如果重连失败，尝试重新获取客户端
                                     try:
                                         client = await self.get_client(customer)
+                                        if not client:
+                                            logger.error(f"❌ 连接超时后重新获取客户端失败: 客户端为None")
+                                            break
                                         logger.info(f"✅ 连接超时后重新获取客户端成功，继续重试")
                                         continue  # 继续重试，不增加重试计数
                                     except Exception as get_client_error:
@@ -1641,6 +1669,9 @@ class TradeService:
                                 # 如果重连失败，尝试重新获取客户端
                                 try:
                                     client = await self.get_client(customer)
+                                    if not client:
+                                        logger.error(f"❌ 异常后重新获取客户端失败: 客户端为None")
+                                        break
                                     logger.info(f"✅ 异常后重新获取客户端成功，继续重试")
                                     continue  # 继续重试，不增加重试计数
                                 except Exception as get_client_error:
@@ -2746,6 +2777,9 @@ class TradeService:
 
     async def listen_customer_account(self, customer: Customer):
         client = await self.get_client(customer)
+        if not client:
+            logger.error(f"无法获取客户 {get_customer_uid(customer)} 的客户端")
+            return
         
         async def on_account(data):
             try:
@@ -3151,6 +3185,9 @@ class TradeService:
                         if not open_trades:
                             continue
                         client = await self.get_client(customer)
+                        if not client:
+                            logger.error(f"无法获取客户 {get_customer_uid(customer)} 的客户端，跳过补偿")
+                            continue
                         # 1. 补偿order_id为空的trade
                         for trade in open_trades:
                             trade_uid = get_trade_field(trade, 'trade_uid')
@@ -3966,30 +4003,43 @@ class TradeService:
     async def _check_memory_usage(self):
         """检查内存使用情况"""
         try:
-            # 获取当前进程内存信息
-            import psutil
-            process = psutil.Process()
-            memory_info = process.memory_info()
-            
-            # 获取系统内存信息
-            system_memory = psutil.virtual_memory()
-            
-            # 记录内存使用
-            memory_mb = memory_info.rss / 1024 / 1024
-            
-            # 记录内存使用历史
-            if not hasattr(self, 'memory_usage_history'):
-                self.memory_usage_history = []
-            
-            self.memory_usage_history.append({
-                'timestamp': time.time(),
-                'memory_mb': memory_mb,
-                'system_percent': system_memory.percent
-            })
-            
-            # 只保留最近100条记录
-            if len(self.memory_usage_history) > 100:
-                self.memory_usage_history = self.memory_usage_history[-100:]
+            if PSUTIL_AVAILABLE and psutil:
+                # 获取当前进程内存信息
+                process = psutil.Process()
+                memory_info = process.memory_info()
+                
+                # 获取系统内存信息
+                system_memory = psutil.virtual_memory()
+                
+                # 记录内存使用
+                memory_mb = memory_info.rss / 1024 / 1024
+                
+                # 记录内存使用历史
+                if not hasattr(self, 'memory_usage_history'):
+                    self.memory_usage_history = []
+                
+                self.memory_usage_history.append({
+                    'timestamp': time.time(),
+                    'memory_mb': memory_mb,
+                    'system_percent': system_memory.percent
+                })
+                
+                # 只保留最近100条记录
+                if len(self.memory_usage_history) > 100:
+                    self.memory_usage_history = self.memory_usage_history[-100:]
+                
+                # 检查内存使用情况
+                if memory_mb > 1000:  # 超过1GB
+                    logger.warning(f"⚠️ 内存使用过高: {memory_mb:.2f} MB")
+                elif memory_mb > 800:  # 超过800MB
+                    logger.info(f"📊 内存使用: {memory_mb:.2f} MB")
+                else:
+                    logger.debug(f"📊 内存使用: {memory_mb:.2f} MB")
+            else:
+                logger.debug("psutil不可用，跳过内存检查")
+                
+        except Exception as e:
+            logger.error(f"内存检查失败: {e}")
             
             # 如果内存使用过高，触发清理
             max_memory_usage = getattr(self, 'max_memory_usage', 1024 * 1024 * 1024)  # 默认1GB
@@ -5995,7 +6045,7 @@ class TradeService:
                 'api_secret': secret_key,
                 'passphrase': passphrase,
                 'is_demo': is_demo,
-                'exchange': getattr(signal_source, 'exchange', 'okx')  # 支持多交易所
+                'exchange': getattr(signal_data, 'exchange', 'okx')  # 支持多交易所
             }
             rest_client = create_exchange_rest_client(signal_data)
             response = await rest_client.get_account_info()

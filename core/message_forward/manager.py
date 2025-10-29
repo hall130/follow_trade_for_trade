@@ -10,6 +10,9 @@ import uuid
 from .base import MessagePlatform
 from .models import Message, ForwardRule, PlatformType
 from .platforms import TelegramPlatform, DingTalkPlatform, WeChatPlatform
+from .platforms.wxauto_wechat import WxAutoWeChatPlatform
+from .wechat_config_manager import WeChatGroupConfigManager
+from .wxauto_config_manager import WxAutoGroupConfigManager
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,6 +26,8 @@ class MessageForwardManager:
         self.message_history: List[Message] = []
         self.max_history_size = 1000
         self.running = False
+        self.wechat_config_manager = WeChatGroupConfigManager()
+        self.wxauto_config_manager = WxAutoGroupConfigManager()
         
         logger.info("消息转发管理器初始化")
     
@@ -251,8 +256,124 @@ class MessageForwardManager:
             )
             manager.add_forward_rule(rule)
         
+        # 加载微信群配置
+        if PlatformType.WECHAT in manager.platforms:
+            await manager.load_wechat_group_config()
+        
+        # 加载wxauto配置
+        if PlatformType.WECHAT in manager.platforms:
+            await manager.load_wxauto_group_config()
+        
         logger.info(f"✅ 管理器已从配置创建: {len(manager.platforms)} 个平台, {len(manager.forward_rules)} 条规则")
         return manager
+    
+    async def load_wechat_group_config(self):
+        """加载微信群配置"""
+        try:
+            if PlatformType.WECHAT not in self.platforms:
+                return
+            
+            wechat_platform = self.platforms[PlatformType.WECHAT]
+            if not isinstance(wechat_platform, WeChatPlatform):
+                return
+            
+            # 加载配置文件
+            config = wechat_platform.load_config()
+            if not config:
+                logger.warning("未找到微信群配置文件")
+                return
+            
+            # 添加转发规则
+            rules_config = self.wechat_config_manager.get_forward_rules_for_manager()
+            for rule_config in rules_config:
+                rule = ForwardRule.from_dict(rule_config)
+                self.add_forward_rule(rule)
+            
+            logger.info(f"✅ 已加载 {len(rules_config)} 条微信群转发规则")
+            
+        except Exception as e:
+            logger.error(f"加载微信群配置失败: {e}")
+    
+    async def load_wxauto_group_config(self):
+        """加载wxauto配置"""
+        try:
+            if PlatformType.WECHAT not in self.platforms:
+                return
+            
+            wechat_platform = self.platforms[PlatformType.WECHAT]
+            if not isinstance(wechat_platform, WxAutoWeChatPlatform):
+                return
+            
+            # 加载配置文件
+            config = wechat_platform.load_config()
+            if not config:
+                logger.warning("未找到wxauto配置文件")
+                return
+            
+            # 添加转发规则
+            rules_config = self.wxauto_config_manager.get_forward_rules_for_manager()
+            for rule_config in rules_config:
+                rule = ForwardRule.from_dict(rule_config)
+                self.add_forward_rule(rule)
+            
+            logger.info(f"✅ 已加载 {len(rules_config)} 条wxauto转发规则")
+            
+        except Exception as e:
+            logger.error(f"加载wxauto配置失败: {e}")
+    
+    async def configure_wechat_groups(self):
+        """配置微信群"""
+        try:
+            if PlatformType.WECHAT not in self.platforms:
+                logger.error("微信平台未连接")
+                return False
+            
+            wechat_platform = self.platforms[PlatformType.WECHAT]
+            if not isinstance(wechat_platform, WeChatPlatform):
+                logger.error("微信平台类型错误")
+                return False
+            
+            # 使用配置管理器进行交互式配置
+            await self.wechat_config_manager.initialize_wechat_platform()
+            await self.wechat_config_manager.discover_groups()
+            
+            # 这里可以添加交互式配置逻辑
+            logger.info("微信群配置功能已就绪")
+            return True
+            
+        except Exception as e:
+            logger.error(f"配置微信群失败: {e}")
+            return False
+    
+    def get_wechat_groups(self) -> List[Dict[str, Any]]:
+        """获取微信群列表"""
+        if PlatformType.WECHAT not in self.platforms:
+            return []
+        
+        wechat_platform = self.platforms[PlatformType.WECHAT]
+        if isinstance(wechat_platform, WeChatPlatform):
+            return wechat_platform.discover_groups()
+        
+        return []
+    
+    def get_wechat_config_summary(self) -> Dict[str, Any]:
+        """获取微信群配置摘要"""
+        return {
+            'groups_count': len(self.wechat_config_manager.config.get('discovered_groups', [])),
+            'selected_groups_count': len([g for g in self.wechat_config_manager.config.get('discovered_groups', []) if g.get('is_selected', False)]),
+            'keywords_count': len(self.wechat_config_manager.config.get('keywords', [])),
+            'forward_targets_count': len(self.wechat_config_manager.config.get('forward_targets', [])),
+            'config_file': self.wechat_config_manager.config_file,
+            'wxauto_config': {
+                'groups_count': len(self.wxauto_config_manager.config.get('discovered_groups', [])),
+                'listening_groups_count': len(self.wxauto_config_manager.get_listening_groups()),
+                'keywords_count': len(self.wxauto_config_manager.config.get('keywords', [])),
+                'forward_targets_count': len(self.wxauto_config_manager.config.get('forward_targets', [])),
+                'config_file': self.wxauto_config_manager.config_file,
+                'wechat_version': self.wxauto_config_manager.config.get('wechat_version', '3.9.8'),
+                'max_listeners': self.wxauto_config_manager.config.get('max_listeners', 40)
+            }
+        }
 
 # 全局管理器实例
 _global_manager: Optional[MessageForwardManager] = None

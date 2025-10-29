@@ -10,7 +10,10 @@ import time
 from typing import Dict, Any, Optional, Callable, List
 from .base_client import BaseWebSocketClient, ExchangeType
 from .exchange_client_factory import ExchangeClientFactory
+from .websocket_state_machine import WebSocketStatus
 from utils.logger import logger
+from dataclasses import dataclass, field
+from enum import Enum
 
 
 class UnifiedWebSocketClient:
@@ -688,3 +691,4 @@ def create_unified_ws_client(exchange: str, api_key: str = None,
         raise ValueError(f"不支持的交易所: {exchange}")
     
     return UnifiedWebSocketClient(exchange_type, api_key, api_secret, passphrase, is_demo)
+                

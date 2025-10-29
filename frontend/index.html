@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OKX跟单交易系统管理平台</title>
+    <title>千里金量化交易系统</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <link href="styles.css" rel="stylesheet">
@@ -15,85 +15,113 @@
         <div class="container-fluid">
             <a class="navbar-brand" href="#">
                 <i class="bi bi-currency-exchange"></i>
-                OKX跟单交易系统
+                千里金量化交易系统
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
+                    <!-- 核心功能组 -->
                     <li class="nav-item">
                         <a class="nav-link active" href="#" data-page="dashboard">
                             <i class="bi bi-speedometer2"></i> 仪表板
                         </a>
                     </li>
+                    
+                    <!-- 客户管理组 -->
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="customers">
+                        <a class="nav-link" href="#" data-page="customers" data-permission="customers">
                             <i class="bi bi-people"></i> 客户管理
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="signal-sources">
-                            <i class="bi bi-broadcast"></i> 信号源管理
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="strategies">
-                            <i class="bi bi-gear"></i> 策略管理
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="strategy-trade">
-                            <i class="bi bi-graph-up-arrow"></i> 策略交易
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="rules">
-                            <i class="bi bi-list-check"></i> 规则管理
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="trades">
-                            <i class="bi bi-graph-up"></i> 交易记录
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="signal-trades">
-                            <i class="bi bi-broadcast"></i> 信号源交易
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="positions">
+                        <a class="nav-link" href="#" data-page="positions" data-permission="customers">
                             <i class="bi bi-bag-check"></i> 当前持仓
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="risk-control">
-                            <i class="bi bi-shield-check"></i> 风控管理
+                        <a class="nav-link" href="#" data-page="trades" data-permission="customers">
+                            <i class="bi bi-graph-up"></i> 交易记录
+                        </a>
+                    </li>
+                    
+                    <!-- 信号源组 -->
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="signal-sources" data-permission="signal_sources">
+                            <i class="bi bi-broadcast"></i> 信号源管理
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="limit-follow">
+                        <a class="nav-link" href="#" data-page="signal-trades" data-permission="signal_sources">
+                            <i class="bi bi-broadcast-pin"></i> 信号交易
+                        </a>
+                    </li>
+                    
+                    <!-- 策略组 -->
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="strategies" data-permission="strategies">
+                            <i class="bi bi-gear"></i> 策略管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="strategy-trade" data-permission="strategy_live">
+                            <i class="bi bi-graph-up-arrow"></i> 策略交易
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="rules" data-permission="strategies">
+                            <i class="bi bi-list-check"></i> 规则管理
+                        </a>
+                    </li>
+                    
+                    <!-- 跟单组 -->
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="limit-follow" data-permission="limit_follow">
                             <i class="bi bi-arrow-repeat"></i> 限价跟单
                         </a>
                     </li>
+                    
+                    <!-- 风控组 -->
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="message-forward">
+                        <a class="nav-link" href="#" data-page="risk-control" data-permission="customers">
+                            <i class="bi bi-shield-check"></i> 风控管理
+                        </a>
+                    </li>
+                    
+                    <!-- 系统组 -->
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="message-forward" data-permission="message_forward">
                             <i class="bi bi-send"></i> 消息转发
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="system">
+                        <a class="nav-link" href="#" data-page="system" data-permission="system_settings">
                             <i class="bi bi-cpu"></i> 系统状态
+                        </a>
+                    </li>
+                    
+                    <!-- 管理员专用菜单 -->
+                    <li class="nav-item admin-menu" id="admin-menu-users" style="display: none;">
+                        <a class="nav-link" href="#" data-page="user-management" data-permission="system_settings">
+                            <i class="bi bi-people-fill"></i> 用户管理
+                        </a>
+                    </li>
+                    <li class="nav-item admin-menu" id="admin-menu-permissions" style="display: none;">
+                        <a class="nav-link" href="#" data-page="permission-management" data-permission="system_settings">
+                            <i class="bi bi-shield-lock"></i> 权限管理
                         </a>
                     </li>
                 </ul>
                 <div class="navbar-nav">
                     <div class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
-                            <i class="bi bi-person-circle"></i> 管理员
+                        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" id="userDropdown">
+                            <i class="bi bi-person-circle"></i> <span id="userDisplayName">加载中...</span>
                         </a>
                         <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="#" id="userProfile"><i class="bi bi-person"></i> 个人资料</a></li>
+                            <li><a class="dropdown-item" href="#" id="changePassword"><i class="bi bi-key"></i> 修改密码</a></li>
+                            <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="#" id="refreshData"><i class="bi bi-arrow-clockwise"></i> 刷新数据</a></li>
                             <li><a class="dropdown-item" href="#" id="exportData"><i class="bi bi-download"></i> 导出数据</a></li>
                             <li><hr class="dropdown-divider"></li>
@@ -3995,10 +4023,140 @@
         </div>
     </div>
 
+    <!-- 用户管理页面 -->
+    <div id="user-management-page" class="page-content">
+        <div class="container-fluid">
+            <div class="row">
+                <div class="col-12">
+                    <h2 class="mb-4"><i class="bi bi-people-fill"></i> 用户管理</h2>
+                </div>
+            </div>
+            
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">用户列表</h5>
+                            <button class="btn btn-primary" id="addUserBtn">
+                                <i class="bi bi-plus-circle"></i> 添加用户
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped" id="usersTable">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>用户名</th>
+                                            <th>姓名</th>
+                                            <th>邮箱</th>
+                                            <th>角色</th>
+                                            <th>状态</th>
+                                            <th>创建时间</th>
+                                            <th>最后登录</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td colspan="9" class="text-center text-muted">暂无数据</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 权限管理页面 -->
+    <div id="permission-management-page" class="page-content">
+        <div class="container-fluid">
+            <div class="row">
+                <div class="col-12">
+                    <h2 class="mb-4"><i class="bi bi-shield-lock"></i> 权限管理</h2>
+                </div>
+            </div>
+            
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">角色权限</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-striped" id="rolesTable">
+                                    <thead>
+                                        <tr>
+                                            <th>角色</th>
+                                            <th>权限</th>
+                                            <th>操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td>管理员</td>
+                                            <td>所有权限</td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-primary">编辑</button>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td>普通用户</td>
+                                            <td>基础权限</td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-primary">编辑</button>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">权限模块</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="list-group" id="permissionsList">
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    客户管理
+                                    <span class="badge bg-success">已授权</span>
+                                </div>
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    信号源管理
+                                    <span class="badge bg-success">已授权</span>
+                                </div>
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    策略管理
+                                    <span class="badge bg-success">已授权</span>
+                                </div>
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    限价跟单
+                                    <span class="badge bg-success">已授权</span>
+                                </div>
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    系统设置
+                                    <span class="badge bg-warning">部分授权</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <script src="config.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=20241220"></script>
 </body>
 </html> 

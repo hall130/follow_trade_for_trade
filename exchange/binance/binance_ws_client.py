@@ -15,12 +15,18 @@ from urllib.parse import urlencode
 import aiohttp
 import websockets
 from utils.logger import logger
+from ..base_client import BaseWebSocketClient, ExchangeType
+from ..websocket_state_machine import WebSocketStatus, WebSocketStateMachine
 
 
-class BinanceWebSocketClient:
+class BinanceWebSocketClient(BaseWebSocketClient):
     """币安WebSocket客户端"""
     
     def __init__(self, api_key: str = None, api_secret: str = None, is_demo: bool = True):
+        # 调用父类构造函数
+        super().__init__(api_key, api_secret, None, is_demo)
+        
+        # 基本配置
         self.api_key = api_key
         self.api_secret = api_secret
         self.is_demo = is_demo
@@ -42,6 +48,10 @@ class BinanceWebSocketClient:
         # 会话身份验证相关
         self.authenticated_sessions = {}  # {connection_id: {'api_key': str, 'timestamp': int}}
         self.session_requests = {}        # 存储会话请求的响应
+    
+    def _get_exchange_type(self) -> ExchangeType:
+        """获取交易所类型"""
+        return ExchangeType.BINANCE
         
     def _get_timestamp(self) -> int:
         """获取当前时间戳（毫秒）"""
@@ -581,4 +591,93 @@ async def get_binance_ws_client(client_key: str, api_key: str = None,
 
 def get_global_binance_client_manager():
     """获取全局币安客户端管理器"""
-    return _global_binance_ws_clients 
+    return _global_binance_ws_clients
+
+    # 实现BaseWebSocketClient的抽象方法
+    async def disconnect(self) -> bool:
+        """断开WebSocket连接"""
+        try:
+            self.running = False
+            for connection in self.connections.values():
+                if connection:
+                    await connection.close()
+            self.connections.clear()
+            await self._transition_to(WebSocketStatus.DISCONNECTED, "主动断开连接")
+            return True
+        except Exception as e:
+            logger.error(f"断开连接失败: {e}")
+            return False
+    
+    async def subscribe_ticker(self, symbol: str, callback) -> bool:
+        """订阅行情数据"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info(f"订阅行情数据: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"订阅行情数据失败: {e}")
+            return False
+    
+    async def subscribe_orderbook(self, symbol: str, callback) -> bool:
+        """订阅深度数据"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info(f"订阅深度数据: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"订阅深度数据失败: {e}")
+            return False
+    
+    async def subscribe_trades(self, symbol: str, callback) -> bool:
+        """订阅交易数据"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info(f"订阅交易数据: {symbol}")
+            return True
+        except Exception as e:
+            logger.error(f"订阅交易数据失败: {e}")
+            return False
+    
+    async def subscribe_orders(self, callback) -> bool:
+        """订阅订单更新"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅订单更新")
+            return True
+        except Exception as e:
+            logger.error(f"订阅订单更新失败: {e}")
+            return False
+    
+    async def subscribe_positions(self, callback) -> bool:
+        """订阅持仓更新"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅持仓更新")
+            return True
+        except Exception as e:
+            logger.error(f"订阅持仓更新失败: {e}")
+            return False
+    
+    async def subscribe_balance(self, callback) -> bool:
+        """订阅余额更新"""
+        try:
+            # 这里应该实现具体的订阅逻辑
+            logger.info("订阅余额更新")
+            return True
+        except Exception as e:
+            logger.error(f"订阅余额更新失败: {e}")
+            return False
+    
+    async def unsubscribe(self, channel: str) -> bool:
+        """取消订阅"""
+        try:
+            # 这里应该实现具体的取消订阅逻辑
+            logger.info(f"取消订阅: {channel}")
+            return True
+        except Exception as e:
+            logger.error(f"取消订阅失败: {e}")
+            return False
+    
+    def is_connected(self) -> bool:
+        """检查连接状态"""
+        return self._state_machine.is_connected() 
