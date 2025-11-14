@@ -299,6 +299,8 @@ class OKXRESTClient(BaseRESTClient):
         try:
             endpoint = "/account/positions"
             if symbol:
+                # 直接在 endpoint 中追加查询参数，这样更直观
+                # request_path 会包含查询参数，签名也会正确
                 endpoint += f"?instId={symbol}"
             
             response = await self._request('GET', endpoint)

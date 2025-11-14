@@ -1,6 +1,29 @@
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
+
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """
+    安全的日志轮转处理器
+    在 Windows 上处理多进程同时写入同一日志文件时的权限错误
+    """
+    def doRollover(self):
+        """
+        执行日志轮转，捕获权限错误
+        """
+        try:
+            super().doRollover()
+        except (PermissionError, OSError) as e:
+            # Windows 上多进程同时写入时，轮转可能失败
+            # 记录错误但不抛出异常，继续使用当前文件
+            if hasattr(self, 'stream') and self.stream:
+                try:
+                    self.stream.write(f"[日志轮转失败: {e}，继续使用当前日志文件]\n")
+                    self.stream.flush()
+                except:
+                    pass
+            # 不抛出异常，让日志继续写入当前文件
 
 # 尝试导入日志配置
 try:
@@ -42,15 +65,24 @@ def setup_logger(name="follow_trade", level=None):
     # 文件处理器（带轮转）
     if ENABLE_LOG_ROTATION:
         try:
-            fh = RotatingFileHandler(
+            # 使用自定义的 SafeRotatingFileHandler 处理多进程冲突
+            # 在 Windows 上，多个进程同时写入同一文件时，轮转可能会失败
+            # SafeRotatingFileHandler 会捕获权限错误，继续使用当前文件
+            fh = SafeRotatingFileHandler(
                 "trades.log",
                 maxBytes=MAX_LOG_FILE_SIZE,
                 backupCount=MAX_LOG_FILES,
-                encoding='utf-8'
+                encoding='utf-8',
+                delay=True  # 延迟打开文件，减少多进程冲突
             )
             fh.setFormatter(formatter)
             fh.setLevel(level)
             logger.addHandler(fh)
+        except (PermissionError, OSError) as e:
+            # Windows 上多进程同时写入日志文件时可能出现权限错误
+            # 忽略此错误，继续使用控制台输出
+            print(f"无法创建日志文件处理器（可能是多进程冲突）: {e}")
+            print("将仅使用控制台输出日志")
         except Exception as e:
             print(f"无法创建日志文件处理器: {e}")
     

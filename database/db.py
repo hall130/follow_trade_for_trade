@@ -7,9 +7,10 @@ try:
     from dbutils.pooled_db import PooledDB
     DBUTILS_AVAILABLE = True
 except ImportError:
-    logger.warning("DBUtils不可用，将使用简化的数据库连接")
     DBUTILS_AVAILABLE = False
     PooledDB = None
+    logger.warning("DBUtils不可用，将使用简化的数据库连接")
+
 
 class MySQLPool:
     def __init__(self, host, user, password, db, port=3306, mincached=2, maxcached=10):
@@ -20,11 +21,18 @@ class MySQLPool:
         self.port = port
         
         if DBUTILS_AVAILABLE and PooledDB:
+            # 使用连接池，优化配置
             self.pool = PooledDB(
                 creator=pymysql,
                 host=host, user=user, password=password, db=db, port=port,
-                charset='utf8mb4', autocommit=True, cursorclass=pymysql.cursors.DictCursor,
-                mincached=mincached, maxcached=maxcached
+                charset='utf8mb4', 
+                autocommit=True,  # 查询操作自动提交
+                cursorclass=pymysql.cursors.DictCursor,
+                mincached=mincached, 
+                maxcached=maxcached,
+                maxconnections=maxcached * 2,  # 最大连接数
+                blocking=True,  # 阻塞等待连接
+                ping=7  # 每7次查询ping一次数据库
             )
         else:
             # Fallback: 使用简单的连接
@@ -48,14 +56,81 @@ class MySQLPool:
             )
 
     def query(self, sql, args=None):
-        with self.get_conn().cursor() as cursor:
-            cursor.execute(sql, args or ())
-            return cursor.fetchall()
+        conn = None
+        try:
+            conn = self.get_conn()
+            if conn is None:
+                raise Exception("无法获取数据库连接")
+            
+            with conn.cursor() as cursor:
+                cursor.execute(sql, args or ())
+                result = cursor.fetchall()
+                conn.commit()  # 提交查询事务
+                return result
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()  # 回滚查询事务
+                except:
+                    pass
+            logger.error(f"查询失败: {e}")
+            raise e
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
 
-    def execute(self, sql, args=None):
-        with self.get_conn().cursor() as cursor:
-            cursor.execute(sql, args or ())
-            return cursor.lastrowid
+    def execute(self, sql, args=None, max_retries=3):
+        """执行SQL语句，带重试机制和连接异常处理"""
+        for attempt in range(max_retries):
+            conn = None
+            try:
+                conn = self.get_conn()
+                if conn is None:
+                    raise Exception("无法获取数据库连接")
+                
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, args or ())
+                    # 对于UPDATE/DELETE操作，返回影响的行数；对于INSERT操作，返回lastrowid
+                    if sql.strip().upper().startswith(('UPDATE', 'DELETE')):
+                        result = cursor.rowcount
+                    else:
+                        result = cursor.lastrowid
+                    conn.commit()  # 提交执行事务
+                    return result
+            except (pymysql.OperationalError, pymysql.InterfaceError, pymysql.DatabaseError) as e:
+                if conn:
+                    try:
+                        conn.rollback()  # 回滚执行事务
+                    except:
+                        pass
+                logger.warning(f"数据库连接异常 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"数据库操作最终失败: {sql[:100]}...")
+                    raise e
+                # 等待后重试
+                import time
+                time.sleep(0.1 * (attempt + 1))  # 递增等待时间
+            except Exception as e:
+                if conn:
+                    try:
+                        conn.rollback()  # 回滚执行事务
+                    except:
+                        pass
+                logger.error(f"数据库操作异常: {e}")
+                if attempt == max_retries - 1:
+                    raise e
+                import time
+                time.sleep(0.1 * (attempt + 1))
+            finally:
+                # 确保连接被正确关闭
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
 
     def execute_with_rowcount(self, sql, args=None):
         with self.get_conn().cursor() as cursor:
@@ -66,6 +141,75 @@ class MySQLPool:
         with self.get_conn().cursor() as cursor:
             cursor.executemany(sql, args_list)
             return cursor.rowcount
+
+    def execute_transaction(self, operations, max_retries=3):
+        """执行事务操作，带重试机制"""
+        for attempt in range(max_retries):
+            conn = None
+            try:
+                conn = self.get_conn()
+                conn.begin()  # 开始事务
+                
+                with conn.cursor() as cursor:
+                    results = []
+                    for sql, args in operations:
+                        cursor.execute(sql, args or ())
+                        if sql.strip().upper().startswith(('UPDATE', 'DELETE')):
+                            results.append(cursor.rowcount)
+                        else:
+                            results.append(cursor.lastrowid)
+                
+                conn.commit()  # 提交事务
+                logger.info(f"✅ 事务执行成功 (尝试 {attempt + 1})")
+                return results
+                
+            except Exception as e:
+                if conn:
+                    try:
+                        conn.rollback()  # 回滚事务
+                        logger.warning(f"⚠️ 事务回滚 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    except:
+                        pass
+                
+                # 对于某些错误，不应该重试（如表不存在、语法错误等）
+                if self._should_not_retry(e):
+                    logger.error(f"❌ 事务执行失败，不重试: {e}")
+                    raise e
+                
+                if attempt == max_retries - 1:
+                    logger.error(f"❌ 事务执行最终失败: {e}")
+                    raise e
+                
+                # 等待后重试
+                import time
+                time.sleep(0.1 * (attempt + 1))
+                
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+    
+    def _should_not_retry(self, error):
+        """判断是否不应该重试的错误"""
+        error_str = str(error).lower()
+        # 表不存在、语法错误、权限错误等不应该重试
+        no_retry_errors = [
+            "table '",
+            "doesn't exist",
+            "syntax error",
+            "access denied",
+            "unknown column",
+            "duplicate key",
+            "foreign key constraint"
+        ]
+        
+        for no_retry_error in no_retry_errors:
+            if no_retry_error in error_str:
+                return True
+        
+        return False
 
 # 下面是所有CURD操作的函数，直接调用
 # 假设全局db_pool = MySQLPool(...)

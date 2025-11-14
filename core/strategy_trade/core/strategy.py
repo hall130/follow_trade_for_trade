@@ -1,6 +1,17 @@
 """
-统一策略基类
-提供策略开发的标准接口和基础功能
+策略基类定义（已完全弃用 - 不再使用）
+
+⚠️ 警告：此模块已完全弃用，所有代码已迁移到新架构
+新的策略必须使用 base_strategy.BaseStrategy
+
+此文件保留仅作为参考，不应再被任何代码引用。
+所有功能已迁移到：
+- base_strategy.BaseStrategy - 统一策略基类
+- core/backtest.py - 已更新为新架构
+- core/manager.py - 已更新为新架构
+
+如需使用策略接口，请：
+- from core.strategy_trade.base_strategy import BaseStrategy, MarketData, Signal
 """
 
 from abc import ABC, abstractmethod

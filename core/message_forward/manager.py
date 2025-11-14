@@ -9,8 +9,9 @@ import uuid
 
 from .base import MessagePlatform
 from .models import Message, ForwardRule, PlatformType
-from .platforms import TelegramPlatform, DingTalkPlatform, WeChatPlatform
+from .platforms import TelegramMTProtoPlatform, DingTalkPlatform, WeChatPlatform, BicoinPlatform, CoinGlassPlatform, TradingViewPlatform
 from .platforms.wxauto_wechat import WxAutoWeChatPlatform
+from .platforms.telegram_mtproto import TelegramMTProtoPlatform, telegram_manager
 from .wechat_config_manager import WeChatGroupConfigManager
 from .wxauto_config_manager import WxAutoGroupConfigManager
 from utils.logger import get_logger
@@ -28,6 +29,9 @@ class MessageForwardManager:
         self.running = False
         self.wechat_config_manager = WeChatGroupConfigManager()
         self.wxauto_config_manager = WxAutoGroupConfigManager()
+        
+        # Telegram MTProto 管理器
+        self.telegram_mtproto_manager = telegram_manager
         
         logger.info("消息转发管理器初始化")
     
@@ -71,14 +75,14 @@ class MessageForwardManager:
     def add_forward_rule(self, rule: ForwardRule):
         """添加转发规则"""
         self.forward_rules[rule.rule_id] = rule
-        logger.info(f"转发规则已添加: {rule.name} ({rule.rule_id})")
+        logger.info(f"转发规则已添加: {rule.rule_name} ({rule.rule_id})")
     
     def remove_forward_rule(self, rule_id: str) -> bool:
         """移除转发规则"""
         if rule_id in self.forward_rules:
             rule = self.forward_rules[rule_id]
             del self.forward_rules[rule_id]
-            logger.info(f"转发规则已移除: {rule.name} ({rule_id})")
+            logger.info(f"转发规则已移除: {rule.rule_name} ({rule_id})")
             return True
         return False
     
@@ -101,7 +105,7 @@ class MessageForwardManager:
             # 应用转发规则
             for rule_id, rule in self.forward_rules.items():
                 if rule.enabled and rule.matches(message):
-                    logger.info(f"消息匹配规则: {rule.name}")
+                    logger.info(f"消息匹配规则: {rule.rule_name}")
                     await self._forward_message(message, rule)
                     
         except Exception as e:
@@ -109,35 +113,112 @@ class MessageForwardManager:
             import traceback
             logger.error(traceback.format_exc())
     
-    async def _forward_message(self, message: Message, rule: ForwardRule):
-        """根据规则转发消息"""
+    async def _forward_message(self, message: Message, rule: ForwardRule, platform_id_map: Optional[Dict[int, MessagePlatform]] = None):
+        """
+        根据规则转发消息
+        
+        Args:
+            message: 要转发的消息
+            rule: 转发规则
+            platform_id_map: 平台ID到平台实例的映射（可选，用于支持多个同类型平台实例）
+        """
         try:
             # 转换消息
             transformed_message = rule.transform_message(message)
             
-            # 转发到目标平台
-            for target_platform in rule.target_platforms:
-                if target_platform not in self.platforms:
-                    logger.warning(f"目标平台未连接: {target_platform.value}")
-                    continue
-                
-                platform = self.platforms[target_platform]
-                target_chats = rule.target_chat_ids.get(target_platform, [])
-                
-                if not target_chats:
-                    logger.warning(f"规则 {rule.name} 未配置 {target_platform.value} 的目标聊天")
-                    continue
-                
-                # 发送到每个目标聊天
-                for chat_id in target_chats:
-                    try:
-                        success = await platform.send_message(chat_id, transformed_message)
-                        if success:
-                            logger.info(f"✅ 消息已转发: {target_platform.value} -> {chat_id}")
+            # 优先使用target_platform_ids（平台实例ID列表）
+            if rule.target_platform_ids and platform_id_map:
+                for platform_id in rule.target_platform_ids:
+                    if platform_id not in platform_id_map:
+                        logger.warning(f"目标平台实例未连接 (ID: {platform_id})")
+                        continue
+                    
+                    platform = platform_id_map[platform_id]
+                    
+                    # 获取平台类型，用于查找target_chat_ids
+                    platform_type_str = getattr(platform, 'platform_type', None)
+                    if isinstance(platform_type_str, PlatformType):
+                        platform_type_str = platform_type_str.value
+                    
+                    # 获取目标聊天ID
+                    target_chats = rule.target_chat_ids.get(platform_type_str, [])
+                    if not target_chats:
+                        # 尝试使用PlatformType作为key
+                        if platform_type_str:
+                            try:
+                                platform_type = PlatformType(platform_type_str)
+                                target_chats = rule.target_chat_ids.get(platform_type, [])
+                            except:
+                                pass
+                    
+                    # 某些平台（如钉钉webhook）可能不需要chat_id，允许为空
+                    # 如果为空，使用默认值"default"
+                    if not target_chats:
+                        # 对于webhook类型的平台，允许没有chat_id
+                        webhook_platforms = ['dingtalk', 'wechat_official']
+                        if platform_type_str in webhook_platforms:
+                            target_chats = ['default']  # 使用默认值，平台实现会忽略
+                            logger.debug(f"平台 {platform_type_str} 使用默认chat_id")
                         else:
-                            logger.error(f"❌ 消息转发失败: {target_platform.value} -> {chat_id}")
-                    except Exception as e:
-                        logger.error(f"转发消息到 {chat_id} 失败: {e}")
+                            logger.warning(f"规则 {rule.rule_name} 未配置平台 {platform_id} 的目标聊天")
+                            continue
+                    
+                    # 发送到每个目标聊天
+                    for chat_id in target_chats:
+                        try:
+                            success = await platform.send_message(chat_id, transformed_message)
+                            if success:
+                                logger.info(f"✅ 消息已转发: 平台ID {platform_id} -> {chat_id}")
+                            else:
+                                logger.error(f"❌ 消息转发失败: 平台ID {platform_id} -> {chat_id}")
+                        except Exception as e:
+                            logger.error(f"转发消息到 {chat_id} 失败: {e}")
+            
+            # 兼容旧规则：如果没有target_platform_ids，使用target_platforms（平台类型）
+            elif rule.target_platforms:
+                for target_platform_str in rule.target_platforms:
+                    # 转换为 PlatformType
+                    try:
+                        if isinstance(target_platform_str, PlatformType):
+                            target_platform = target_platform_str
+                        else:
+                            target_platform = PlatformType(target_platform_str)
+                    except ValueError:
+                        logger.warning(f"无效的目标平台类型: {target_platform_str}")
+                        continue
+                    
+                    if target_platform not in self.platforms:
+                        logger.warning(f"目标平台未连接: {target_platform.value}")
+                        continue
+                    
+                    platform = self.platforms[target_platform]
+                    
+                    # 获取目标聊天ID（支持字符串键和PlatformType键）
+                    target_chats = rule.target_chat_ids.get(target_platform_str, [])
+                    if not target_chats:
+                        target_chats = rule.target_chat_ids.get(target_platform, [])
+                    
+                    # 某些平台（如钉钉webhook）可能不需要chat_id，允许为空
+                    if not target_chats:
+                        # 对于webhook类型的平台，允许没有chat_id
+                        webhook_platforms = ['dingtalk', 'wechat_official']
+                        if target_platform.value in webhook_platforms:
+                            target_chats = ['default']  # 使用默认值，平台实现会忽略
+                            logger.debug(f"平台 {target_platform.value} 使用默认chat_id")
+                        else:
+                            logger.warning(f"规则 {rule.rule_name} 未配置 {target_platform.value} 的目标聊天")
+                            continue
+                    
+                    # 发送到每个目标聊天
+                    for chat_id in target_chats:
+                        try:
+                            success = await platform.send_message(chat_id, transformed_message)
+                            if success:
+                                logger.info(f"✅ 消息已转发: {target_platform.value} -> {chat_id}")
+                            else:
+                                logger.error(f"❌ 消息转发失败: {target_platform.value} -> {chat_id}")
+                        except Exception as e:
+                            logger.error(f"转发消息到 {chat_id} 失败: {e}")
                         
         except Exception as e:
             logger.error(f"转发消息失败: {e}")
@@ -223,7 +304,7 @@ class MessageForwardManager:
         platforms_config = config.get('platforms', {})
         
         if platforms_config.get('telegram', {}).get('enabled'):
-            tg_platform = TelegramPlatform(platforms_config['telegram'])
+            tg_platform = TelegramMTProtoPlatform(platforms_config['telegram'])
             await manager.add_platform(tg_platform)
         
         if platforms_config.get('dingtalk', {}).get('enabled'):
@@ -234,12 +315,24 @@ class MessageForwardManager:
             wx_platform = WeChatPlatform(platforms_config['wechat'])
             await manager.add_platform(wx_platform)
         
+        if platforms_config.get('bicoin', {}).get('enabled'):
+            bicoin_platform = BicoinPlatform(platforms_config['bicoin'])
+            await manager.add_platform(bicoin_platform)
+        
+        if platforms_config.get('coinglass', {}).get('enabled'):
+            coinglass_platform = CoinGlassPlatform(platforms_config['coinglass'])
+            await manager.add_platform(coinglass_platform)
+        
+        if platforms_config.get('tradingview', {}).get('enabled'):
+            tradingview_platform = TradingViewPlatform(platforms_config['tradingview'])
+            await manager.add_platform(tradingview_platform)
+        
         # 添加转发规则
         rules_config = config.get('forward_rules', [])
         for rule_config in rules_config:
             rule = ForwardRule(
                 rule_id=rule_config.get('rule_id', str(uuid.uuid4())),
-                name=rule_config['name'],
+                rule_name=rule_config.get('rule_name', rule_config.get('name', '未命名规则')),
                 enabled=rule_config.get('enabled', True),
                 source_platform=PlatformType(rule_config['source_platform']) if rule_config.get('source_platform') else None,
                 source_chat_ids=rule_config.get('source_chat_ids', []),
@@ -374,8 +467,86 @@ class MessageForwardManager:
                 'max_listeners': self.wxauto_config_manager.config.get('max_listeners', 40)
             }
         }
-
-# 全局管理器实例
+    
+    # Telegram MTProto 相关方法
+    async def add_telegram_mtproto_platform(self, platform_id: str, config: Dict[str, Any]) -> bool:
+        """添加 Telegram MTProto 平台"""
+        try:
+            success = await self.telegram_mtproto_manager.add_platform(platform_id, config)
+            if success:
+                logger.info(f"添加 Telegram MTProto 平台成功: {platform_id}")
+            return success
+        except Exception as e:
+            logger.error(f"添加 Telegram MTProto 平台失败: {e}")
+            return False
+    
+    async def remove_telegram_mtproto_platform(self, platform_id: str) -> bool:
+        """移除 Telegram MTProto 平台"""
+        try:
+            success = await self.telegram_mtproto_manager.remove_platform(platform_id)
+            if success:
+                logger.info(f"移除 Telegram MTProto 平台成功: {platform_id}")
+            return success
+        except Exception as e:
+            logger.error(f"移除 Telegram MTProto 平台失败: {e}")
+            return False
+    
+    async def login_telegram_mtproto_platform(self, platform_id: str, phone_code: Optional[str] = None, password: Optional[str] = None) -> bool:
+        """登录 Telegram MTProto 平台"""
+        try:
+            success = await self.telegram_mtproto_manager.login_platform(platform_id, phone_code, password)
+            if success:
+                logger.info(f"Telegram MTProto 平台登录成功: {platform_id}")
+            return success
+        except Exception as e:
+            logger.error(f"Telegram MTProto 平台登录失败: {e}")
+            return False
+    
+    async def send_telegram_mtproto_message(self, platform_id: str, chat_id: str, message: str) -> bool:
+        """通过 Telegram MTProto 发送消息"""
+        try:
+            success = await self.telegram_mtproto_manager.send_message(platform_id, chat_id, message)
+            if success:
+                logger.info(f"Telegram MTProto 消息发送成功: {platform_id} -> {chat_id}")
+            return success
+        except Exception as e:
+            logger.error(f"Telegram MTProto 消息发送失败: {e}")
+            return False
+    
+    async def get_telegram_mtproto_chats(self, platform_id: str) -> List[Dict[str, Any]]:
+        """获取 Telegram MTProto 聊天列表"""
+        try:
+            chats = await self.telegram_mtproto_manager.get_platform_chats(platform_id)
+            logger.info(f"获取 Telegram MTProto 聊天列表成功: {platform_id}, 共 {len(chats)} 个聊天")
+            return chats
+        except Exception as e:
+            logger.error(f"获取 Telegram MTProto 聊天列表失败: {e}")
+            return []
+    
+    def get_telegram_mtproto_platform_status(self, platform_id: str) -> Dict[str, Any]:
+        """获取 Telegram MTProto 平台状态"""
+        return self.telegram_mtproto_manager.get_platform_status(platform_id)
+    
+    def list_telegram_mtproto_platforms(self) -> List[str]:
+        """列出所有 Telegram MTProto 平台"""
+        return self.telegram_mtproto_manager.list_platforms()
+    
+    def get_telegram_mtproto_config_summary(self) -> Dict[str, Any]:
+        """获取 Telegram MTProto 配置摘要"""
+        platforms = self.list_telegram_mtproto_platforms()
+        platform_statuses = {}
+        
+        for platform_id in platforms:
+            status = self.get_telegram_mtproto_platform_status(platform_id)
+            platform_statuses[platform_id] = status
+        
+        return {
+            'platforms_count': len(platforms),
+            'platforms': platform_statuses,
+            'config_file': self.telegram_mtproto_manager.config_file
+        }
+    
+    # 全局管理器实例
 _global_manager: Optional[MessageForwardManager] = None
 
 def get_message_forward_manager() -> Optional[MessageForwardManager]:

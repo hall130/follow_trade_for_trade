@@ -22,6 +22,10 @@ class PlatformType(Enum):
     TELEGRAM = "telegram"
     DINGTALK = "dingtalk"
     WECHAT = "wechat"
+    WECHAT_OFFICIAL = "wechat_official"  # 微信公众号平台
+    BICOIN = "bicoin"  # 币coin平台
+    COINGLASS = "coinglass"  # CoinGlass平台
+    TRADINGVIEW = "tradingview"  # TradingView平台
 
 @dataclass
 class Message:
@@ -29,8 +33,10 @@ class Message:
     content: str
     message_type: MessageType = MessageType.TEXT
     timestamp: datetime = field(default_factory=datetime.now)
+    source_platform_id: Optional[int] = None  # 源平台ID（关联message_platforms.id）
     source_platform: Optional[PlatformType] = None
     source_chat_id: Optional[str] = None
+    source_chat_title: Optional[str] = None  # 源群组标题
     source_user_id: Optional[str] = None
     source_username: Optional[str] = None
     extra_data: Dict[str, Any] = field(default_factory=dict)
@@ -126,11 +132,13 @@ class ForwardRule:
     enabled: bool = True
     
     # 源配置
-    source_platform: str = ''  # 改为字符串类型，而不是 PlatformType
+    source_platform_id: Optional[int] = None  # 源平台ID（优先使用，支持选择具体账户）
+    source_platform: str = ''  # 源平台类型（兼容旧数据，新规则应使用source_platform_id）
     source_chat_ids: List[str] = field(default_factory=list)
     
     # 目标配置
-    target_platforms: List[str] = field(default_factory=list)  # 改为字符串列表
+    target_platform_ids: List[int] = field(default_factory=list)  # 目标平台实例ID列表（优先使用，支持选择具体账户）
+    target_platforms: List[str] = field(default_factory=list)  # 目标平台类型列表（兼容旧数据，新规则应使用target_platform_ids）
     target_chat_ids: Dict[str, List[str]] = field(default_factory=dict)  # 改为字符串键
     
     # 过滤条件
@@ -145,8 +153,12 @@ class ForwardRule:
     
     def matches(self, message: Message) -> bool:
         """检查消息是否匹配规则"""
-        # 检查平台（字符串比较）
-        if self.source_platform:
+        # 优先检查平台ID（如果规则指定了具体平台账户）
+        if self.source_platform_id is not None:
+            if message.source_platform_id != self.source_platform_id:
+                return False
+        # 如果没有指定平台ID，则检查平台类型（兼容旧规则）
+        elif self.source_platform:
             source_platform_str = message.source_platform.value if isinstance(message.source_platform, PlatformType) else str(message.source_platform)
             if source_platform_str != self.source_platform:
                 return False

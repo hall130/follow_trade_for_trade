@@ -12,7 +12,10 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
-from .strategy import IStrategy, BaseStrategy
+from ..base_strategy import BaseStrategy
+
+# IStrategy 接口已统一到 BaseStrategy
+IStrategy = BaseStrategy
 from .backtest import IBacktestEngine, BacktestEngine, BacktestConfig, BacktestResult
 from .events import EventEngine, Event
 from utils.logger import get_logger

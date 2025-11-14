@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import random
 
 from ..base import StrategyBase
-from ...core.strategy import MarketData, Signal
+from ...base_strategy import MarketData, Signal
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

@@ -78,7 +78,9 @@ window.APP_CONFIG = {
         enableAuth: false, // 是否启用身份验证
         sessionTimeout: 3600000, // 会话超时时间（毫秒）
         maxLoginAttempts: 5, // 最大登录尝试次数
-        lockoutDuration: 300000 // 锁定持续时间（毫秒）
+        lockoutDuration: 300000, // 锁定持续时间（毫秒）
+        useEncryption: true, // 是否启用请求加密（默认启用）
+        encryptionKey: null // 加密密钥（从服务器获取，不需要手动配置）
     },
 
     // 开发配置
@@ -134,7 +136,7 @@ window.APP_CONFIG = {
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
         if (port === '8080' || port === '8081') {
             // 本地开发环境
-            window.APP_CONFIG.api.baseUrl = 'http://localhost:5000/api/v1';
+            window.APP_CONFIG.api.baseUrl = 'http://localhost:5001/api/v1';
             window.APP_CONFIG.development.debug = true;
             window.APP_CONFIG.development.mockData = false;
         }
@@ -142,7 +144,11 @@ window.APP_CONFIG = {
     
     // 生产环境配置
     if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-        window.APP_CONFIG.api.baseUrl = `https://${hostname}/api/v1`;
+        // 检测是否为 IP 地址（简单检测）
+        const isIP = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname);
+        // 使用当前页面的协议（http 或 https），如果是 IP 地址则使用 http
+        const protocol = (isIP || window.location.protocol === 'http:') ? 'http' : 'https';
+        window.APP_CONFIG.api.baseUrl = `${protocol}://${hostname}/api/v1`;
         window.APP_CONFIG.development.debug = false;
         window.APP_CONFIG.development.mockData = false;
         window.APP_CONFIG.security.enableAuth = true;

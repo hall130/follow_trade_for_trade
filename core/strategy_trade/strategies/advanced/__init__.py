@@ -5,8 +5,16 @@
 
 from .grid import GridStrategy
 from .high_frequency import HighFrequencyStrategy
+from .fmz_grid import FMZGridStrategy
+from .martin_scalp_grid import MartinScalpGridStrategy
+from .market_maker import MarketMakerStrategy
+from .market_maker_hedge import MarketMakerHedgeStrategy
 
 __all__ = [
     'GridStrategy',
-    'HighFrequencyStrategy'
+    'HighFrequencyStrategy',
+    'FMZGridStrategy',
+    'MartinScalpGridStrategy',
+    'MarketMakerStrategy',
+    'MarketMakerHedgeStrategy'
 ]

@@ -36,6 +36,9 @@ class User:
     created_at: datetime
     last_login_at: Optional[datetime] = None
     last_login_ip: Optional[str] = None
+    customer_uid: Optional[str] = None
+    is_password_changed: Optional[int] = None  # 0=未修改，1=已修改
+    password_changed_at: Optional[datetime] = None
 
 @dataclass
 class Session:
@@ -118,36 +121,81 @@ class AuthService:
             return None
     
     def get_user_by_username(self, username: str) -> Optional[User]:
-        """根据用户名获取用户信息"""
+        """
+        根据用户名获取用户信息
+        支持两种方式：
+        1. 直接使用users.username
+        2. 使用customers.name（通过customer_uid关联）
+        """
         try:
             db_pool = get_db_pool()
             if not db_pool:
                 logger.error("数据库连接池未初始化")
                 return None
             
+            # 先尝试从users表直接查询
             result = db_pool.query("""
                 SELECT id, username, password_hash, full_name, email, role, status, 
-                       created_at, last_login_at, last_login_ip
+                       created_at, last_login_at, last_login_ip, customer_uid, 
+                       is_password_changed, password_changed_at
                 FROM users 
                 WHERE username = %s AND status = 'active'
             """, (username,))
             
-            if not result:
-                return None
+            if result:
+                user_data = result[0]
+                return User(
+                    id=user_data['id'],
+                    username=user_data['username'],
+                    password_hash=user_data['password_hash'],
+                    full_name=user_data['full_name'],
+                    email=user_data['email'],
+                    role=user_data['role'],
+                    status=user_data['status'],
+                    created_at=user_data['created_at'],
+                    last_login_at=user_data['last_login_at'],
+                    last_login_ip=user_data['last_login_ip'],
+                    customer_uid=user_data.get('customer_uid'),
+                    is_password_changed=user_data.get('is_password_changed', 0),
+                    password_changed_at=user_data.get('password_changed_at')
+                )
             
-            user_data = result[0]
-            return User(
-                id=user_data['id'],
-                username=user_data['username'],
-                password_hash=user_data['password_hash'],
-                full_name=user_data['full_name'],
-                email=user_data['email'],
-                role=user_data['role'],
-                status=user_data['status'],
-                created_at=user_data['created_at'],
-                last_login_at=user_data['last_login_at'],
-                last_login_ip=user_data['last_login_ip']
-            )
+            # 如果users表中没找到，尝试通过customers.name查找
+            # 通过customers表的name字段查找对应的customer_uid，然后查找users表
+            customer_result = db_pool.query("""
+                SELECT customer_uid FROM customers WHERE name = %s LIMIT 1
+            """, (username,))
+            
+            if customer_result:
+                customer_uid = customer_result[0]['customer_uid']
+                # 通过customer_uid查找users表
+                result = db_pool.query("""
+                    SELECT id, username, password_hash, full_name, email, role, status, 
+                           created_at, last_login_at, last_login_ip, customer_uid,
+                           is_password_changed, password_changed_at
+                    FROM users 
+                    WHERE customer_uid = %s AND status = 'active'
+                """, (customer_uid,))
+                
+                if result:
+                    user_data = result[0]
+                    return User(
+                        id=user_data['id'],
+                        username=user_data['username'],
+                        password_hash=user_data['password_hash'],
+                        full_name=user_data['full_name'],
+                        email=user_data['email'],
+                        role=user_data['role'],
+                        status=user_data['status'],
+                        created_at=user_data['created_at'],
+                        last_login_at=user_data['last_login_at'],
+                        last_login_ip=user_data['last_login_ip'],
+                        customer_uid=user_data.get('customer_uid'),
+                        is_password_changed=user_data.get('is_password_changed', 0),
+                        password_changed_at=user_data.get('password_changed_at')
+                    )
+            
+            return None
             
         except Exception as e:
             logger.error(f"获取用户信息失败: {e}")
@@ -160,7 +208,8 @@ class AuthService:
             
             result = conn.query("""
                 SELECT id, username, password_hash, full_name, email, role, status, 
-                       created_at, last_login_at, last_login_ip
+                       created_at, last_login_at, last_login_ip, customer_uid,
+                       is_password_changed, password_changed_at
                 FROM users 
                 WHERE id = %s AND status = 'active'
             """, (user_id,))
@@ -177,7 +226,10 @@ class AuthService:
                     status=user_data['status'],
                     created_at=user_data['created_at'],
                     last_login_at=user_data['last_login_at'],
-                    last_login_ip=user_data['last_login_ip']
+                    last_login_ip=user_data['last_login_ip'],
+                    customer_uid=user_data.get('customer_uid'),
+                    is_password_changed=user_data.get('is_password_changed', 0),
+                    password_changed_at=user_data.get('password_changed_at')
                 )
             return None
             
@@ -186,9 +238,12 @@ class AuthService:
             return None
     
     def authenticate_user(self, username: str, password: str, ip_address: str = None) -> Optional[Dict[str, Any]]:
-        """用户认证"""
+        """
+        用户认证
+        支持使用customers.name作为用户名登录
+        """
         try:
-            # 获取用户信息
+            # 获取用户信息（支持通过customers.name查找）
             user = self.get_user_by_username(username)
             if not user:
                 self.log_login_attempt(username, ip_address, False, "用户不存在")
@@ -198,6 +253,11 @@ class AuthService:
             if not self.verify_password(password, user.password_hash):
                 self.log_login_attempt(username, ip_address, False, "密码错误")
                 return None
+            
+            # 检查是否需要强制修改密码（非管理员且未修改过密码）
+            need_change_password = False
+            if user.role != 'admin' and (user.is_password_changed is None or user.is_password_changed == 0):
+                need_change_password = True
             
             # 更新最后登录信息
             self.update_last_login(user.id, ip_address)
@@ -214,7 +274,9 @@ class AuthService:
                 'role': user.role,
                 'status': user.status,
                 'created_at': user.created_at.isoformat(),
-                'last_login_at': user.last_login_at.isoformat() if user.last_login_at else None
+                'last_login_at': user.last_login_at.isoformat() if user.last_login_at else None,
+                'customer_uid': user.customer_uid,
+                'need_change_password': need_change_password  # 是否需要强制修改密码
             }
             
         except Exception as e:
@@ -373,32 +435,55 @@ class AuthService:
             logger.error(f"记录登录日志失败: {e}")
             return False
     
-    def change_password(self, user_id: int, old_password: str, new_password: str) -> bool:
-        """修改密码"""
+    def change_password(self, user_id: int, old_password: str, new_password: str, force: bool = False) -> bool:
+        """
+        修改密码
+        
+        Args:
+            user_id: 用户ID
+            old_password: 旧密码（强制修改时可以为空）
+            new_password: 新密码
+            force: 是否强制修改（跳过旧密码验证，用于首次登录）
+        
+        Returns:
+            是否成功
+        """
         try:
             # 获取用户信息
             user = self.get_user_by_id(user_id)
             if not user:
+                logger.error(f"用户ID {user_id} 不存在")
                 return False
             
-            # 验证旧密码
-            if not self.verify_password(old_password, user.password_hash):
+            # 如果不是强制修改，验证旧密码
+            if not force:
+                if not self.verify_password(old_password, user.password_hash):
+                    logger.warning(f"用户ID {user_id} 修改密码失败：旧密码错误")
+                    return False
+            
+            # 验证新密码长度
+            if len(new_password) < 6:
+                logger.warning(f"用户ID {user_id} 修改密码失败：新密码长度不足")
                 return False
             
             # 加密新密码
             new_password_hash = self.hash_password(new_password)
             
-            # 更新密码
+            # 更新密码和密码修改标记
+            from datetime import datetime
             db_pool = get_db_pool()
             
             success = db_pool.execute("""
                 UPDATE users 
-                SET password_hash = %s, updated_at = NOW() 
+                SET password_hash = %s, 
+                    is_password_changed = 1,
+                    password_changed_at = NOW(),
+                    updated_at = NOW() 
                 WHERE id = %s
             """, (new_password_hash, user_id))
             
             if success:
-                logger.info(f"用户 {user.username} 密码修改成功")
+                logger.info(f"用户 {user.username} 密码修改成功（强制修改: {force}）")
                 return True
             else:
                 logger.error(f"密码修改失败: ID {user_id}")
@@ -472,27 +557,59 @@ class AuthService:
             return []
 
     def create_user(self, username: str, password: str, full_name: str = '', 
-                   email: str = '', role: str = 'user'):
-        """创建新用户"""
+                   email: str = '', role: str = 'user', customer_uid: str = None):
+        """
+        创建新用户
+        
+        Args:
+            username: 用户名（登录名）
+            password: 密码（默认123456，如果role是user且未修改过密码，需要强制修改）
+            full_name: 真实姓名
+            email: 邮箱
+            role: 角色（admin/user）
+            customer_uid: 关联的客户UID（可选）
+        
+        Returns:
+            创建的User对象
+        """
         try:
             # 检查用户名是否已存在
             if self.get_user_by_username(username):
                 logger.warning(f"用户名已存在: {username}")
                 return None
             
+            # 如果提供了customer_uid，检查是否已绑定其他用户
+            if customer_uid:
+                db_pool = get_db_pool()
+                existing_user = db_pool.query(
+                    "SELECT id FROM users WHERE customer_uid = %s LIMIT 1",
+                    (customer_uid,)
+                )
+                if existing_user:
+                    logger.warning(f"客户UID {customer_uid} 已绑定到用户ID {existing_user[0]['id']}")
+                    return None
+            
             # 加密密码
             hashed_password = self.hash_password(password)
             
+            # 对于普通用户，设置is_password_changed=0（需要首次登录强制修改）
+            # 管理员不需要强制修改密码
+            is_password_changed = 1 if role == 'admin' else 0
+            
             # 插入新用户
             query = """
-                INSERT INTO users (username, password_hash, full_name, email, role, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, 'active', NOW())
+                INSERT INTO users (username, password_hash, full_name, email, role, status, 
+                                   customer_uid, is_password_changed, created_at)
+                VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, NOW())
             """
             db_pool = get_db_pool()
-            user_id = db_pool.execute(query, (username, hashed_password, full_name, email, role))
+            user_id = db_pool.execute(
+                query, 
+                (username, hashed_password, full_name, email, role, customer_uid, is_password_changed)
+            )
             
             if user_id:
-                logger.info(f"用户创建成功: {username} (ID: {user_id})")
+                logger.info(f"用户创建成功: {username} (ID: {user_id}, 客户UID: {customer_uid})")
                 return self.get_user_by_id(user_id)
             else:
                 logger.error(f"用户创建失败: {username}")

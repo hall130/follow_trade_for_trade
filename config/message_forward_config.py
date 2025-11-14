@@ -10,11 +10,14 @@
 MESSAGE_FORWARD_CONFIG = {
     # 平台配置
     'platforms': {
-        # Telegram 配置
+        # Telegram MTProto 配置
         'telegram': {
             'enabled': False,  # 是否启用
-            'bot_token': '',   # Bot Token（从 @BotFather 获取）
-            # 获取方式：https://t.me/BotFather
+            'api_id': '',      # API ID（从 https://my.telegram.org/apps 获取）
+            'api_hash': '',    # API Hash（从 https://my.telegram.org/apps 获取）
+            'phone': '',       # 手机号码（格式：+国家代码+手机号，例如：+8613800138000）
+            'session_string': '',  # 会话字符串（可选，如果有可以避免重新登录）
+            # 获取方式：访问 https://my.telegram.org/apps 创建应用获取 API ID 和 API Hash
         },
         
         # 钉钉配置
@@ -29,11 +32,39 @@ MESSAGE_FORWARD_CONFIG = {
             'client_secret': '',
         },
         
-        # 微信配置
+        # 微信配置（个人微信）
         'wechat': {
             'enabled': False,  # 是否启用
             'hot_reload': True,  # 是否启用热登录（避免每次都扫码）
             # 注意：微信需要扫码登录，无法完全自动化
+        },
+        
+        # 微信公众号配置
+        'wechat_official': {
+            'enabled': False,  # 是否启用
+            'app_id': '',      # 微信公众号 AppID
+            'app_secret': '',  # 微信公众号 AppSecret
+            'token': '',       # 用于验证的 token（可选，用于接收消息时验证）
+            # 获取方式：
+            # 1. 登录微信公众平台：https://mp.weixin.qq.com
+            # 2. 进入"开发" -> "基本配置"
+            # 3. 获取 AppID 和 AppSecret
+            # 注意：AppSecret 需要妥善保管，不要泄露
+        },
+        
+        # TradingView配置
+        'tradingview': {
+            'enabled': False,  # 是否启用
+            'use_webhook': True,  # 是否使用Webhook接收方式（推荐）
+            'webhook_port': 8080,  # Webhook监听端口
+            'webhook_path': '/tradingview/webhook',  # Webhook接收路径
+            'secret_key': '',  # Webhook签名密钥（可选，用于验证）
+            
+            # 过滤配置
+            'strategy_filter': [],  # 策略过滤器（例如：['ASR']，留空表示接收所有策略）
+            'symbol_filter': [],  # 交易对过滤器（例如：['BTCUSDT']，留空表示接收所有交易对）
+            # 说明：在TradingView中创建Alert，选择"Webhook URL"通知方式，配置此服务器的URL
+            # Webhook URL格式: http://your-server-ip:webhook_port/webhook_path
         },
     },
     

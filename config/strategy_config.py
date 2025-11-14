@@ -220,6 +220,222 @@ class StrategyConfigManager:
             }
         )
         
+        # 发明者量化网格交易策略模板
+        self.templates["FMZGrid_Strategy"] = StrategyTemplate(
+            name="FMZGrid_Strategy",
+            display_name="发明者量化网格交易策略",
+            description="基于币种比例平衡的网格交易策略，维持固定的币/资金比例，通过买卖来平衡持仓",
+            category="量化套利",
+            risk_profile="LOW",
+            complexity="ADVANCED",
+            required_fields=["symbol", "timeframe", "ratio", "grid_ratio"],
+            validation_rules={
+                "ratio": {"min": 0.1, "max": 0.9, "type": "float"},
+                "grid_ratio": {"min": 0.0005, "max": 0.1, "type": "float"},
+                "interval": {"min": 100, "max": 10000, "type": "int"},
+                "price_precision": {"min": 2, "max": 8, "type": "int"},
+                "amount_precision": {"min": 2, "max": 8, "type": "int"}
+            },
+            default_config={
+                # 基础参数
+                "symbol": "BTC-USDT",
+                "timeframe": "1h",
+                "risk_per_trade": 0.02,
+                "max_positions": 1,
+                "position_sizing": "fixed",
+                
+                # 比例平衡参数
+                "ratio": 0.5,  # 目标币种比例（50%）
+                "grid_ratio": 0.01,  # 网格密度（1%）
+                "interval": 1000,  # 更新间隔（毫秒）
+                
+                # 精度设置
+                "price_precision": 2,
+                "amount_precision": 6,
+                
+                # 风险管理
+                "risk_config": {
+                    "max_daily_loss": 0.05,
+                    "max_position_size": 1.0,
+                    "max_drawdown": 0.2,
+                    "max_leverage": 1.0,
+                    "max_concentration": 1.0
+                }
+            }
+        )
+        
+        # 马丁剥头皮网格策略模板
+        # 做市商策略模板
+        self.templates["MarketMaker_Strategy"] = StrategyTemplate(
+            name="MarketMaker_Strategy",
+            display_name="做市商策略",
+            description="在买卖两侧同时挂单，通过维持买卖价差赚取利润。支持止损/止盈和重平衡功能，适合流动性较好的市场。参考: https://github.com/yanowo/Backpack-MM-Simple/",
+            category="做市交易",
+            risk_profile="MEDIUM",
+            complexity="ADVANCED",
+            required_fields=["symbol", "spread", "quantity"],
+            validation_rules={
+                "spread": {"min": 0.0001, "max": 0.1, "type": "float"},
+                "quantity": {"min": 0.001, "max": 1000, "type": "float"},
+                "max_orders": {"min": 1, "max": 20, "type": "int"},
+                "stop_loss": {"min": -1000, "max": 0, "type": "float"},
+                "take_profit": {"min": 0, "max": 10000, "type": "float"},
+                "base_asset_target": {"min": 0, "max": 100, "type": "float"},
+                "rebalance_threshold": {"min": 1, "max": 50, "type": "float"}
+            },
+            default_config={
+                "symbol": "SOL-USDT",
+                "timeframe": "1m",
+                "risk_per_trade": 0.01,
+                
+                # 做市参数
+                "spread": 0.002,  # 价差（0.2%）
+                "quantity": 0.1,  # 每单数量
+                "max_orders": 5,  # 每侧最大订单数
+                
+                # 止损止盈参数
+                "enable_stop_loss": True,
+                "enable_take_profit": True,
+                "stop_loss": -25.0,  # 止损金额（USDC）
+                "take_profit": 50.0,  # 止盈金额（USDC）
+                
+                # 重平衡参数
+                "enable_rebalance": False,
+                "base_asset_target": 30.0,  # 基础资产目标比例（%）
+                "rebalance_threshold": 15.0,  # 重平衡触发阈值（%）
+                
+                # 风险管理
+                "risk_config": {
+                    "max_daily_loss": 0.05,
+                    "max_position_size": 0.3,
+                    "max_drawdown": 0.2,
+                    "max_leverage": 1.0,
+                    "max_concentration": 0.5
+                }
+            }
+        )
+        
+        # 市商对冲策略模板
+        self.templates["MarketMakerHedge_Strategy"] = StrategyTemplate(
+            name="MarketMakerHedge_Strategy",
+            display_name="市商对冲策略",
+            description="在做市商策略基础上增加对冲机制，检测持仓方向风险，通过反向对冲减少单向暴露，维持市场中性。适合需要降低方向性风险的做市场景。",
+            category="做市交易",
+            risk_profile="LOW",
+            complexity="ADVANCED",
+            required_fields=["symbol", "spread", "quantity", "enable_hedge"],
+            validation_rules={
+                "spread": {"min": 0.0001, "max": 0.1, "type": "float"},
+                "quantity": {"min": 0.001, "max": 1000, "type": "float"},
+                "max_orders": {"min": 1, "max": 20, "type": "int"},
+                "hedge_threshold": {"min": 0.1, "max": 1.0, "type": "float"},
+                "hedge_size_ratio": {"min": 0.1, "max": 1.0, "type": "float"},
+                "max_position_exposure": {"min": 0.1, "max": 5.0, "type": "float"}
+            },
+            default_config={
+                "symbol": "SOL-USDT",
+                "timeframe": "1m",
+                "risk_per_trade": 0.01,
+                
+                # 做市参数（继承自做市商策略）
+                "spread": 0.002,
+                "quantity": 0.1,
+                "max_orders": 5,
+                
+                # 止损止盈参数
+                "enable_stop_loss": True,
+                "enable_take_profit": True,
+                "stop_loss": -25.0,
+                "take_profit": 50.0,
+                
+                # 重平衡参数
+                "enable_rebalance": False,
+                "base_asset_target": 30.0,
+                "rebalance_threshold": 15.0,
+                
+                # 对冲参数
+                "enable_hedge": True,  # 是否启用对冲
+                "hedge_threshold": 0.5,  # 对冲触发阈值（持仓/总资产比例）
+                "hedge_size_ratio": 0.8,  # 对冲比例（80%）
+                "max_position_exposure": 1.0,  # 最大持仓暴露倍数
+                
+                # 风险管理
+                "risk_config": {
+                    "max_daily_loss": 0.03,
+                    "max_position_size": 0.25,
+                    "max_drawdown": 0.15,
+                    "max_leverage": 1.0,
+                    "max_concentration": 0.4
+                }
+            }
+        )
+        
+        self.templates["MartinScalpGrid_Strategy"] = StrategyTemplate(
+            name="MartinScalpGrid_Strategy",
+            display_name="马丁剥头皮网格策略",
+            description="结合马丁格尔、剥头皮和网格交易的优势，亏损后加倍下注快速回本，快速进出赚取小额价差，在价格区间内设置多个买卖挂单捕捉震荡行情",
+            category="量化套利",
+            risk_profile="HIGH",
+            complexity="ADVANCED",
+            required_fields=["symbol", "timeframe", "initial_amount", "martin_multiplier", "max_levels"],
+            validation_rules={
+                "initial_amount": {"min": 10, "max": 100000, "type": "float"},
+                "martin_multiplier": {"min": 1.5, "max": 5.0, "type": "float"},
+                "max_levels": {"min": 3, "max": 20, "type": "int"},
+                "scalp_profit_pct": {"min": 0.0005, "max": 0.01, "type": "float"},
+                "scalp_stop_loss_pct": {"min": 0.001, "max": 0.05, "type": "float"},
+                "grid_spacing_pct": {"min": 0.0005, "max": 0.01, "type": "float"},
+                "grid_count": {"min": 5, "max": 50, "type": "int"},
+                "take_profit_pct": {"min": 0.005, "max": 0.1, "type": "float"},
+                "stop_loss_pct": {"min": 0.01, "max": 0.2, "type": "float"},
+                "max_position_value": {"min": 100, "max": 1000000, "type": "float"},
+                "price_precision": {"min": 2, "max": 8, "type": "int"},
+                "amount_precision": {"min": 2, "max": 8, "type": "int"}
+            },
+            default_config={
+                # 基础参数
+                "symbol": "BTC-USDT",
+                "timeframe": "15m",
+                "risk_per_trade": 0.05,
+                "max_positions": 1,
+                "position_sizing": "fixed",
+                
+                # 马丁格尔参数
+                "initial_amount": 100.0,  # 初始下单金额（USDT）
+                "martin_multiplier": 2.0,  # 马丁格尔倍数
+                "max_levels": 10,  # 最大持仓层级
+                
+                # 剥头皮参数
+                "scalp_profit_pct": 0.002,  # 剥头皮利润比例（0.2%）
+                "scalp_stop_loss_pct": 0.005,  # 剥头皮止损比例（0.5%）
+                
+                # 网格参数
+                "grid_spacing_pct": 0.001,  # 网格间距（0.1%）
+                "grid_count": 10,  # 网格数量（上下各5个）
+                
+                # 止盈止损参数
+                "take_profit_pct": 0.01,  # 总持仓止盈比例（1%）
+                "stop_loss_pct": 0.05,  # 总持仓止损比例（5%）
+                
+                # 风控参数
+                "max_position_value": 10000.0,  # 最大持仓价值（USDT）
+                "min_price_change": 0.0001,  # 最小价格变化（0.01%）
+                
+                # 精度设置
+                "price_precision": 2,
+                "amount_precision": 6,
+                
+                # 风险管理
+                "risk_config": {
+                    "max_daily_loss": 0.1,
+                    "max_position_size": 1.0,
+                    "max_drawdown": 0.3,
+                    "max_leverage": 1.0,
+                    "max_concentration": 1.0
+                }
+            }
+        )
+        
         # RSI策略模板
         self.templates["RSI_Strategy"] = StrategyTemplate(
             name="RSI_Strategy",
@@ -400,11 +616,35 @@ class StrategyConfigManager:
                         errors.append(f"字段 {field} 应为字符串类型")
                 
                 # 范围检查
+                # 先尝试转换为数值类型进行比较
+                numeric_value = None
                 if isinstance(value, (int, float)):
-                    if "min" in rules and value < rules["min"]:
-                        errors.append(f"字段 {field} 的值 {value} 小于最小值 {rules['min']}")
-                    if "max" in rules and value > rules["max"]:
-                        errors.append(f"字段 {field} 的值 {value} 大于最大值 {rules['max']}")
+                    numeric_value = value
+                elif isinstance(value, str):
+                    try:
+                        # 尝试转换为浮点数
+                        numeric_value = float(value)
+                        # 如果是整数类型，尝试转换回整数
+                        if "type" in rules and rules["type"] == "int":
+                            numeric_value = int(numeric_value)
+                    except (ValueError, TypeError):
+                        pass
+                
+                if numeric_value is not None:
+                    if "min" in rules:
+                        try:
+                            min_value = float(rules["min"]) if isinstance(rules["min"], str) else rules["min"]
+                            if numeric_value < min_value:
+                                errors.append(f"字段 {field} 的值 {numeric_value} 小于最小值 {min_value}")
+                        except (ValueError, TypeError):
+                            pass
+                    if "max" in rules:
+                        try:
+                            max_value = float(rules["max"]) if isinstance(rules["max"], str) else rules["max"]
+                            if numeric_value > max_value:
+                                errors.append(f"字段 {field} 的值 {numeric_value} 大于最大值 {max_value}")
+                        except (ValueError, TypeError):
+                            pass
         
         # 特殊验证逻辑
         if strategy_type == "MA_Cross_Strategy":

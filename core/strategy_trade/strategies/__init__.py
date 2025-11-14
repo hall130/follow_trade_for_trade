@@ -12,5 +12,6 @@ __all__ = [
     # 技术指标策略
     'MACrossStrategy', 'RSIStrategy', 'MACDStrategy', 'BollingerStrategy',
     # 高级策略
-    'GridStrategy', 'HighFrequencyStrategy'
+    'GridStrategy', 'HighFrequencyStrategy', 'FMZGridStrategy', 'MartinScalpGridStrategy',
+    'MarketMakerStrategy', 'MarketMakerHedgeStrategy'
 ]

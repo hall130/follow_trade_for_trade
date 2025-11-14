@@ -1,0 +1,16 @@
+{
+  "running": true,
+  "stats": {
+    "total_messages": 1617,
+    "filtered_messages": 0,
+    "forwarded_messages": 0,
+    "failed_forwards": 0,
+    "start_time": "2025-11-10 14:17:07.315801",
+    "last_message_time": "2025-11-10 15:18:07.908467"
+  },
+  "telegram_connected": true,
+  "telegram_authenticated": true,
+  "forward_rules_count": 1,
+  "active_rules_count": 1,
+  "target_platforms_count": 1
+}

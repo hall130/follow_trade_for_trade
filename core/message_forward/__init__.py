@@ -15,7 +15,7 @@
 from .manager import MessageForwardManager, get_message_forward_manager, set_message_forward_manager
 from .models import Message, MessageType, PlatformType, ForwardRule
 from .base import MessagePlatform
-from .platforms import TelegramPlatform, DingTalkPlatform, WeChatPlatform
+from .platforms import TelegramMTProtoPlatform, DingTalkPlatform, WeChatPlatform, BicoinPlatform, CoinGlassPlatform
 
 __all__ = [
     'MessageForwardManager',
@@ -26,9 +26,11 @@ __all__ = [
     'PlatformType',
     'ForwardRule',
     'MessagePlatform',
-    'TelegramPlatform',
+    'TelegramMTProtoPlatform',
     'DingTalkPlatform',
-    'WeChatPlatform'
+    'WeChatPlatform',
+    'BicoinPlatform',
+    'CoinGlassPlatform'
 ]
 
 __version__ = '1.0.0'

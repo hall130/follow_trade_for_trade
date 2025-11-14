@@ -543,6 +543,13 @@ class EnhancedLimitFollowService:
                     AND sat.status = 'open'
                     AND (sat.volume_contract - IFNULL(sat.close_volume_contract, 0)) > 0
                 )
+                AND NOT EXISTS (
+                    SELECT 1 FROM limit_follow_orders lfo2
+                    WHERE lfo2.customer_uid = lfo.customer_uid
+                    AND lfo2.symbol = lfo.symbol
+                    AND lfo2.pos_side = lfo.pos_side
+                    AND lfo2.status IN ('pending', 'live')
+                )
             """)
             
             if inconsistent_orders:

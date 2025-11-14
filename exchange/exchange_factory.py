@@ -23,7 +23,7 @@ class ExchangeFactory:
     def __init__(self):
         self.rest_clients = {}
         self.ws_clients = {}
-        self.supported_exchanges = ['okx', 'binance', 'bybit']
+        self.supported_exchanges = ['okx', 'binance', 'bybit', 'hyperliquid']
     
     def create_rest_client(self, exchange: str, api_key: str, api_secret: str, 
                           passphrase: str = None, is_demo: bool = True) -> UnifiedRESTClient:

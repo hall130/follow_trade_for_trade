@@ -11,9 +11,13 @@ import pandas as pd
 import numpy as np
 import asyncio
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-from .strategy import IStrategy, BaseStrategy, MarketData, Signal, Position
+from ..base_strategy import BaseStrategy, MarketData, Signal, Position
+
+# IStrategy 接口已统一到 BaseStrategy
+IStrategy = BaseStrategy
 from .events import EventEngine, Event, MarketDataEvent, SignalEvent
 from utils.logger import get_logger
 
@@ -50,6 +54,8 @@ class BacktestResult:
     equity_curve: List[Dict[str, Any]]
     trades: List[Dict[str, Any]]
     positions: List[Dict[str, Any]]
+    initial_capital: float = 0.0  # 初始资金
+    final_capital: float = 0.0  # 最终资金（可用现金，所有持仓已平仓）
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -125,22 +131,99 @@ class BacktestEngine(IBacktestEngine):
         self.running = True
         
         try:
-            # 初始化策略
+            # 如果有数据，先喂一条数据给策略（在初始化之前），让策略能够初始化价格等信息
+            # 这样可以避免策略在 on_initialize() 时没有市场数据的警告
+            if not data.empty:
+                first_row = data.iloc[0]
+                first_timestamp = data.index[0]
+                strategy_symbol = strategy.symbol if hasattr(strategy, 'symbol') else 'BTCUSDT'
+                initial_market_data = MarketData(
+                    symbol=strategy_symbol,
+                    timestamp=first_timestamp if isinstance(first_timestamp, datetime) else pd.to_datetime(first_timestamp),
+                    open=float(first_row['open']),
+                    high=float(first_row['high']),
+                    low=float(first_row['low']),
+                    close=float(first_row['close']),
+                    volume=float(first_row['volume'])
+                )
+                # 在策略初始化之前，先更新策略的数据缓存（如果策略有 market_data 属性）
+                if hasattr(strategy, 'market_data'):
+                    strategy.market_data.append(initial_market_data)
+            
+            # 标记策略为回测模式（允许自动调整，不抛出错误）
+            if hasattr(strategy, 'set_parameter'):
+                strategy.set_parameter('is_backtest', True)
+            elif hasattr(strategy, 'config'):
+                strategy.config['is_backtest'] = True
+            
+            # 初始化策略（此时策略已经有第一条数据了）
             strategy.initialize()
+            
+            # 将回测引擎的账户信息同步到策略（如果有 account 属性）
+            if hasattr(strategy, 'account') and isinstance(strategy.account, dict):
+                # 将回测引擎的初始资金注入到策略账户
+                strategy.account['balance'] = self.available_cash
+                strategy.account['frozen_balance'] = 0.0
+                strategy.account['stocks'] = 0.0
+                strategy.account['frozen_stocks'] = 0.0
+                logger.info(f"初始化策略账户: 初始资金={self.available_cash:.2f}")
             
             # 启动策略
             strategy.start()
             
-            # 处理历史数据
-            self._process_historical_data(strategy, data, config)
+            # 处理历史数据（从第二条开始，因为第一条已经处理过了）
+            if not data.empty and len(data) > 1:
+                # 跳过第一条数据，因为已经在初始化时添加到了缓存
+                self._process_historical_data(strategy, data.iloc[1:], config)
+            elif not data.empty:
+                # 如果只有一条数据，也要处理（虽然已经在缓存中，但需要触发策略逻辑）
+                self._process_historical_data(strategy, data.iloc[0:1], config)
+            else:
+                self._process_historical_data(strategy, data, config)
             
             # 停止策略
             strategy.stop()
             
+            # 回测结束时，强制平仓所有持仓（按最后价格）
+            if self.positions and not data.empty:
+                last_row = data.iloc[-1]
+                last_timestamp = data.index[-1]
+                strategy_symbol = strategy.symbol if hasattr(strategy, 'symbol') else 'BTCUSDT'
+                final_market_data = MarketData(
+                    symbol=strategy_symbol,
+                    timestamp=last_timestamp if isinstance(last_timestamp, datetime) else pd.to_datetime(last_timestamp),
+                    open=float(last_row['open']),
+                    high=float(last_row['high']),
+                    low=float(last_row['low']),
+                    close=float(last_row['close']),
+                    volume=float(last_row['volume'])
+                )
+                
+                # 强制平仓所有持仓
+                positions_to_close = self.positions.copy()
+                for position in positions_to_close:
+                    if position.size > 0:
+                        # 创建平仓信号
+                        close_signal = Signal(
+                            symbol=position.symbol,
+                            direction='SELL',
+                            price=final_market_data.close,
+                            volume=position.size,
+                            timestamp=final_market_data.timestamp,
+                            strength=1.0,
+                            reason=f"回测结束时强制平仓"
+                        )
+                        self._execute_sell_order(strategy, close_signal, final_market_data, config)
+                        logger.info(f"回测结束，强制平仓: {position.symbol} 数量={position.size:.4f} @ {final_market_data.close:.2f}")
+                
+                # 更新最后一次权益曲线
+                self._update_account(final_market_data)
+                self._update_equity_curve(final_market_data.timestamp)
+            
             # 计算回测结果
             result = self._calculate_results(strategy, config)
             
-            logger.info(f"回测完成: 总交易数={len(self.trades)}, 总收益率={result.total_return:.2%}")
+            logger.info(f"回测完成: 总交易数={len(self.trades)}, 剩余持仓数={len(self.positions)}, 总收益率={result.total_return:.2%}")
             return result
             
         except Exception as e:
@@ -223,8 +306,15 @@ class BacktestEngine(IBacktestEngine):
                 )
                 self.event_engine.put(event)
                 
-                # 处理策略 - on_data 会自动更新价格数据并调用 on_market_data
-                strategy.on_data(market_data)
+                # 处理策略 - 使用新架构统一接口
+                # 新架构：使用 process_market_data（会自动调用 on_market_data）
+                if hasattr(strategy, 'process_market_data'):
+                    strategy.process_market_data(market_data)
+                elif hasattr(strategy, 'on_market_data'):
+                    # 直接调用 on_market_data（如果策略没有 process_market_data）
+                    strategy.on_market_data(market_data)
+                else:
+                    logger.error(f"策略 {strategy.__class__.__name__} 没有实现 process_market_data 或 on_market_data 方法")
                 
                 # 处理交易信号
                 self._process_signals(strategy, market_data, config)
@@ -273,17 +363,26 @@ class BacktestEngine(IBacktestEngine):
     
     def _process_signals(self, strategy: IStrategy, market_data: MarketData, config: BacktestConfig) -> None:
         """处理交易信号"""
+        # 在处理信号前，先同步账户信息到策略（确保策略知道最新的资金和持仓）
+        if hasattr(strategy, 'account') and isinstance(strategy.account, dict):
+            strategy.account['balance'] = self.available_cash
+            strategy.account['frozen_balance'] = 0.0
+            # 计算总币种数量（所有持仓）
+            total_stocks = sum(pos.size for pos in self.positions if pos.symbol == market_data.symbol)
+            strategy.account['stocks'] = total_stocks
+            strategy.account['frozen_stocks'] = 0.0
+        
         signals = strategy.get_signals()
         
         for signal in signals:
             if signal.direction == 'BUY':
                 logger.info(f"执行买入订单: {signal.symbol} @ {signal.price:.2f}, volume={signal.volume}")
-                self._execute_buy_order(signal, market_data, config)
+                self._execute_buy_order(strategy, signal, market_data, config)
             elif signal.direction == 'SELL':
                 logger.info(f"执行卖出订单: {signal.symbol} @ {signal.price:.2f}, volume={signal.volume}")
-                self._execute_sell_order(signal, market_data, config)
+                self._execute_sell_order(strategy, signal, market_data, config)
     
-    def _execute_buy_order(self, signal: Signal, market_data: MarketData, config: BacktestConfig) -> None:
+    def _execute_buy_order(self, strategy: IStrategy, signal: Signal, market_data: MarketData, config: BacktestConfig) -> None:
         """执行买入订单"""
         # 计算可买入数量
         available_cash = self.available_cash
@@ -323,6 +422,13 @@ class BacktestEngine(IBacktestEngine):
         )
         self.positions.append(position)
         
+        # 同步账户信息到策略（更新策略的 account 字典）
+        if hasattr(strategy, 'account') and isinstance(strategy.account, dict):
+            strategy.account['balance'] = self.available_cash
+            # 计算总币种数量
+            total_stocks = sum(pos.size for pos in self.positions if pos.symbol == signal.symbol)
+            strategy.account['stocks'] = total_stocks
+        
         # 记录交易
         trade = {
             'symbol': signal.symbol or '',
@@ -337,7 +443,7 @@ class BacktestEngine(IBacktestEngine):
         
         logger.info(f"✅ 买入成功: {signal.symbol} 数量={volume:.4f} @ {buy_price:.2f}, 手续费={commission:.2f}, 剩余资金={self.available_cash:.2f}")
     
-    def _execute_sell_order(self, signal: Signal, market_data: MarketData, config: BacktestConfig) -> None:
+    def _execute_sell_order(self, strategy: IStrategy, signal: Signal, market_data: MarketData, config: BacktestConfig) -> None:
         """执行卖出订单"""
         # 查找对应持仓
         position = None
@@ -370,6 +476,13 @@ class BacktestEngine(IBacktestEngine):
         position.size -= volume
         if position.size <= 0:
             self.positions.remove(position)
+        
+        # 同步账户信息到策略（更新策略的 account 字典）
+        if hasattr(strategy, 'account') and isinstance(strategy.account, dict):
+            strategy.account['balance'] = self.available_cash
+            # 计算总币种数量
+            total_stocks = sum(pos.size for pos in self.positions if pos.symbol == signal.symbol)
+            strategy.account['stocks'] = total_stocks
         
         # 计算盈亏
         pnl = (sell_price - position.entry_price) * volume - commission
@@ -427,7 +540,7 @@ class BacktestEngine(IBacktestEngine):
     
     def _calculate_results(self, strategy: IStrategy, config: BacktestConfig) -> BacktestResult:
         """计算回测结果"""
-        logger.info(f"计算回测结果: 权益曲线点数={len(self.equity_curve)}, 交易数={len(self.trades)}, 持仓数={len(self.positions)}")
+        logger.info(f"计算回测结果: 权益曲线点数={len(self.equity_curve)}, 交易数={len(self.trades)}, 剩余持仓数={len(self.positions)}")
         
         if not self.equity_curve:
             logger.warning("权益曲线为空，返回默认结果")
@@ -438,14 +551,31 @@ class BacktestEngine(IBacktestEngine):
                 'cash': float(config.initial_capital),
                 'positions_value': 0.0
             }]
-            return BacktestResult(0, 0, 0, 0, 0, 0, default_equity_curve, [], [])
+            return BacktestResult(0, 0, 0, 0, 0, 0, default_equity_curve, [], [], initial_capital=float(config.initial_capital), final_capital=float(config.initial_capital))
         
         # 计算基本指标
         initial_equity = self.equity_curve[0]['equity']
-        final_equity = self.equity_curve[-1]['equity']
+        
+        # 最终资金 = 可用现金（所有持仓应该已经被强制平仓）
+        # 如果有剩余持仓，这是异常情况，记录警告
+        if self.positions:
+            remaining_value = sum(pos.size * pos.current_price for pos in self.positions if pos.size > 0)
+            logger.warning(f"⚠️ 回测结束时仍有未平仓持仓，价值={remaining_value:.2f}")
+            # 使用权益曲线的最后一个点（已包含持仓价值）
+            final_equity = self.equity_curve[-1]['equity']
+        else:
+            # 所有持仓已平仓，最终资金 = 可用现金
+            final_equity = self.available_cash
+            
+            # 更新权益曲线的最后一个点（确保它反映平仓后的资金）
+            if self.equity_curve:
+                self.equity_curve[-1]['equity'] = float(final_equity)
+                self.equity_curve[-1]['cash'] = float(final_equity)
+                self.equity_curve[-1]['positions_value'] = 0.0
+        
         total_return = (final_equity - initial_equity) / initial_equity
         
-        logger.info(f"回测指标: 初始资金={initial_equity}, 最终资金={final_equity}, 总收益率={total_return:.4f}")
+        logger.info(f"回测指标: 初始资金={initial_equity:.2f}, 最终资金={final_equity:.2f}, 可用现金={self.available_cash:.2f}, 总收益率={total_return:.4%}")
         
         # 计算年化收益率
         start_date = self.equity_curve[0]['timestamp']
@@ -504,7 +634,9 @@ class BacktestEngine(IBacktestEngine):
             total_trades=total_trades,
             equity_curve=formatted_equity_curve,
             trades=self.trades,
-            positions=positions_data
+            positions=positions_data,
+            initial_capital=float(config.initial_capital),
+            final_capital=float(final_equity)  # 使用计算出的最终资金（已平仓后的可用现金）
         )
     
     def _calculate_max_drawdown(self) -> float:

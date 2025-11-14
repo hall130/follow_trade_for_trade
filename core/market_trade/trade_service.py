@@ -23,15 +23,7 @@ from datetime import datetime
 import gc
 import tracemalloc
 import traceback
-
-# 可选导入psutil
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    logger.warning("psutil不可用，将跳过系统监控功能")
-    PSUTIL_AVAILABLE = False
-    psutil = None
+import psutil
 
 from config.contract_config import get_contract_sz_precision, get_contract_min_sz, get_contract_multiplier, get_contract_info, get_contract_value_in_usdt, get_contract_sz_precision
 from database.db import get_enabled_customers, get_enabled_signal_accounts
@@ -1127,7 +1119,7 @@ class TradeService:
             
             # 强制内存清理
             try:
-                if PSUTIL_AVAILABLE and psutil:
+                if psutil:
                     process = psutil.Process()
                     memory_before = process.memory_info().rss / 1024 / 1024
                     
@@ -1151,7 +1143,7 @@ class TradeService:
     async def check_memory_and_restart(self):
         """检查内存使用并在必要时重启关键任务"""
         try:
-            if PSUTIL_AVAILABLE and psutil:
+            if psutil:
                 process = psutil.Process()
                 memory_mb = process.memory_info().rss / 1024 / 1024
                 
@@ -1216,19 +1208,27 @@ class TradeService:
                     return
                 
                 # 获取客户名称
+                # 优化：批量获取客户和信号源名称（避免多次查询）
                 customer_name = customer_uid
+                signal_source_name = signal_source_uid or "未知信号源"
+                
                 try:
-                    customer_info = self.db_pool.query("SELECT name FROM customers WHERE customer_uid=%s", (customer_uid,))
+                    # 一次性查询客户和信号源信息
+                    customer_info = self.db_pool.query(
+                        "SELECT name FROM customers WHERE customer_uid=%s LIMIT 1", 
+                        (customer_uid,)
+                    )
                     if customer_info:
                         customer_name = customer_info[0]['name'] or customer_uid
                 except Exception as e:
                     logger.warning(f"[钉钉通知] 获取客户名称失败: {e}")
                 
-                # 获取信号源名称
-                signal_source_name = signal_source_uid or "未知信号源"
                 if signal_source_uid:
                     try:
-                        signal_info = self.db_pool.query("SELECT name FROM signal_sources WHERE source_uid=%s", (signal_source_uid,))
+                        signal_info = self.db_pool.query(
+                            "SELECT name FROM signal_sources WHERE source_uid=%s LIMIT 1", 
+                            (signal_source_uid,)
+                        )
                         if signal_info:
                             signal_source_name = signal_info[0]['name'] or signal_source_uid
                     except Exception as e:
@@ -4003,7 +4003,7 @@ class TradeService:
     async def _check_memory_usage(self):
         """检查内存使用情况"""
         try:
-            if PSUTIL_AVAILABLE and psutil:
+            if psutil:
                 # 获取当前进程内存信息
                 process = psutil.Process()
                 memory_info = process.memory_info()
@@ -7412,7 +7412,7 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5000/api/v1/limit-follow/cancel-on-signal-close"
+            api_url = f"http://localhost:5001/api/v1/limit-follow/cancel-on-signal-close"
             payload = {
                 'trader_unique_name': order.get('trader_unique_name', ''),
                 'symbol': order['symbol'],
@@ -8049,7 +8049,7 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5000/api/v1/limit-follow/limit-follow-closed-by-order-id"
+            api_url = f"http://localhost:5001/api/v1/limit-follow/limit-follow-closed-by-order-id"
             
             for order in filled_orders:
                 if closed >= need_close:
@@ -8162,7 +8162,7 @@ class TradeService:
             import aiohttp
             import json
             
-            api_url = f"http://localhost:5000/api/v1/limit-follow/cancel-on-signal-close"
+            api_url = f"http://localhost:5001/api/v1/limit-follow/cancel-on-signal-close"
             payload = {
                 'trader_unique_name': signal_source_uid,
                 'symbol': symbol,

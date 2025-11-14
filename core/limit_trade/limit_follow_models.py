@@ -23,7 +23,7 @@ class FollowOrderTypes(Enum):
     """跟单订单类型枚举"""
     LIMIT_ONLY = 'limit_only'    # 只限价跟单
     MARKET_ONLY = 'market_only'  # 只市价跟单
-    BOTH = 'both'        
+    BOTH = 'both'                # 限价+市价混合跟单
 
 class ExecutionStatus(Enum):
     """执行状态枚举"""
@@ -40,14 +40,8 @@ class FollowType(Enum):
 
 class FollowMode(Enum):
     """跟单模式枚举"""
-    FOLLOW_SIGNAL_SOURCE = 'follow_signal_source'  # 跟信号源
-    FOLLOW_TRADER = 'follow_trader'                # 跟交易员
-
-class FollowOrderTypes(Enum):
-    """跟单订单类型枚举"""
-    LIMIT_ONLY = 'limit_only'    # 只跟限价单
-    MARKET_ONLY = 'market_only'  # 只跟市价单
-    BOTH = 'both'                # 都跟
+    FOLLOW_SIGNAL_SOURCE = 'follow_signal_source'  # 跟信号源：客户账户不包含信号源账户
+    FOLLOW_TRADER = 'follow_trader'                 # 跟交易员：客户账户包含信号源账户
 
 class PosSide(Enum):
     """持仓方向枚举"""
@@ -77,7 +71,6 @@ class LimitFollowStrategy:
     max_net_leverage: float = 10.0  # 最大净杠杆值
     proportional_position: bool = False  # 是否启用按比例开仓
     auto_cancel_on_signal_close: bool = True
-    reverse_direction: bool = False  # 🆕 是否反向跟单（信号源做多，跟单做空；信号源做空，跟单做多）
     enabled: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -89,7 +82,7 @@ class LimitFollowStrategy:
             raise ValueError(f"无效的跟单类型: {self.follow_type}")
         if self.follow_mode not in [e.value for e in FollowMode]:
             raise ValueError(f"无效的跟单模式: {self.follow_mode}")
-
+    
     def is_follow_signal_source(self) -> bool:
         """判断是否为跟信号源模式"""
         return self.follow_mode == FollowMode.FOLLOW_SIGNAL_SOURCE.value
@@ -107,16 +100,19 @@ class LimitFollowOrder:
     trader_unique_name: str = ''
     customer_uid: str = ''
     symbol: str = ''
+    symbols: str = ''
     pos_side: str = 'long'
     follow_value: float = 0.0
     target_price: float = 0.0
     order_size: float = 0.0
     order_type: str = 'limit'
     status: str = 'pending'
+    reduce_only: bool = False  # 是否只减仓
     order_id: Optional[str] = None
     exchange_order_id: Optional[str] = None
     filled_price: Optional[float] = None
     filled_size: Optional[float] = None
+    limit_close_size: Optional[float] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -318,7 +314,6 @@ class SignalEvent:
         if self.pos_side not in [e.value for e in PosSide]:
             raise ValueError(f"无效的持仓方向: {self.pos_side}")
 
-
 @dataclass
 class AccountRelation:
     """账户关系"""
@@ -415,7 +410,7 @@ def get_status_text(status: str) -> str:
     """获取状态文本"""
     status_map = {
         'pending': '待处理',
-        'live': '活跃',
+        'live': '已挂单',
         'filled': '已成交',
         'canceled': '已撤销',
         'expired': '已过期',

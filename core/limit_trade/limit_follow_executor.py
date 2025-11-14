@@ -18,10 +18,26 @@ from core.limit_trade.limit_follow_db import LimitFollowDB
 from config.contract_config import get_contract_min_sz
 import requests
 from exchange.exchange_factory import create_exchange_client
+from core.limit_trade.collectors.collector_factory import TraderCollectorFactory
+from core.limit_trade.collectors.base_collector import BaseTraderCollector
 
 
 class LimitFollowExecutor:
-    def __init__(self, db_pool: MySQLPool):
+    def __init__(self, db_pool: MySQLPool, default_collector_type: str = 'okx'):
+        """
+        初始化限价跟单执行器
+        
+        Args:
+            db_pool: 数据库连接池
+            default_collector_type: 默认采集器类型 ('okx', 'binance' 等)
+        """
+        if db_pool is None:
+            # 尝试从全局管理器获取
+            from database.global_db_manager import get_global_db_pool
+            db_pool = get_global_db_pool()
+            if db_pool is None:
+                raise ValueError("数据库连接池不可用，无法初始化限价跟单执行器")
+        
         self.db_pool = db_pool
         self.limit_follow_db = LimitFollowDB(db_pool)
         
@@ -35,13 +51,16 @@ class LimitFollowExecutor:
         self.config = {
             'polling_interval': 5,  # 轮询间隔（秒）
             'trade_limit': 1,  # 每次获取的交易记录数量
-            'okx_api_base': 'https://www.okx.com/priapi/v5/ecotrade/public/community/user/trade-records',  # OKX API基础URL
             'max_retry_attempts': 3,  # 最大重试次数
             'retry_delay': 5,  # 重试延迟（秒）
             'request_timeout': 10,  # 请求超时时间（秒）
             'enable_logging': True,  # 启用日志记录
-            'log_level': 'INFO'  # 日志级别
+            'log_level': 'INFO',  # 日志级别
+            'default_collector_type': default_collector_type  # 默认采集器类型
         }
+        
+        # 采集器缓存：{trader_unique_name: collector_instance}
+        self.collectors_cache: Dict[str, BaseTraderCollector] = {}
     
     def _parse_ratio(self, ratio_str: str) -> tuple:
         """解析比例配置字符串，如 '3:1' -> (0.75, 0.25)"""
@@ -116,55 +135,112 @@ class LimitFollowExecutor:
             
         except Exception as e:
             logger.error(f"保存处理记录失败: {e}")
-    def get_trade_records(self, unique_name: str, limit: int = 1) -> List[Dict]:
-        """获取交易记录"""
-        params = {
-            'uniqueName': unique_name,
-            'instType': 'SWAP',
-            'limit': limit
-        }
+    def _get_collector_for_trader(self, trader_unique_name: str) -> Optional[BaseTraderCollector]:
+        """
+        获取带单员对应的采集器实例（带缓存）
         
-        try:
-            response = requests.get(self.config['okx_api_base'], params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+        Args:
+            trader_unique_name: 带单员唯一标识
             
-            if data.get('code') == '0':
-                return data.get('data', [])
+        Returns:
+            采集器实例
+        """
+        # 检查缓存
+        if trader_unique_name in self.collectors_cache:
+            return self.collectors_cache[trader_unique_name]
+        
+        # 从数据库获取带单员的采集器配置
+        try:
+            query = """
+                SELECT collector_type, collector_config 
+                FROM limit_follow_traders 
+                WHERE unique_name = %s
+            """
+            result = self.db_pool.query(query, (trader_unique_name,))
+            
+            if result and result[0]:
+                collector_type = result[0].get('collector_type') or self.config['default_collector_type']
+                collector_config_str = result[0].get('collector_config')
+                
+                # 解析配置（如果是JSON字符串）
+                collector_config = {}
+                if collector_config_str:
+                    try:
+                        collector_config = json.loads(collector_config_str) if isinstance(collector_config_str, str) else collector_config_str
+                    except:
+                        logger.warning(f"解析采集器配置失败: {collector_config_str}")
             else:
-                logger.error(f"获取交易记录失败: {data}")
-                return []
+                # 使用默认配置
+                collector_type = self.config['default_collector_type']
+                collector_config = {}
+            
+            # 创建采集器
+            collector = TraderCollectorFactory.create_collector(collector_type, collector_config)
+            
+            if collector:
+                # 缓存采集器
+                self.collectors_cache[trader_unique_name] = collector
+                logger.info(f"为带单员 {trader_unique_name} 创建{collector_type}采集器")
+                return collector
+            else:
+                logger.error(f"无法为带单员 {trader_unique_name} 创建采集器")
+                return None
                 
         except Exception as e:
-            logger.error(f"请求失败: {e}")
-            return []
+            logger.error(f"获取带单员采集器失败: {e}")
+            # 回退到默认采集器
+            collector = TraderCollectorFactory.create_collector(
+                self.config['default_collector_type'],
+                {}
+            )
+            if collector:
+                self.collectors_cache[trader_unique_name] = collector
+            return collector
     
-    async def get_trade_records_async(self, session: aiohttp.ClientSession, unique_name: str, limit: int = 1) -> List[Dict]:
-        """异步获取交易记录"""
-        params = {
-            'uniqueName': unique_name,
-            'instType': 'SWAP',
-            'limit': limit
-        }
+    async def get_trade_records_async(
+        self, 
+        session: aiohttp.ClientSession, 
+        trader_unique_name: str, 
+        limit: int = 1
+    ) -> List[Dict]:
+        """
+        异步获取交易记录（统一接口）
         
+        Args:
+            session: aiohttp会话对象
+            trader_unique_name: 带单员唯一标识
+            limit: 获取的记录数量限制
+            
+        Returns:
+            标准化的交易记录列表
+        """
         try:
-            async with session.get(self.config['okx_api_base'], params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('code') == '0':
-                        return data.get('data', [])
-                    else:
-                        logger.error(f"获取交易记录失败: {data}")
-                        return []
-                else:
-                    logger.error(f"请求失败，状态码: {response.status}")
-                    return []
+            # 获取对应的采集器
+            collector = self._get_collector_for_trader(trader_unique_name)
+            
+            if not collector:
+                logger.error(f"无法获取带单员 {trader_unique_name} 的采集器")
+                return []
+            
+            # 获取原始交易记录
+            raw_records = await collector.get_trade_records_async(
+                session, 
+                trader_unique_name, 
+                limit
+            )
+            
+            # 标准化所有记录
+            normalized_records = []
+            for raw_record in raw_records:
+                normalized = collector.normalize_trade_record(raw_record)
+                if normalized:
+                    normalized_records.append(normalized)
+            
+            return normalized_records
                     
         except Exception as e:
-            logger.error(f"异步请求失败: {e}")
+            logger.error(f"获取交易记录失败: {e}")
             return []
-    
-    # 同步方法已删除，使用异步方法替代
     
     def _log_new_trade(self, trader_unique_name: str, trade: Dict):
         """记录新交易到日志"""
@@ -485,7 +561,7 @@ class LimitFollowExecutor:
         except Exception:
             return None
     
-    async def _adjust_size_by_leverage(self, strategy: LimitFollowStrategy, base_size: float, signal_price: float) -> float:
+    async def _adjust_size_by_leverage(self, strategy: LimitFollowStrategy, base_size: float, signal_price: float, signal_symbol: str = None) -> float:
         """根据净杠杆控制调整开仓数量"""
         try:
             customer_uid = strategy.customer_uid
@@ -493,6 +569,12 @@ class LimitFollowExecutor:
             
             logger.info(f"按比例开仓: 策略={strategy.strategy_name}, 基础数量={base_size}, 最大净杠杆={strategy.max_net_leverage}")
             
+            # 对于ALL或SPECIFIC策略，使用信号中的实际币种；其他情况使用策略配置的币种
+            if strategy.symbol in ['ALL', 'SPECIFIC'] and signal_symbol:
+                contract_symbol = signal_symbol
+            else:
+                contract_symbol = strategy.symbol
+
             # 1. 获取客户当前持仓信息
             # 如果symbol为ALL或SPECIFIC，则不查询特定持仓，使用空列表
             if symbol in ['ALL', 'SPECIFIC']:
@@ -514,7 +596,7 @@ class LimitFollowExecutor:
             # 4. 根据最大净杠杆限制调整数量
             adjusted_size = self._adjust_size_by_leverage_limit(
                 base_size, current_leverage, strategy.max_net_leverage, 
-                account_info, signal_price
+                account_info, signal_price, contract_symbol
             )
             
             logger.info(f"净杠杆调整: 当前杠杆={current_leverage:.2f}, 最大杠杆={strategy.max_net_leverage}, 调整后数量={adjusted_size}")
@@ -773,6 +855,7 @@ class LimitFollowExecutor:
         """创建限价单"""
         orders = []
         max_orders = strategy.max_orders_per_signal
+        size_per_order = follow_size / max_orders
         
         for i in range(max_orders):
             # 计算价格偏移百分比 (1%, 2%, 3%, 4%)
@@ -796,7 +879,7 @@ class LimitFollowExecutor:
                 pos_side=follow_side,
                 follow_value=price_offset_percent * 100,
                 target_price=target_price,
-                order_size=follow_size,
+                order_size=size_per_order,
                 order_type='limit',
                 status='pending'
             )
@@ -838,6 +921,8 @@ class LimitFollowExecutor:
         
         # 创建限价单
         if limit_orders_count > 0:
+            limit_size_per_order = limit_size / limit_orders_count
+
             for i in range(limit_orders_count):
                 price_offset_percent = (i + 1) * strategy.min_follow_value / 100.0
                 
@@ -855,7 +940,7 @@ class LimitFollowExecutor:
                     pos_side=follow_side,
                     follow_value=price_offset_percent * 100,
                     target_price=target_price,
-                    order_size=limit_size,
+                    order_size=limit_size_per_order,
                     order_type='limit',
                     status='pending'
                 )
@@ -881,11 +966,21 @@ class LimitFollowExecutor:
         return orders
 
     async def _handle_market_follow_close(self, strategy: LimitFollowStrategy, symbol: str, pos_side: str, close_ratio: float, signal_order_id: str):
-        """处理市价跟单平仓"""
+        """按比例处理市价跟单减仓
+
+        规则:
+        - 对每一笔已成交的市价跟单订单，按照 filled_size 的 close_ratio 计算应减数量
+        - 考虑历史已减数量（limit_close_size），避免重复减仓
+        - 创建 reduceOnly 的市价平仓单，并在成功后更新原订单的 limit_close_size 字段
+        - 不修改原订单的 status 状态（保持为 filled），只有在完全平仓后才可考虑标记为 closed
+        - 跳过小于最小下单单位的碎量，累积到最后一单处理
+        """
         try:
             # 查询该策略下该交易对的所有市价单
             sql = """
-                SELECT order_uid, order_id, order_size, filled_size, status
+                SELECT order_uid, exchange_order_id, order_size, filled_size, 
+                       IFNULL(limit_close_size, 0) AS limit_close_size,
+                       status
                 FROM limit_follow_orders 
                 WHERE strategy_id = %s AND symbol = %s AND pos_side = %s 
                 AND order_type = 'market' AND status IN ('pending', 'live', 'filled')
@@ -897,16 +992,60 @@ class LimitFollowExecutor:
                 logger.info(f"策略 {strategy.strategy_name} 在 {symbol} {pos_side} 上没有市价单")
                 return
             
-            logger.info(f"找到 {len(result)} 个市价单，开始处理平仓")
+            logger.info(f"找到 {len(result)} 个市价单，开始按比例减仓: ratio={close_ratio}")
+
+            # 获取交易对精度与最小下单单位
+            try:
+                from config.contract_config import get_min_order_size, get_size_precision
+                min_step = get_min_order_size(symbol)
+                size_precision = get_size_precision(symbol)
+            except Exception:
+                min_step = 0
+                size_precision = 8
+
+            remainder = 0.0
             
-            for order_row in result:
+            for idx, order_row in enumerate(result):
                 order_uid = order_row['order_uid']
                 filled_size = float(order_row['filled_size'] or 0)
                 order_size = float(order_row['order_size'])
+                already_reduced = float(order_row.get('limit_close_size', 0) or 0)
                 
                 if filled_size > 0:
-                    # 有成交，创建平仓市价单
-                    close_size = filled_size * close_ratio
+                    # 可减剩余 = 已成交 - 已减
+                    reducible = max(0.0, filled_size - already_reduced)
+                    if reducible <= 0:
+                        logger.info(f"订单 {order_uid} 无可减数量(已减={already_reduced}, 成交={filled_size})，跳过")
+                        continue
+
+                    # 计算本单应减数量
+                    raw_close = reducible * close_ratio + remainder
+
+                    # 四舍五入到交易对精度，并确保不小于最小步进
+                    close_size = raw_close
+                    if size_precision is not None:
+                        close_size = float(f"{close_size:.{size_precision}f}")
+
+                    # 按最小下单单位截断
+                    if min_step and min_step > 0:
+                        steps = int(close_size / min_step)
+                        close_size = steps * min_step
+                        remainder = raw_close - close_size
+                    else:
+                        remainder = 0.0
+
+                    # 最后一单吃掉余数
+                    if idx == len(result) - 1 and remainder > 0:
+                        close_size += remainder
+                        remainder = 0.0
+
+                    # 安全边界：不可超过可减剩余
+                    close_size = max(0.0, min(close_size, reducible))
+
+                    if close_size <= 0:
+                        logger.info(f"订单 {order_uid} 计算得到的减仓量过小，跳过")
+                        continue
+
                     await self._close_market_order(strategy, order_uid, close_size, symbol, pos_side)
                 else:
                     # 未成交，跳过（市价单通常立即成交）
@@ -937,8 +1076,49 @@ class LimitFollowExecutor:
             # 保存平仓订单
             if self.limit_follow_db.create_order(close_order):
                 logger.info(f"创建市价平仓订单成功: {close_order.order_uid}")
-                # 这里需要调用交易所API执行平仓
-                # await self._execute_close_order(close_order)
+                
+                # 获取或创建 limit_follow_service 实例
+                if not hasattr(self, 'limit_follow_service'):
+                    from limit_follow_service import LimitFollowService
+                    self.limit_follow_service = LimitFollowService(self.db_pool)
+                
+                limit_follow_service = self.limit_follow_service
+                
+                # 调用交易所API执行平仓
+                try:
+                    result = await limit_follow_service._submit_order_to_exchange(close_order)
+                    if result:
+                        logger.info(f"市价平仓订单执行成功: {close_order.order_uid}, 数量={close_size}")
+                        
+                        # 更新原订单的 limit_close_size 字段（累加），避免重复减仓
+                        try:
+                            # 使用原子累加操作确保并发安全
+                            self.db_pool.execute(
+                                "UPDATE limit_follow_orders SET limit_close_size = IFNULL(limit_close_size, 0) + %s, updated_at = NOW() WHERE order_uid = %s",
+                                (close_size, order_uid)
+                            )
+                            
+                            # 查询更新后的值用于日志
+                            updated_order = self.db_pool.query(
+                                "SELECT limit_close_size, filled_size FROM limit_follow_orders WHERE order_uid = %s",
+                                (order_uid,)
+                            )
+                            
+                            if updated_order:
+                                new_closed = float(updated_order[0].get('limit_close_size', 0) or 0)
+                                filled_size = float(updated_order[0].get('filled_size', 0) or 0)
+                                
+                                logger.info(f"已累加更新原市价订单 {order_uid} 的 limit_close_size: +{close_size}, 累计={new_closed} (filled_size={filled_size})")
+                                
+                                # 如果完全平仓，可以标记为 closed（但建议通过确认机制）
+                                if new_closed >= filled_size:
+                                    logger.info(f"订单 {order_uid} 已完全平仓，可考虑标记为 closed")
+                        except Exception as e:
+                            logger.error(f"更新原市价订单 limit_close_size 失败: {order_uid} - {e}")
+                    else:
+                        logger.error(f"市价平仓订单执行失败: {close_order.order_uid}")
+                except Exception as e:
+                    logger.error(f"执行市价平仓订单异常: {close_order.order_uid} - {e}")
             else:
                 logger.error(f"创建市价平仓订单失败: {close_order.order_uid}")
                 
@@ -949,6 +1129,7 @@ class LimitFollowExecutor:
         """记录带单员交易到数据库"""
         try:
             from config.contract_config import get_contract_multiplier
+            from database.db import close_trader_trade
             
             symbol = trade.get('instId', '')
             side = trade.get('side', '')
@@ -958,41 +1139,96 @@ class LimitFollowExecutor:
             ord_id = trade.get('ordId', '')
             
             # 计算合约数量
-            multiplier = get_contract_multiplier(symbol)
-            volume_contract = sz * multiplier
             
-            # 生成交易UID
-            trade_uid = f"TRADER_{trader_unique_name}_{symbol}_{ord_id}_{int(time.time())}"
+            volume_contract = sz
             
-            # 插入交易记录
-            sql = """
-                INSERT INTO trader_trades 
-                (trade_uid, trader_unique_name, symbol, direction, pos_side, volume, volume_contract, 
-                 order_id, trade_type, open_px, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            """
-            
-            # 计算USDT数量（这里简化处理，实际应该根据价格计算）
-            volume_usdt = sz * avg_px if operation_type == 'open' else 0
-            
-            self.db_pool.execute(sql, (
-                trade_uid,
-                trader_unique_name,
-                symbol,
-                side,
-                pos_side,
-                volume_usdt,
-                volume_contract,
-                ord_id,
-                operation_type,
-                avg_px,
-                'open'
-            ))
-            
-            logger.info(f"记录带单员交易: {trader_unique_name} {operation_type} {sz}张 {symbol} @ {avg_px}")
+            if operation_type == 'open':
+                # 开仓时插入新记录
+                # 生成交易UID - 缩短长度避免数据库字段超限
+                # 使用更短的格式：TRADER_前8位_币种_订单ID前10位_时间戳后6位
+                trader_short = trader_unique_name[:8] if len(trader_unique_name) > 8 else trader_unique_name
+                symbol_short = symbol.replace('-USDT-SWAP', '').replace('-USDT', '')  # 去掉后缀
+                ord_id_short = ord_id[:10] if len(ord_id) > 10 else ord_id
+                timestamp_short = int(time.time()) % 1000000  # 取后6位
+                trade_uid = f"TRADER_{trader_short}_{symbol_short}_{ord_id_short}_{timestamp_short}"
+                
+                # 确保trade_uid不超过64个字符
+                if len(trade_uid) > 64:
+                    # 进一步缩短
+                    trade_uid = f"TRADER_{trader_short[:6]}_{symbol_short[:6]}_{ord_id_short[:8]}_{timestamp_short}"
+                    if len(trade_uid) > 64:
+                        # 最后保险：使用哈希
+                        import hashlib
+                        hash_suffix = hashlib.md5(f"{trader_unique_name}_{ord_id}_{int(time.time())}".encode()).hexdigest()[:8]
+                        trade_uid = f"TRADER_{hash_suffix}"
+                
+                # 插入开仓记录
+                sql = """
+                    INSERT INTO trader_trades 
+                    (trade_uid, trader_unique_name, symbol, direction, pos_side, volume, volume_contract, 
+                     order_id, trade_type, open_px, status, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                """
+                
+                # 计算USDT数量
+                volume_usdt = sz * avg_px * get_contract_multiplier(symbol)
+                
+                self.db_pool.execute(sql, (
+                    trade_uid,
+                    trader_unique_name,
+                    symbol,
+                    side,
+                    pos_side,
+                    volume_usdt,
+                    volume_contract,
+                    ord_id,
+                    operation_type,
+                    avg_px,
+                    'open'
+                ))
+                
+                logger.info(f"记录带单员开仓: {trader_unique_name} {sz}张 {symbol} @ {avg_px}")
+                
+            elif operation_type == 'close':
+                # 平仓时先记录交易信息，但不立即更新状态
+                # 等跟单操作完成后再更新状态
+                logger.info(f"检测到带单员平仓: {trader_unique_name} {sz}张 {symbol} @ {avg_px}")
+                logger.info(f"平仓信息已记录，将在跟单完成后更新数据库状态")
             
         except Exception as e:
             logger.error(f"记录带单员交易失败: {e}")
+
+    async def _update_trader_close_status(self, trader_unique_name: str, trade: Dict, trade_direction: str):
+        """在跟单完成后更新带单员平仓状态"""
+        try:
+            from database.db import close_trader_trade
+            
+            symbol = trade.get('instId', '')
+            pos_side = trade.get('posSide', '')
+            sz = float(trade.get('sz', '0'))
+            avg_px = float(trade.get('avgPx', '0'))
+            ord_id = trade.get('ordId', '')
+            
+            # 查找对应的开仓记录进行更新
+            open_trades = self.db_pool.query("""
+                SELECT trade_uid FROM trader_trades 
+                WHERE trader_unique_name = %s AND symbol = %s AND pos_side = %s 
+                AND trade_type = 'open' AND status = 'open'
+                ORDER BY created_at ASC
+                LIMIT 1
+            """, (trader_unique_name, symbol, pos_side))
+            
+            if open_trades:
+                trade_uid = open_trades[0]['trade_uid']
+                # 计算盈亏（简化计算）
+                profit = 0  # 暂时设为0，后续可以根据开仓价格计算
+                close_trader_trade(self.db_pool, trade_uid, ord_id, avg_px, profit)
+                logger.info(f"[跟单完成后] 更新带单员平仓状态: {trader_unique_name} {sz}张 {symbol} @ {avg_px}")
+            else:
+                logger.warning(f"[跟单完成后] 未找到带单员开仓记录: {trader_unique_name} {symbol} {pos_side}")
+                
+        except Exception as e:
+            logger.error(f"更新带单员平仓状态失败: {e}")
 
     async def _get_customer_positions(self, customer_uid: str, symbol: str) -> List[Dict]:
         """获取客户当前持仓"""
@@ -1092,7 +1328,7 @@ class LimitFollowExecutor:
             return 0.0
     
     def _adjust_size_by_leverage_limit(self, base_size: float, current_leverage: float, 
-                                     max_leverage: float, account_info: Dict, signal_price: float) -> float:
+                                     max_leverage: float, account_info: Dict, signal_price: float, symbol: str = 'BTC-USDT-SWAP') -> float:
         """根据最大杠杆限制调整开仓数量"""
         try:
             if current_leverage >= max_leverage:
@@ -1111,8 +1347,13 @@ class LimitFollowExecutor:
             # 计算基于剩余杠杆的最大可开仓价值
             max_position_value = available_margin * remaining_leverage
             
-            # 计算基于剩余杠杆的最大可开仓数量
-            max_position_size = max_position_value / signal_price
+            # 计算基于剩余杠杆的最大可开仓数量（币数）
+            max_position_size_in_currency = max_position_value / signal_price
+            
+            # 转换为张数（需要合约乘数）
+            from config.contract_config import get_contract_multiplier
+            multiplier = get_contract_multiplier(symbol)
+            max_position_size = max_position_size_in_currency / multiplier
             
             # 取较小值作为最终开仓数量
             adjusted_size = min(base_size, max_position_size)
@@ -1120,7 +1361,7 @@ class LimitFollowExecutor:
             # 确保数量不为负数
             adjusted_size = max(0, adjusted_size)
             
-            logger.info(f"杠杆限制调整: 剩余杠杆={remaining_leverage:.2f}, 最大可开仓价值={max_position_value:.2f}, 调整后数量={adjusted_size}")
+            logger.info(f"杠杆限制调整: 剩余杠杆={remaining_leverage:.2f}, 最大可开仓价值={max_position_value:.2f}, 最大可开仓币数={max_position_size_in_currency:.6f}, 最大可开仓张数={max_position_size:.2f}, 调整后数量={adjusted_size}")
             
             return adjusted_size
             
@@ -1255,7 +1496,10 @@ class LimitFollowExecutor:
                     # 默认限价模式（向后兼容）
                     logger.warning(f"未知的跟单类型: {strategy.follow_order_types}，使用默认限价模式")
                     orders = await self._create_limit_orders(strategy, trade, follow_side, follow_size, avg_px, ord_id)
-                
+                    
+                # 如果已经通过特定方法创建了订单，跳过通用创建逻辑
+                if orders:
+                    return orders
                 for i in range(max_orders):
                     # 计算价格偏移百分比 (1%, 2%, 3%, 4%)
                     price_offset_percent = (i + 1) * strategy.min_follow_value / 100.0
@@ -1293,6 +1537,42 @@ class LimitFollowExecutor:
             logger.error(f"创建跟单订单失败: {e}")
             return []
     
+    async def _check_margin_before_order(self, order: LimitFollowOrder, signal_price: float) -> bool:
+        """在下单前检查保证金是否充足"""
+        try:
+            # 获取客户实时余额
+            customer_balance = await self._get_customer_balance(order.customer_uid)
+            
+            # 获取策略杠杆设置
+            if not hasattr(self, 'limit_follow_service'):
+                from limit_follow_service import LimitFollowService
+                self.limit_follow_service = LimitFollowService(self.db_pool)
+            
+            leverage = await self.limit_follow_service._get_strategy_leverage(order.strategy_id, order.customer_uid)
+            
+            # 计算所需保证金
+            from config.contract_config import get_contract_multiplier
+            multiplier = get_contract_multiplier(order.symbol)
+            required_margin = order.order_size * multiplier * signal_price / leverage
+            
+            # 添加安全缓冲
+            safety_buffer = 1.15  # 15%安全缓冲
+            required_margin_with_buffer = required_margin * safety_buffer
+            
+            logger.info(f"下单前保证金检查: 订单={order.order_uid}, 数量={order.order_size}, 价格={signal_price}")
+            logger.info(f"保证金需求: 基础={required_margin:.2f} USDT, 含缓冲={required_margin_with_buffer:.2f} USDT, 客户余额={customer_balance:.2f} USDT")
+            
+            if required_margin_with_buffer > customer_balance:
+                logger.error(f"保证金不足，取消订单: {order.order_uid}, 需要={required_margin_with_buffer:.2f} USDT, 可用={customer_balance:.2f} USDT")
+                return False
+            
+            logger.info(f"保证金充足，可以下单: {order.order_uid}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"保证金检查失败: {e}")
+            return False
+
     async def execute_follow_orders(self, orders: List[LimitFollowOrder]) -> bool:
         """执行跟单订单"""
         try:
@@ -1305,7 +1585,14 @@ class LimitFollowExecutor:
             
             limit_follow_service = self.limit_follow_service
             
-            for order in orders:
+            for i, order in enumerate(orders):
+                logger.info(f"执行第 {i+1}/{len(orders)} 个订单: {order.order_uid}")
+                
+                # 在下单前检查保证金
+                signal_price = order.target_price if order.target_price > 0 else 180.74  # 使用目标价格或默认价格
+                if not await self._check_margin_before_order(order, signal_price):
+                    logger.warning(f"保证金不足，跳过订单: {order.order_uid}")
+                    continue
                 # 保存订单到数据库
                 if self.limit_follow_db.create_order(order):
                     logger.info(f"跟单订单创建成功: {order.order_uid}")
@@ -1402,15 +1689,12 @@ class LimitFollowExecutor:
                 logger.error(f"无法确定交易方向: side={side}, posSide={pos_side}")
                 return
             
-            # 只处理开仓操作，不处理平仓操作
-            if operation_type == 'close':
-                logger.info(f"跳过平仓操作: {side} {pos_side}")
-                return
-            
+            # 处理开仓和平仓操作
             logger.info(f"交易解析结果: 方向={trade_direction}, 操作类型={operation_type}")
             
             # 记录带单员交易到数据库
             await self._record_trader_trade(trader_unique_name, trade, trade_direction, operation_type)
+            
             # 获取跟单策略
             strategies = self.get_follow_strategies(trader_unique_name, inst_id, trade_direction)
             
@@ -1426,21 +1710,28 @@ class LimitFollowExecutor:
                 orders = await self.create_follow_orders(strategy, trade, trade_direction, operation_type)
                 
                 if orders:
+                    logger.info(f"创建了 {len(orders)} 个跟单订单")
+                    
                     # 执行跟单订单
                     try:
                         result = await self.execute_follow_orders(orders)
                         if result:
-                            logger.success(f"跟单策略执行成功: {strategy.strategy_name}")
+                            logger.info(f"跟单策略执行成功: {strategy.strategy_name}")  # 修复：改为 info
                         else:
                             logger.error(f"跟单策略执行失败: {strategy.strategy_name}")
                     except Exception as e:
                         logger.error(f"执行跟单策略失败: {strategy.strategy_name} - {e}")
+                        # 继续执行下一个策略，不要中断
+                        continue
                 else:
                     logger.warning(f"没有创建任何跟单订单: {strategy.strategy_name}")
             
+            # 如果是平仓操作，在跟单完成后更新带单员状态
+            if operation_type == 'close':
+                await self._update_trader_close_status(trader_unique_name, trade, trade_direction)
+            
         except Exception as e:
             logger.error(f"处理新交易失败: {e}")
-
     def _analyze_trade_direction(self, side: str, pos_side: str) -> tuple:
         """
         分析交易方向和操作类型（只处理双向开仓模式）
@@ -1488,12 +1779,18 @@ class LimitFollowExecutor:
         try:
             logger.info(f"检查跟单员: {trader_unique_name}")
             
-            # 异步获取交易记录
+            # 获取对应的采集器
+            collector = self._get_collector_for_trader(trader_unique_name)
+            if not collector:
+                logger.warning(f"无法获取带单员 {trader_unique_name} 的采集器，跳过检查")
+                return
+            
+            # 异步获取交易记录（已标准化）
             trades = await self.get_trade_records_async(session, trader_unique_name, self.config['trade_limit'])
             new_trades = []
             
             if trades:
-                # 获取最新一条交易
+                # 获取最新一条交易（已经是标准化格式）
                 latest_trade = trades[0]
                 ord_id = latest_trade.get('ordId', '')
                 
@@ -1510,16 +1807,16 @@ class LimitFollowExecutor:
                         # 记录到日志
                         self._log_new_trade(trader_unique_name, latest_trade)
                         
-                        logger.info(f"发现新交易: {trader_unique_name} - {ord_id}")
+                        logger.info(f"[{collector.get_collector_type()}] 发现新交易: {trader_unique_name} - {ord_id}")
                     else:
-                        logger.info(f"订单已处理: {trader_unique_name} - {ord_id}")
+                        logger.debug(f"订单已处理: {trader_unique_name} - {ord_id}")
             
             if new_trades:
                 logger.info(f"发现 {len(new_trades)} 笔新交易")
                 for trade in new_trades:
                     await self.process_new_trade(trader_unique_name, trade)
             else:
-                logger.info(f"没有新交易")
+                logger.debug(f"没有新交易")
                 
         except Exception as e:
             logger.error(f"检查跟单员失败: {e}")
@@ -1527,6 +1824,11 @@ class LimitFollowExecutor:
     def get_monitored_traders(self) -> List[str]:
         """获取所有被监控的跟单员"""
         try:
+            # 检查数据库连接池是否可用
+            if self.db_pool is None:
+                logger.error("数据库连接池不可用，无法获取被监控的跟单员")
+                return []
+            
             # 从数据库获取所有启用的策略中的跟单员
             query = """
                 SELECT DISTINCT trader_unique_name 
@@ -1545,6 +1847,21 @@ class LimitFollowExecutor:
         except Exception as e:
             logger.error(f"获取被监控跟单员失败: {e}")
             return []
+    
+    def clear_collector_cache(self, trader_unique_name: Optional[str] = None):
+        """
+        清除采集器缓存
+        
+        Args:
+            trader_unique_name: 如果提供，只清除该带单员的缓存；否则清除所有缓存
+        """
+        if trader_unique_name:
+            if trader_unique_name in self.collectors_cache:
+                del self.collectors_cache[trader_unique_name]
+                logger.info(f"已清除带单员 {trader_unique_name} 的采集器缓存")
+        else:
+            self.collectors_cache.clear()
+            logger.info("已清除所有采集器缓存")
     
     # 同步监控方法已删除，使用异步方法替代
     

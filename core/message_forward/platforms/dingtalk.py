@@ -52,12 +52,15 @@ class DingTalkPlatform(MessagePlatform):
             # 创建 HTTP 会话
             self.session = aiohttp.ClientSession()
             
-            # 测试 Webhook
-            test_result = await self._test_webhook()
-            if not test_result:
-                logger.warning("钉钉 Webhook 测试失败")
-            
+            # 先设置连接状态（必须在测试之前，因为测试会调用 send_message）
             self.connected = True
+            
+            # 验证配置（不发送实际消息，避免打扰用户）
+            if self.webhook_url:
+                logger.info("✅ 钉钉 Webhook 配置有效")
+            else:
+                logger.warning("⚠️ 钉钉 Webhook URL 未配置")
+            
             logger.info("✅ 钉钉连接成功")
             
             # 如果配置了 Stream 模式，启动消息监听

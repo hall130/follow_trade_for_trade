@@ -13,7 +13,7 @@ from database.db import MySQLPool
 from exchange.exchange_factory import create_exchange_client
 from exchange.unified_ws_client import get_global_client_manager
 from core.strategy_trade.core.manager import StrategyManager
-from core.strategy_trade.core.strategy import MarketData, Signal
+from core.strategy_trade.base_strategy import MarketData, Signal
 from core.market_trade.trade_service import TradeService
 
 logger = get_logger(__name__)
@@ -23,12 +23,15 @@ class StrategyTradeConfig:
     """策略交易配置"""
     strategy_id: str
     symbol: str
-    exchange: str = 'okx'
-    is_demo: bool = True
+    exchange: str = 'okx'  # 备用字段，实际从数据库读取
+    is_demo: bool = True  # 备用字段，实际从数据库读取
     initial_capital: float = 10000.0
     max_position_value: float = 5000.0
     stop_loss_pct: float = 0.03
     take_profit_pct: float = 0.06
+    # 多用户支持：客户ID（必需）
+    # 所有账户数据（api_key, api_secret, passphrase, exchange等）都从数据库读取
+    customer_id: str = ''  # 客户ID（customer_uid），必需，用于从数据库读取账户信息
 
 class StrategyTradeService:
     """
@@ -49,8 +52,11 @@ class StrategyTradeService:
         # 运行中的策略
         self.running_strategies: Dict[str, StrategyTradeConfig] = {}
         
-        # WebSocket 客户端管理
+        # WebSocket 客户端管理（仅用于接收市场数据，不用于下单）
         self.ws_clients: Dict[str, any] = {}
+        
+        # REST 客户端缓存（用于下单，复用客户端实例以减少连接开销）
+        self.rest_clients: Dict[str, any] = {}  # key: f"{exchange}_{api_key}_{is_demo}"
         
         # 任务管理
         self.strategy_tasks: Dict[str, asyncio.Task] = {}
@@ -62,9 +68,14 @@ class StrategyTradeService:
         启动策略实盘交易
         
         Args:
-            config: 策略交易配置
+            config: 策略交易配置（必须包含customer_id，所有账户数据从数据库读取）
         """
         strategy_id = config.strategy_id
+        
+        # 验证必需参数
+        if not config.customer_id:
+            logger.error(f"策略 {strategy_id} 启动失败：缺少customer_id（所有账户数据必须从数据库读取）")
+            return False
         
         # 检查策略是否已在运行
         if strategy_id in self.running_strategies:
@@ -72,6 +83,29 @@ class StrategyTradeService:
             return False
         
         try:
+            # 验证客户账户是否存在（从数据库读取所有账户信息）
+            from database.db import get_customer_by_id
+            # 尝试从config.is_demo读取，如果失败则尝试另一个is_demo值
+            customer_data = get_customer_by_id(self.db_pool, config.customer_id, config.is_demo)
+            if not customer_data:
+                # 尝试另一个is_demo值
+                customer_data = get_customer_by_id(self.db_pool, config.customer_id, not config.is_demo)
+                if customer_data:
+                    logger.warning(f"策略 {strategy_id} 找到客户但is_demo不匹配，使用数据库中的值")
+            
+            if not customer_data:
+                logger.error(f"策略 {strategy_id} 启动失败：无法找到客户 {config.customer_id}")
+                return False
+            
+            # 更新config中的exchange和is_demo为数据库中的值（所有账户信息都从数据库读取）
+            config.exchange = customer_data.get('exchange', 'OKX').lower()
+            config.is_demo = customer_data.get('is_demo', config.is_demo)
+            
+            # 验证账户信息完整性
+            if not customer_data.get('api_key') or not customer_data.get('api_secret'):
+                logger.error(f"策略 {strategy_id} 启动失败：客户 {config.customer_id} 的API凭证不完整")
+                return False
+            
             # 获取策略实例
             strategy_info = self.strategy_manager.get_strategy(strategy_id)
             if not strategy_info:
@@ -81,8 +115,13 @@ class StrategyTradeService:
             strategy = strategy_info.strategy
             
             # 初始化策略
-            strategy.on_init()
-            strategy.on_start()
+            if hasattr(strategy, 'on_initialize'):
+                strategy.on_initialize()
+            elif hasattr(strategy, 'on_init'):
+                strategy.on_init()
+            
+            if hasattr(strategy, 'on_start'):
+                strategy.on_start()
             
             # 保存配置
             self.running_strategies[strategy_id] = config
@@ -91,7 +130,7 @@ class StrategyTradeService:
             task = asyncio.create_task(self._run_strategy_loop(strategy_id, strategy, config))
             self.strategy_tasks[strategy_id] = task
             
-            logger.info(f"✅ 策略 {strategy_id} 已启动实盘交易")
+            logger.info(f"✅ 策略 {strategy_id} 已启动实盘交易（客户: {config.customer_id}, 交易所: {config.exchange})")
             return True
             
         except Exception as e:
@@ -123,9 +162,11 @@ class StrategyTradeService:
                     pass
                 del self.strategy_tasks[strategy_id]
             
-            # 关闭 WebSocket 连接
+            # 关闭 WebSocket 连接（仅用于市场数据，不用于下单）
             if strategy_id in self.ws_clients:
                 await self._cleanup_ws_client(strategy_id)
+            
+            # 注意：不清理REST客户端，因为可能被其他策略复用
             
             # 平仓（如果需要）
             if close_positions:
@@ -247,8 +288,13 @@ class StrategyTradeService:
             
             logger.debug(f"📊 策略 {strategy_id} 接收数据: 价格={market_data.close}, 时间={market_data.timestamp}")
             
-            # 喂给策略
-            strategy.on_data(market_data)
+            # 喂给策略 - 使用新架构统一接口
+            if hasattr(strategy, 'process_market_data'):
+                strategy.process_market_data(market_data)
+            elif hasattr(strategy, 'on_market_data'):
+                strategy.on_market_data(market_data)
+            else:
+                logger.error(f"策略 {strategy_id} 没有实现 process_market_data 或 on_market_data 方法")
             
             # 获取策略信号
             signals = strategy.get_signals()
@@ -276,16 +322,20 @@ class StrategyTradeService:
         try:
             config = self.running_strategies[strategy_id]
             
+            # 获取信号字段（兼容direction/volume和side/quantity）
+            signal_direction = getattr(signal, 'direction', getattr(signal, 'side', 'BUY'))
+            signal_volume = getattr(signal, 'volume', getattr(signal, 'quantity', 0))
+            
             logger.info(f"""
 ╔══════════════════════════════════════════════
 ║ 📈 策略信号
 ╠══════════════════════════════════════════════
 ║ 策略ID: {strategy_id}
-║ 信号类型: {signal.side}
+║ 信号类型: {signal_direction}
 ║ 交易对: {signal.symbol}
 ║ 价格: {signal.price}
-║ 数量: {signal.quantity}
-║ 原因: {signal.reason if hasattr(signal, 'reason') else 'N/A'}
+║ 数量: {signal_volume}
+║ 原因: {getattr(signal, 'reason', 'N/A')}
 ╚══════════════════════════════════════════════
             """)
             
@@ -296,11 +346,11 @@ class StrategyTradeService:
             
             # 转换为实际订单
             # 这里接入你的 TradeService
-            if signal.side == 'BUY':
+            if signal_direction == 'BUY':
                 # 开多仓
                 await self._execute_buy_order(strategy_id, signal, config)
-            elif signal.side == 'SELL':
-                # 平多仓
+            elif signal_direction == 'SELL':
+                # 平多仓或平空仓
                 await self._execute_sell_order(strategy_id, signal, config)
             
         except Exception as e:
@@ -309,45 +359,116 @@ class StrategyTradeService:
             logger.error(traceback.format_exc())
     
     async def _execute_buy_order(self, strategy_id: str, signal: Signal, config: StrategyTradeConfig):
-        """执行买入订单"""
+        """
+        执行买入订单 - 通过REST API（不通过WebSocket，减少WebSocket压力）
+        
+        架构说明：
+        - WebSocket：仅用于接收实时市场数据（K线、深度等）
+        - REST API：用于执行交易订单（买入、卖出）
+        - 多用户支持：从数据库读取客户账户信息（所有账户数据都在数据库中）
+        """
         try:
-            # 创建 REST 客户端
-            client = create_exchange_client(
-                exchange=config.exchange,
-                client_type='rest',
-                is_demo=config.is_demo
-            )
+            # 1. 从数据库读取客户账户信息（所有账户数据都在数据库中）
+            if not config.customer_id:
+                logger.error(f"策略 {strategy_id} 缺少customer_id，无法从数据库读取账户信息")
+                return
             
-            # 构造订单请求
-            from exchange.base_client import OrderRequest, OrderSide, OrderType
-            
-            order_request = OrderRequest(
-                symbol=signal.symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.MARKET,  # 市价单
-                quantity=signal.quantity,
-                price=None,  # 市价单不需要价格
-                client_order_id=f"strategy_{strategy_id}_{int(datetime.now().timestamp())}"
-            )
-            
-            # 下单
-            response = await client.place_order(order_request)
-            
-            if response.success:
-                logger.info(f"✅ 策略 {strategy_id} 买入订单已提交: order_id={response.order_id}")
+            try:
+                from database.db import get_customer_by_id
+                customer_data = get_customer_by_id(self.db_pool, config.customer_id, config.is_demo)
+                if not customer_data:
+                    logger.error(f"策略 {strategy_id} 无法找到客户: {config.customer_id} (is_demo={config.is_demo})")
+                    return
                 
-                # 记录到数据库
-                await self._record_trade(strategy_id, {
-                    'order_id': response.order_id,
-                    'symbol': signal.symbol,
-                    'side': 'BUY',
-                    'price': response.avg_price or signal.price,
-                    'quantity': response.filled_quantity,
-                    'timestamp': datetime.now(),
-                    'status': response.status
-                })
+                # 从数据库读取所有账户信息
+                api_key = customer_data.get('api_key', '')
+                api_secret = customer_data.get('api_secret', '')
+                passphrase = customer_data.get('passphrase', '')
+                exchange = customer_data.get('exchange', 'OKX').lower()  # 从数据库读取交易所
+                is_demo = customer_data.get('is_demo', config.is_demo)
+                
+                if not api_key or not api_secret:
+                    logger.error(f"策略 {strategy_id} 客户 {config.customer_id} 的API凭证不完整")
+                    return
+                
+                logger.info(f"✅ 策略 {strategy_id} 使用客户账户: {config.customer_id} (交易所: {exchange})")
+                
+            except Exception as e:
+                logger.error(f"策略 {strategy_id} 读取客户信息失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return
+            
+            # 2. 获取或创建REST客户端（复用客户端实例，减少连接开销）
+            # 使用customer_id作为key的一部分，确保不同客户使用不同的客户端
+            client_key = f"{exchange}_{api_key}_{is_demo}"
+            if client_key not in self.rest_clients:
+                # 创建新的REST客户端（仅用于下单，不使用WebSocket）
+                # 所有参数都从数据库读取，不使用config中的值
+                client = create_exchange_client(
+                    exchange=exchange,  # 从数据库读取
+                    client_type='rest',  # 明确指定为REST，不使用WebSocket
+                    api_key=api_key,  # 从数据库读取
+                    api_secret=api_secret,  # 从数据库读取
+                    passphrase=passphrase,  # 从数据库读取
+                    is_demo=is_demo  # 从数据库读取
+                )
+                self.rest_clients[client_key] = client
+                logger.info(f"✅ 策略 {strategy_id} 创建REST客户端（用于下单）: {client_key}")
             else:
-                logger.error(f"❌ 策略 {strategy_id} 买入订单失败: {response.message}")
+                # 复用已有的REST客户端
+                client = self.rest_clients[client_key]
+                logger.debug(f"♻️ 策略 {strategy_id} 复用REST客户端: {client_key}")
+            
+            signal_volume = getattr(signal, 'volume', getattr(signal, 'quantity', 0))
+            client_order_id = f"strategy_{strategy_id}_{int(datetime.now().timestamp())}"
+            
+            # 通过REST API下单（不通过WebSocket，减少WebSocket压力）
+            logger.info(f"📤 策略 {strategy_id} 通过REST API下单: {signal.symbol} BUY {signal_volume}")
+            response = await client.place_order(
+                symbol=signal.symbol,
+                side='buy',
+                order_type='market',
+                quantity=signal_volume,
+                price=None,  # 市价单不需要价格
+                client_order_id=client_order_id
+            )
+            
+            # 解析响应
+            if isinstance(response, dict):
+                # OKX格式
+                if response.get('code') == '0' and response.get('data'):
+                    order_id = response['data'][0].get('ordId', '')
+                    logger.info(f"✅ 策略 {strategy_id} 买入订单已提交: order_id={order_id}")
+                    
+                    # 记录到数据库
+                    await self._record_trade(strategy_id, {
+                        'order_id': order_id,
+                        'symbol': signal.symbol,
+                        'side': 'BUY',
+                        'price': signal.price,
+                        'quantity': signal_volume,
+                        'timestamp': datetime.now(),
+                        'status': 'submitted'
+                    })
+                else:
+                    error_msg = response.get('msg', '未知错误')
+                    logger.error(f"❌ 策略 {strategy_id} 买入订单失败: {error_msg}")
+            else:
+                # 统一格式响应
+                if hasattr(response, 'order_id') and response.order_id:
+                    logger.info(f"✅ 策略 {strategy_id} 买入订单已提交: order_id={response.order_id}")
+                    await self._record_trade(strategy_id, {
+                        'order_id': response.order_id,
+                        'symbol': signal.symbol,
+                        'side': 'BUY',
+                        'price': getattr(response, 'avg_price', signal.price),
+                        'quantity': getattr(response, 'filled_quantity', signal_volume),
+                        'timestamp': datetime.now(),
+                        'status': getattr(response, 'status', 'submitted').value if hasattr(getattr(response, 'status', None), 'value') else 'submitted'
+                    })
+                else:
+                    logger.error(f"❌ 策略 {strategy_id} 买入订单失败")
             
         except Exception as e:
             logger.error(f"执行买入订单异常: {e}")
@@ -355,46 +476,116 @@ class StrategyTradeService:
             logger.error(traceback.format_exc())
     
     async def _execute_sell_order(self, strategy_id: str, signal: Signal, config: StrategyTradeConfig):
-        """执行卖出订单"""
+        """
+        执行卖出订单 - 通过REST API（不通过WebSocket，减少WebSocket压力）
+        
+        架构说明：
+        - WebSocket：仅用于接收实时市场数据（K线、深度等）
+        - REST API：用于执行交易订单（买入、卖出）
+        - 多用户支持：从数据库读取客户账户信息（所有账户数据都在数据库中）
+        """
         try:
-            # 创建 REST 客户端
-            client = create_exchange_client(
-                exchange=config.exchange,
-                client_type='rest',
-                is_demo=config.is_demo
-            )
+            # 1. 从数据库读取客户账户信息（所有账户数据都在数据库中）
+            if not config.customer_id:
+                logger.error(f"策略 {strategy_id} 缺少customer_id，无法从数据库读取账户信息")
+                return
             
-            # 构造订单请求
-            from exchange.base_client import OrderRequest, OrderSide, OrderType
-            
-            order_request = OrderRequest(
-                symbol=signal.symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                quantity=signal.quantity,
-                price=None,
-                reduce_only=True,  # 只平仓
-                client_order_id=f"strategy_{strategy_id}_{int(datetime.now().timestamp())}"
-            )
-            
-            # 下单
-            response = await client.place_order(order_request)
-            
-            if response.success:
-                logger.info(f"✅ 策略 {strategy_id} 卖出订单已提交: order_id={response.order_id}")
+            try:
+                from database.db import get_customer_by_id
+                customer_data = get_customer_by_id(self.db_pool, config.customer_id, config.is_demo)
+                if not customer_data:
+                    logger.error(f"策略 {strategy_id} 无法找到客户: {config.customer_id} (is_demo={config.is_demo})")
+                    return
                 
-                # 记录到数据库
-                await self._record_trade(strategy_id, {
-                    'order_id': response.order_id,
-                    'symbol': signal.symbol,
-                    'side': 'SELL',
-                    'price': response.avg_price or signal.price,
-                    'quantity': response.filled_quantity,
-                    'timestamp': datetime.now(),
-                    'status': response.status
-                })
+                # 从数据库读取所有账户信息
+                api_key = customer_data.get('api_key', '')
+                api_secret = customer_data.get('api_secret', '')
+                passphrase = customer_data.get('passphrase', '')
+                exchange = customer_data.get('exchange', 'OKX').lower()  # 从数据库读取交易所
+                is_demo = customer_data.get('is_demo', config.is_demo)
+                
+                if not api_key or not api_secret:
+                    logger.error(f"策略 {strategy_id} 客户 {config.customer_id} 的API凭证不完整")
+                    return
+                
+                logger.info(f"✅ 策略 {strategy_id} 使用客户账户: {config.customer_id} (交易所: {exchange})")
+                
+            except Exception as e:
+                logger.error(f"策略 {strategy_id} 读取客户信息失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return
+            
+            # 2. 获取或创建REST客户端（复用客户端实例，减少连接开销）
+            # 使用customer_id作为key的一部分，确保不同客户使用不同的客户端
+            client_key = f"{exchange}_{api_key}_{is_demo}"
+            if client_key not in self.rest_clients:
+                # 创建新的REST客户端（仅用于下单，不使用WebSocket）
+                client = create_exchange_client(
+                    exchange=exchange,  # 使用数据库中的交易所
+                    client_type='rest',  # 明确指定为REST，不使用WebSocket
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    passphrase=passphrase,
+                    is_demo=is_demo  # 使用数据库中的is_demo
+                )
+                self.rest_clients[client_key] = client
+                logger.info(f"✅ 策略 {strategy_id} 创建REST客户端（用于下单）: {client_key}")
             else:
-                logger.error(f"❌ 策略 {strategy_id} 卖出订单失败: {response.message}")
+                # 复用已有的REST客户端
+                client = self.rest_clients[client_key]
+                logger.debug(f"♻️ 策略 {strategy_id} 复用REST客户端: {client_key}")
+            
+            signal_volume = getattr(signal, 'volume', getattr(signal, 'quantity', 0))
+            client_order_id = f"strategy_{strategy_id}_{int(datetime.now().timestamp())}"
+            
+            # 通过REST API下单（不通过WebSocket，减少WebSocket压力）
+            logger.info(f"📤 策略 {strategy_id} 通过REST API下单: {signal.symbol} SELL {signal_volume}")
+            response = await client.place_order(
+                symbol=signal.symbol,
+                side='sell',
+                order_type='market',
+                quantity=signal_volume,
+                price=None,
+                client_order_id=client_order_id,
+                reduce_only=True  # 只平仓
+            )
+            
+            # 解析响应（同买入订单）
+            if isinstance(response, dict):
+                # OKX格式
+                if response.get('code') == '0' and response.get('data'):
+                    order_id = response['data'][0].get('ordId', '')
+                    logger.info(f"✅ 策略 {strategy_id} 卖出订单已提交: order_id={order_id}")
+                    
+                    # 记录到数据库
+                    await self._record_trade(strategy_id, {
+                        'order_id': order_id,
+                        'symbol': signal.symbol,
+                        'side': 'SELL',
+                        'price': signal.price,
+                        'quantity': signal_volume,
+                        'timestamp': datetime.now(),
+                        'status': 'submitted'
+                    })
+                else:
+                    error_msg = response.get('msg', '未知错误')
+                    logger.error(f"❌ 策略 {strategy_id} 卖出订单失败: {error_msg}")
+            else:
+                # 统一格式响应
+                if hasattr(response, 'order_id') and response.order_id:
+                    logger.info(f"✅ 策略 {strategy_id} 卖出订单已提交: order_id={response.order_id}")
+                    await self._record_trade(strategy_id, {
+                        'order_id': response.order_id,
+                        'symbol': signal.symbol,
+                        'side': 'SELL',
+                        'price': getattr(response, 'avg_price', signal.price),
+                        'quantity': getattr(response, 'filled_quantity', signal_volume),
+                        'timestamp': datetime.now(),
+                        'status': getattr(response, 'status', 'submitted').value if hasattr(getattr(response, 'status', None), 'value') else 'submitted'
+                    })
+                else:
+                    logger.error(f"❌ 策略 {strategy_id} 卖出订单失败")
             
         except Exception as e:
             logger.error(f"执行卖出订单异常: {e}")
@@ -413,14 +604,54 @@ class StrategyTradeService:
         """
         try:
             # 1. 检查订单价值
-            order_value = signal.price * signal.quantity
+            signal_volume = getattr(signal, 'volume', getattr(signal, 'quantity', 0))
+            order_value = signal.price * signal_volume
             if order_value > config.max_position_value:
                 logger.warning(f"订单价值 {order_value} 超过限制 {config.max_position_value}")
                 return False
             
-            # 2. 检查总持仓（TODO: 实现持仓查询）
+            # 2. 检查总持仓
+            try:
+                instance_result = self.db_pool.query(
+                    "SELECT id FROM strategy_instances WHERE instance_name = %s",
+                    (strategy_id,)
+                )
+                if instance_result:
+                    instance_id = instance_result[0]['id']
+                    positions = self.db_pool.query(
+                        """SELECT SUM(quantity * current_price) as total_value 
+                           FROM strategy_positions 
+                           WHERE instance_id = %s AND status = 'OPEN'""",
+                        (instance_id,)
+                    )
+                    if positions and positions[0].get('total_value'):
+                        total_position_value = float(positions[0]['total_value'])
+                        if total_position_value + order_value > config.max_position_value:
+                            logger.warning(f"总持仓价值 {total_position_value + order_value} 超过限制 {config.max_position_value}")
+                            return False
+            except Exception as e:
+                logger.warning(f"检查持仓失败: {e}")
             
-            # 3. 检查日交易次数（TODO: 实现交易次数统计）
+            # 3. 检查日交易次数
+            try:
+                if instance_result:
+                    instance_id = instance_result[0]['id']
+                    today = datetime.now().date()
+                    today_trades = self.db_pool.query(
+                        """SELECT COUNT(*) as count 
+                           FROM strategy_trades 
+                           WHERE instance_id = %s AND DATE(executed_at) = %s""",
+                        (instance_id, today)
+                    )
+                    if today_trades:
+                        trade_count = today_trades[0].get('count', 0)
+                        # 默认限制：每天最多100笔交易
+                        max_daily_trades = getattr(config, 'max_daily_trades', 100)
+                        if trade_count >= max_daily_trades:
+                            logger.warning(f"日交易次数 {trade_count} 超过限制 {max_daily_trades}")
+                            return False
+            except Exception as e:
+                logger.warning(f"检查日交易次数失败: {e}")
             
             # 4. 其他风险检查
             
@@ -433,31 +664,131 @@ class StrategyTradeService:
     async def _record_trade(self, strategy_id: str, trade_data: dict):
         """记录交易到数据库"""
         try:
-            # TODO: 实现交易记录入库
-            # 可以复用现有的 insert_signal_account_trade 或创建新表
-            logger.info(f"📝 记录交易: {trade_data}")
+            import uuid
+            from datetime import datetime
+            
+            # 获取策略实例ID
+            instance_result = self.db_pool.query(
+                "SELECT id FROM strategy_instances WHERE instance_name = %s",
+                (strategy_id,)
+            )
+            
+            if not instance_result:
+                logger.warning(f"策略实例 {strategy_id} 不存在，无法记录交易")
+                return
+            
+            instance_id = instance_result[0]['id']
+            trade_id = trade_data.get('trade_id') or f"trade_{uuid.uuid4().hex[:16]}"
+            
+            # 插入交易记录
+            self.db_pool.execute(
+                """INSERT INTO strategy_trades 
+                   (instance_id, trade_id, position_id, symbol, side, quantity, price, amount, 
+                    commission, slippage, pnl, trade_type, reason, metadata_json, executed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    instance_id,
+                    trade_id,
+                    trade_data.get('position_id'),
+                    trade_data.get('symbol'),
+                    trade_data.get('side', 'BUY'),
+                    trade_data.get('quantity', 0),
+                    trade_data.get('price', 0),
+                    trade_data.get('amount', 0),
+                    trade_data.get('commission', 0),
+                    trade_data.get('slippage', 0),
+                    trade_data.get('pnl', 0),
+                    trade_data.get('trade_type', 'OPEN'),
+                    trade_data.get('reason', ''),
+                    json.dumps(trade_data.get('metadata', {}), ensure_ascii=False) if trade_data.get('metadata') else None,
+                    trade_data.get('executed_at', datetime.now())
+                )
+            )
+            
+            logger.info(f"📝 记录交易到数据库: {trade_id} for {strategy_id}")
+            
         except Exception as e:
             logger.error(f"记录交易失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def _close_all_positions(self, strategy_id: str):
         """平掉策略的所有持仓"""
         try:
             config = self.running_strategies[strategy_id]
             
-            # TODO: 查询当前持仓并平仓
-            logger.info(f"🔄 策略 {strategy_id} 平仓所有持仓")
+            # 查询当前持仓
+            instance_result = self.db_pool.query(
+                "SELECT id FROM strategy_instances WHERE instance_name = %s",
+                (strategy_id,)
+            )
+            
+            if not instance_result:
+                logger.warning(f"策略实例 {strategy_id} 不存在")
+                return
+            
+            instance_id = instance_result[0]['id']
+            positions = self.db_pool.query(
+                "SELECT position_id, symbol, side, quantity, entry_price FROM strategy_positions WHERE instance_id = %s AND status = 'OPEN'",
+                (instance_id,)
+            )
+            
+            if not positions:
+                logger.info(f"策略 {strategy_id} 没有持仓")
+                return
+            
+            logger.info(f"🔄 策略 {strategy_id} 平仓 {len(positions)} 个持仓")
+            
+            # 平仓每个持仓
+            for position in positions:
+                try:
+                    # 创建平仓信号
+                    close_signal = Signal(
+                        symbol=position['symbol'],
+                        direction='SELL' if position['side'] == 'LONG' else 'BUY',
+                        price=0,  # 市价单
+                        volume=position['quantity'],
+                        timestamp=datetime.now(),
+                        reason='策略停止平仓'
+                    )
+                    
+                    # 执行平仓
+                    await self._execute_signal(strategy_id, close_signal, config)
+                    
+                except Exception as e:
+                    logger.error(f"平仓持仓 {position['position_id']} 失败: {e}")
             
         except Exception as e:
-            logger.error(f"平仓失败: {e}")
+            logger.error(f"平仓所有持仓失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def _cleanup_ws_client(self, strategy_id: str):
-        """清理 WebSocket 客户端"""
+        """
+        清理 WebSocket 客户端（仅用于接收市场数据，不用于下单）
+        
+        注意：REST客户端不在这里清理，因为它们可能被多个策略复用
+        """
         try:
             if strategy_id in self.ws_clients:
                 client = self.ws_clients[strategy_id]
-                # TODO: 取消订阅和关闭连接
+                # 获取策略配置以取消订阅
+                config = self.running_strategies.get(strategy_id)
+                
+                # 取消订阅和关闭连接
+                if hasattr(client, 'unsubscribe') and config:
+                    try:
+                        await client.unsubscribe(config.symbol)
+                    except Exception as e:
+                        logger.warning(f"取消订阅失败: {e}")
+                
+                if hasattr(client, 'close'):
+                    try:
+                        await client.close()
+                    except Exception as e:
+                        logger.warning(f"关闭WebSocket连接失败: {e}")
                 del self.ws_clients[strategy_id]
-                logger.info(f"✅ 策略 {strategy_id} WebSocket 已清理")
+                logger.info(f"✅ 策略 {strategy_id} WebSocket 已清理（仅用于市场数据）")
         except Exception as e:
             logger.error(f"清理 WebSocket 失败: {e}")
     
@@ -467,7 +798,14 @@ class StrategyTradeService:
             strategy_info = self.strategy_manager.get_strategy(strategy_id)
             if strategy_info:
                 strategy_info.status = 'ERROR'
-                # TODO: 更新数据库状态
+                # 更新数据库状态
+                try:
+                    self.db_pool.execute(
+                        "UPDATE strategy_instances SET status = 'ERROR', updated_at = NOW() WHERE instance_name = %s",
+                        (strategy_id,)
+                    )
+                except Exception as e:
+                    logger.warning(f"更新数据库状态失败: {e}")
                 logger.error(f"❌ 策略 {strategy_id} 错误: {error_msg}")
         except Exception as e:
             logger.error(f"标记策略错误失败: {e}")

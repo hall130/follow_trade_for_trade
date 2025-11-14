@@ -32,7 +32,7 @@ def get_api_server_config():
     """获取API服务器配置"""
     return {
         'host': '0.0.0.0',
-        'port': 5000,
+        'port': 5001,
         'debug': False,
         'threaded': True,
         'processes': 1,
@@ -81,4 +81,18 @@ OKX_CONFIG = {
 
 def get_okx_config():
     """获取OKX交易所配置"""
-    return OKX_CONFIG.copy() 
+    return OKX_CONFIG.copy()
+
+# Redis 配置
+REDIS_CONFIG = {
+    'host': 'localhost',
+    'port': 6379,
+    'db': 0,
+    'password': 'songshu123456',  # 如果有密码，在这里设置
+    'decode_responses': True,
+    'enabled': False  # 默认禁用，需要时启用
+}
+
+def get_redis_config():
+    """获取 Redis 配置"""
+    return REDIS_CONFIG.copy() 

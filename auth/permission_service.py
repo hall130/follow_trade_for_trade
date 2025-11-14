@@ -61,24 +61,63 @@ class PermissionService:
             'signal_sources': '信号源管理',
             'customers': '客户管理',
             'strategies': '策略管理',
+            'rules': '规则管理',
             'market_follow': '现价跟单',
             'limit_follow': '限价跟单',
             'backtest': '策略回测',
             'strategy_live': '策略实盘',
             'message_forward': '消息转发',
-            'system_settings': '系统设置'
+            'system_settings': '系统设置',
+            'users': '用户管理'
         }
+        
+        # 权限缓存（提高性能）
+        self._permission_cache = {}
+        self._cache_ttl = 300  # 缓存5分钟
     
-    def get_user_permissions(self, user_id: int) -> Dict[str, str]:
-        """获取用户的所有权限"""
+    def get_user_permissions(self, user_id: int, use_cache: bool = True) -> Dict[str, str]:
+        """
+        获取用户的所有权限（优先用户权限，其次角色权限）
+        
+        Args:
+            user_id: 用户ID
+            use_cache: 是否使用缓存
+        
+        Returns:
+            权限字典 {module_code: permission_level}
+        """
         try:
+            # 检查缓存
+            if use_cache:
+                cache_key = f"user_perms_{user_id}"
+                if cache_key in self._permission_cache:
+                    cached_data, cached_time = self._permission_cache[cache_key]
+                    import time
+                    if time.time() - cached_time < self._cache_ttl:
+                        logger.debug(f"从缓存获取用户 {user_id} 权限")
+                        return cached_data
+            
             conn = get_db_pool()
             if not conn:
                 logger.error("数据库连接不可用")
                 return {}
             
-            # 通过用户角色获取权限
-            results = conn.query("""
+            permissions = {}
+            
+            # 1. 优先获取用户级别的权限（user_permissions表）
+            user_perms = conn.query("""
+                SELECT module_code, permission_level
+                FROM user_permissions
+                WHERE user_id = %s
+                AND (expires_at IS NULL OR expires_at > NOW())
+                ORDER BY module_code
+            """, (user_id,))
+            
+            for row in user_perms:
+                permissions[row['module_code']] = row['permission_level']
+            
+            # 2. 获取角色权限（作为默认权限，如果没有用户级别权限）
+            role_perms = conn.query("""
                 SELECT m.module_code, p.permission_level
                 FROM users u
                 JOIN roles r ON u.role = r.role_code
@@ -86,19 +125,41 @@ class PermissionService:
                 JOIN permissions p ON rp.permission_id = p.id
                 JOIN modules m ON p.module_id = m.id
                 WHERE u.id = %s
+                AND m.module_code NOT IN (SELECT module_code FROM user_permissions WHERE user_id = %s)
                 ORDER BY m.module_code
-            """, (user_id,))
+            """, (user_id, user_id))
             
-            permissions = {}
-            for row in results:
-                permissions[row['module_code']] = row['permission_level']
+            for row in role_perms:
+                if row['module_code'] not in permissions:  # 只添加用户权限中没有的
+                    permissions[row['module_code']] = row['permission_level']
             
-            logger.info(f"用户ID {user_id} 通过角色获取的权限: {permissions}")
+            # 更新缓存
+            if use_cache:
+                import time
+                self._permission_cache[cache_key] = (permissions, time.time())
+            
+            logger.debug(f"用户ID {user_id} 权限: {permissions} (用户权限: {len(user_perms)}, 角色权限: {len(role_perms)})")
             return permissions
             
         except Exception as e:
             logger.error(f"获取用户权限失败: {e}")
             return {}
+    
+    def clear_user_permission_cache(self, user_id: int = None):
+        """
+        清除权限缓存
+        
+        Args:
+            user_id: 用户ID，如果为None则清除所有缓存
+        """
+        if user_id:
+            cache_key = f"user_perms_{user_id}"
+            if cache_key in self._permission_cache:
+                del self._permission_cache[cache_key]
+                logger.debug(f"清除用户 {user_id} 权限缓存")
+        else:
+            self._permission_cache.clear()
+            logger.debug("清除所有权限缓存")
     
     def check_permission(self, user_id: int, module_code: str, required_level: str = 'read') -> bool:
         """检查用户是否有指定模块的权限"""
@@ -191,6 +252,9 @@ class PermissionService:
                 granted_at = NOW()
             """, (user_id, module_code, permission_level, granted_by))
             
+            # 清除缓存
+            self.clear_user_permission_cache(user_id)
+            
             logger.info(f"为用户 {user_id} 授予模块 {module_code} 的 {permission_level} 权限")
             return True
             
@@ -202,16 +266,14 @@ class PermissionService:
         """撤销权限"""
         try:
             conn = get_db_pool()
-            conn.execute("""
-                DELETE FROM user_permissions 
-                WHERE user_id = %s AND module_code = %s
-            """, (user_id, module_code))
             affected_rows = conn.execute_with_rowcount("""
                 DELETE FROM user_permissions 
                 WHERE user_id = %s AND module_code = %s
             """, (user_id, module_code))
             
             if affected_rows > 0:
+                # 清除缓存
+                self.clear_user_permission_cache(user_id)
                 logger.info(f"撤销用户 {user_id} 的模块 {module_code} 权限")
                 return True
             return False
@@ -229,15 +291,155 @@ class PermissionService:
                 if self.grant_permission(user_id, module_code, permission_level, granted_by):
                     success_count += 1
             
+            # 清除缓存（grant_permission 已经清除了，这里再清除一次确保）
+            self.clear_user_permission_cache(user_id)
+            
             logger.info(f"批量授予权限完成，成功 {success_count}/{len(permissions)} 个")
-            return conn.execute_with_rowcount("""
-                SELECT COUNT(*) FROM user_permissions 
-                WHERE user_id = %s AND module_code = %s
-            """, (user_id, module_code)) > 0
+            return success_count == len(permissions)
             
         except Exception as e:
             logger.error(f"批量授予权限失败: {e}")
             return False
+    
+    def update_user_permissions(self, user_id: int, permissions: List[str], granted_by: int) -> bool:
+        """
+        更新用户权限（替换所有权限）
+        
+        Args:
+            user_id: 用户ID
+            permissions: 权限列表，格式为 ['module_code:permission_level', ...]
+            granted_by: 授权人ID
+        
+        Returns:
+            是否成功
+        """
+        try:
+            conn = get_db_pool()
+            if not conn:
+                logger.error("数据库连接不可用")
+                return False
+            
+            # 验证用户是否存在
+            user_check = conn.query("SELECT id FROM users WHERE id = %s", (user_id,))
+            if not user_check:
+                logger.error(f"用户 {user_id} 不存在")
+                return False
+            
+            # 先删除该用户的所有自定义权限
+            conn.execute("DELETE FROM user_permissions WHERE user_id = %s", (user_id,))
+            
+            # 批量插入新权限
+            if permissions:
+                valid_permissions = []
+                for perm in permissions:
+                    if not perm or not isinstance(perm, str):
+                        continue
+                    
+                    if ':' in perm:
+                        parts = perm.split(':', 1)
+                        if len(parts) == 2:
+                            module_code, permission_level = parts[0].strip(), parts[1].strip()
+                            
+                            # 验证模块代码是否有效
+                            if module_code not in self.system_modules:
+                                logger.warning(f"无效的模块代码: {module_code}")
+                                continue
+                            
+                            # 验证权限级别是否有效
+                            if permission_level not in ['read', 'write', 'admin']:
+                                logger.warning(f"无效的权限级别: {permission_level}")
+                                continue
+                            
+                            valid_permissions.append((user_id, module_code, permission_level, granted_by))
+                
+                # 批量插入有效权限
+                if valid_permissions:
+                    for perm in valid_permissions:
+                        conn.execute("""
+                            INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by)
+                            VALUES (%s, %s, %s, %s)
+                        """, perm)
+            
+            # 清除缓存
+            self.clear_user_permission_cache(user_id)
+            
+            logger.info(f"更新用户 {user_id} 权限，共 {len(permissions)} 个，有效 {len(valid_permissions) if 'valid_permissions' in locals() else 0} 个")
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新用户权限失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def get_user_permissions_for_edit(self, user_id: int) -> Dict[str, Any]:
+        """
+        获取用户权限（用于编辑界面）
+        
+        Returns:
+            {
+                'user_id': int,
+                'username': str,
+                'role': str,
+                'permissions': [{'module_code': str, 'permission_level': str, 'source': 'user'|'role'}]
+            }
+        """
+        try:
+            conn = get_db_pool()
+            
+            # 获取用户信息
+            user_info = conn.query("SELECT id, username, role FROM users WHERE id = %s", (user_id,))
+            if not user_info:
+                return {}
+            
+            user = user_info[0]
+            
+            # 获取用户级别的权限
+            user_perms = conn.query("""
+                SELECT module_code, permission_level
+                FROM user_permissions
+                WHERE user_id = %s
+                AND (expires_at IS NULL OR expires_at > NOW())
+            """, (user_id,))
+            
+            # 获取角色权限
+            role_perms = conn.query("""
+                SELECT m.module_code, p.permission_level
+                FROM users u
+                JOIN roles r ON u.role = r.role_code
+                JOIN role_permissions rp ON r.id = rp.role_id
+                JOIN permissions p ON rp.permission_id = p.id
+                JOIN modules m ON p.module_id = m.id
+                WHERE u.id = %s
+            """, (user_id,))
+            
+            # 合并权限
+            permissions = {}
+            for row in user_perms:
+                permissions[row['module_code']] = {
+                    'module_code': row['module_code'],
+                    'permission_level': row['permission_level'],
+                    'source': 'user'
+                }
+            
+            for row in role_perms:
+                if row['module_code'] not in permissions:
+                    permissions[row['module_code']] = {
+                        'module_code': row['module_code'],
+                        'permission_level': row['permission_level'],
+                        'source': 'role'
+                    }
+            
+            return {
+                'user_id': user['id'],
+                'username': user['username'],
+                'role': user['role'],
+                'permissions': list(permissions.values())
+            }
+            
+        except Exception as e:
+            logger.error(f"获取用户权限详情失败: {e}")
+            return {}
     
     def get_all_modules(self) -> List[Dict[str, str]]:
         """获取所有系统模块"""
@@ -253,6 +455,7 @@ class PermissionService:
     def get_users_with_permissions(self) -> List[Dict[str, Any]]:
         """获取所有用户及其权限"""
         try:
+            users_dict = {}
             conn = get_db_pool()
             conn.execute("""
                 SELECT 

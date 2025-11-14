@@ -19,6 +19,7 @@ class ExchangeType(Enum):
     BINANCE = "binance"
     BYBIT = "bybit"
     GATE = "gate"
+    HYPERLIQUID = "hyperliquid"
 
 
 class OrderSide(Enum):

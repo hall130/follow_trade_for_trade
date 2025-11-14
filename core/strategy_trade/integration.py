@@ -10,8 +10,22 @@ from database.db import MySQLPool
 from core.market_trade.trade_service import TradeService
 from core.strategy_trade.core.manager import StrategyManager
 from core.strategy_trade.strategy_trade_service import StrategyTradeService, StrategyTradeConfig
+from datetime import datetime
 
 logger = get_logger(__name__)
+
+# 可选导入权限服务
+try:
+    from auth.decorators import get_current_user_id, get_current_user
+    from auth.permission_service import permission_service
+    AUTH_AVAILABLE = True
+except ImportError:
+    AUTH_AVAILABLE = False
+    def get_current_user_id():
+        return None
+    def get_current_user():
+        return None
+    permission_service = None
 
 class StrategyTradeIntegration:
     """
@@ -84,21 +98,64 @@ class StrategyTradeIntegration:
     async def _load_strategies_from_db(self):
         """从数据库加载策略配置"""
         try:
-            # TODO: 实现从数据库加载策略
-            # 可以复用 database/strategy_tables.sql 中的表结构
+            import json
+            from core.strategy_trade.strategy_loader import get_strategy_loader
             
             logger.info("从数据库加载策略配置")
             
-            # 示例：假设有 strategy_instances 表
-            # query = "SELECT * FROM strategy_instances WHERE is_active = 1"
-            # strategies = await self.db_pool.fetch_all(query)
-            # 
-            # for strategy_data in strategies:
-            #     # 注册策略到 strategy_manager
-            #     pass
+            # 查询所有未删除的策略实例
+            strategies = self.db_pool.query(
+                "SELECT instance_name, strategy_name, symbol, timeframe, status, config_json "
+                "FROM strategy_instances "
+                "WHERE status != 'DELETED' "
+                "ORDER BY created_at DESC"
+            )
+            
+            strategy_loader = get_strategy_loader()
+            loaded_count = 0
+            
+            for row in strategies:
+                try:
+                    instance_name = row.get('instance_name')
+                    strategy_type = row.get('strategy_name')
+                    symbol = row.get('symbol', 'BTC-USDT-SWAP')
+                    config_json_str = row.get('config_json')
+                    
+                    # 解析配置
+                    config = {}
+                    if config_json_str:
+                        if isinstance(config_json_str, str):
+                            config = json.loads(config_json_str)
+                        else:
+                            config = config_json_str
+                    
+                    # 获取策略类
+                    strategy_class = strategy_loader.get_strategy(strategy_type)
+                    if not strategy_class:
+                        logger.warning(f"策略类型 {strategy_type} 不存在，跳过实例 {instance_name}")
+                        continue
+                    
+                    # 创建策略实例
+                    strategy = strategy_class(name=instance_name, symbol=symbol, config=config)
+                    
+                    # 添加到管理器
+                    strategy_id = self.strategy_manager.add_strategy(strategy, strategy_type)
+                    
+                    if strategy_id:
+                        loaded_count += 1
+                        logger.debug(f"从数据库加载策略实例: {instance_name} ({strategy_type})")
+                    
+                except Exception as load_error:
+                    logger.error(f"加载策略实例 {row.get('instance_name')} 失败: {load_error}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            logger.info(f"从数据库加载了 {loaded_count} 个策略实例")
             
         except Exception as e:
             logger.error(f"加载策略配置失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def _start_auto_strategies(self):
         """启动设置为自动运行的策略"""
@@ -137,7 +194,11 @@ class StrategyTradeIntegration:
     
     async def api_create_strategy(self, strategy_type: str, name: str, config: dict) -> dict:
         """
-        API: 创建新策略
+        API: 创建新策略（带权限控制）
+        
+        权限规则：
+        - 普通用户：只能创建自己的策略
+        - 管理员：可以创建任意策略
         
         Args:
             strategy_type: 策略类型 (RSI_Strategy, MA_Cross_Strategy, etc.)
@@ -148,21 +209,29 @@ class StrategyTradeIntegration:
             {'success': True, 'strategy_id': 'xxx'}
         """
         try:
-            # 注册策略到 strategy_manager
-            from core.strategy_trade.strategies import strategy_factory
+            # 获取当前用户信息（用于记录策略创建者）
+            user_id = None
+            if AUTH_AVAILABLE:
+                user_id = get_current_user_id()
             
-            strategy_class = strategy_factory.get_strategy_class(strategy_type)
+            # 从策略加载器获取策略类
+            from core.strategy_trade.strategy_loader import get_strategy_loader
+            
+            strategy_loader = get_strategy_loader()
+            strategy_class = strategy_loader.get_strategy(strategy_type)
             if not strategy_class:
                 return {'success': False, 'message': f'未知策略类型: {strategy_type}'}
             
             # 创建策略实例
-            strategy = strategy_class(**config)
+            strategy_name = config.get('name', f'{strategy_type}_{datetime.now().timestamp()}')
+            strategy_symbol = config.get('symbol', 'BTC-USDT')
+            strategy = strategy_class(name=strategy_name, symbol=strategy_symbol, config=config)
             
             # 添加到管理器
             strategy_id = self.strategy_manager.add_strategy(strategy, strategy_type)
             
-            # 保存到数据库
-            await self._save_strategy_to_db(strategy_id, strategy_type, name, config)
+            # 保存到数据库（包含用户ID信息）
+            await self._save_strategy_to_db(strategy_id, strategy_type, name, config, user_id=user_id)
             
             return {
                 'success': True,
@@ -176,26 +245,116 @@ class StrategyTradeIntegration:
     
     async def api_start_strategy(self, strategy_id: str, config: dict) -> dict:
         """
-        API: 启动策略实盘交易
+        API: 启动策略实盘交易（带权限控制）
+        
+        权限规则：
+        - 普通用户：只能使用自己的账号（自动选择owner_user_id=当前用户ID的账号）
+        - 管理员：可以选择任意账号（可以指定customer_id）
         
         Args:
             strategy_id: 策略ID
-            config: 实盘配置 (symbol, exchange, is_demo, etc.)
+            config: 实盘配置
+                - customer_id: 客户ID（customer_uid），管理员可选，普通用户自动选择自己的账号
+                - signal_source_uid: 信号源UID（仅管理员可选，普通用户不能选择）
+                - symbol: 交易对
+                - initial_capital: 初始资金
+                - max_position_value: 最大持仓价值
+                - stop_loss_pct: 止损百分比
+                - take_profit_pct: 止盈百分比
+                - exchange/is_demo: 可选，但会从数据库读取客户信息覆盖
         
         Returns:
             {'success': True}
+        
+        注意：所有账户信息（api_key, api_secret, passphrase, exchange, is_demo）都从数据库读取
         """
         try:
-            # 构造策略交易配置
+            # 1. 获取当前用户信息
+            user_id = None
+            is_admin = False
+            if AUTH_AVAILABLE:
+                user_id = get_current_user_id()
+                if user_id and permission_service:
+                    is_admin = permission_service.is_admin(user_id)
+            
+            # 2. 权限控制：确定使用的customer_id和signal_source_uid
+            customer_id = config.get('customer_id', '')
+            signal_source_uid = config.get('signal_source_uid', '')  # 信号源UID（如果有需要）
+            
+            if not is_admin:
+                # 普通用户：只能使用自己的账号，不能选择信号源
+                # 2.1 处理customer_id
+                if customer_id:
+                    # 验证用户是否有权限使用该账号
+                    if not self._check_customer_ownership(customer_id, user_id):
+                        return {
+                            'success': False,
+                            'message': f'无权使用客户账号 {customer_id}，只能使用自己的账号'
+                        }
+                else:
+                    # 自动选择用户的第一个账号
+                    customer_id = self._get_user_customer_id(user_id, config.get('is_demo', True))
+                    if not customer_id:
+                        return {
+                            'success': False,
+                            'message': '未找到您的账号，请先创建客户账号'
+                        }
+                    logger.info(f"普通用户 {user_id} 自动选择客户账号: {customer_id}")
+                
+                # 2.2 普通用户不能选择信号源（如果提供了，忽略）
+                if signal_source_uid:
+                    logger.warning(f"普通用户 {user_id} 尝试指定信号源 {signal_source_uid}，已忽略（只能使用自己的账号）")
+                    signal_source_uid = ''  # 清空，不使用信号源
+            else:
+                # 管理员：可以选择任意账号和信号源
+                # 2.1 处理customer_id
+                if not customer_id:
+                    # 如果没有指定，尝试使用第一个可用账号（可以是任何账号）
+                    customer_id = self._get_default_customer_id(config.get('is_demo', True))
+                    if customer_id:
+                        logger.info(f"管理员未指定账号，使用默认账号: {customer_id}")
+                    else:
+                        return {
+                            'success': False,
+                            'message': '未找到可用账号，请指定customer_id'
+                        }
+                else:
+                    # 验证账号是否存在
+                    if not self._check_customer_exists(customer_id, config.get('is_demo', True)):
+                        return {
+                            'success': False,
+                            'message': f'客户账号 {customer_id} 不存在'
+                        }
+                    logger.info(f"管理员选择客户账号: {customer_id}")
+                
+                # 2.2 管理员可以选择信号源（如果提供了，验证是否存在）
+                if signal_source_uid:
+                    if not self._check_signal_source_exists(signal_source_uid, config.get('is_demo', True)):
+                        return {
+                            'success': False,
+                            'message': f'信号源 {signal_source_uid} 不存在'
+                        }
+                    logger.info(f"管理员选择信号源: {signal_source_uid}")
+                # 如果不提供signal_source_uid，则不使用信号源（仅使用客户账号）
+            
+            # 3. 验证必需参数
+            if not customer_id:
+                return {
+                    'success': False,
+                    'message': '缺少必需参数：customer_id（客户ID，所有账户数据将从数据库读取）'
+                }
+            
+            # 构造策略交易配置（所有账户数据从数据库读取，不需要传递API凭证）
             trade_config = StrategyTradeConfig(
                 strategy_id=strategy_id,
                 symbol=config.get('symbol', 'BTC-USDT-SWAP'),
-                exchange=config.get('exchange', 'okx'),
-                is_demo=config.get('is_demo', True),
+                exchange=config.get('exchange', 'okx'),  # 备用，实际从数据库读取
+                is_demo=config.get('is_demo', True),  # 备用，实际从数据库读取
                 initial_capital=config.get('initial_capital', 10000.0),
                 max_position_value=config.get('max_position_value', 5000.0),
                 stop_loss_pct=config.get('stop_loss_pct', 0.03),
-                take_profit_pct=config.get('take_profit_pct', 0.06)
+                take_profit_pct=config.get('take_profit_pct', 0.06),
+                customer_id=customer_id  # 必需：客户ID，所有账户信息从数据库读取
             )
             
             # 启动策略
@@ -244,6 +403,71 @@ class StrategyTradeIntegration:
             
         except Exception as e:
             logger.error(f"停止策略失败: {e}")
+            return {'success': False, 'message': str(e)}
+    
+    async def api_get_strategy_config(self, strategy_id: str) -> dict:
+        """
+        API: 获取策略配置（用于编辑）
+        
+        Args:
+            strategy_id: 策略ID
+        
+        Returns:
+            {'success': True, 'data': {...}}
+        """
+        try:
+            import json
+            
+            # 从数据库读取策略配置
+            result = self.db_pool.query(
+                "SELECT instance_name, strategy_name, symbol, timeframe, status, config_json "
+                "FROM strategy_instances WHERE instance_name = %s",
+                (strategy_id,)
+            )
+            
+            if not result:
+                # 尝试从内存中的策略管理器获取
+                strategy_info = self.strategy_manager.get_strategy(strategy_id)
+                if strategy_info:
+                    return {
+                        'success': True,
+                        'data': {
+                            'name': strategy_info.name,
+                            'strategy_type': strategy_info.strategy_type if hasattr(strategy_info, 'strategy_type') else '',
+                            'symbol': strategy_info.symbol,
+                            'config': strategy_info.config if hasattr(strategy_info, 'config') else {}
+                        }
+                    }
+                else:
+                    return {'success': False, 'message': f'策略 {strategy_id} 不存在'}
+            
+            row = result[0]
+            
+            # 解析配置
+            config = {}
+            config_json_str = row.get('config_json')
+            if config_json_str:
+                if isinstance(config_json_str, str):
+                    config = json.loads(config_json_str)
+                else:
+                    config = config_json_str
+            
+            return {
+                'success': True,
+                'data': {
+                    'name': row.get('instance_name'),
+                    'strategy_type': row.get('strategy_name'),
+                    'symbol': row.get('symbol'),
+                    'timeframe': row.get('timeframe'),
+                    'status': row.get('status'),
+                    'config': config
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"获取策略配置失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {'success': False, 'message': str(e)}
     
     async def api_get_strategy_status(self, strategy_id: str) -> dict:
@@ -297,21 +521,201 @@ class StrategyTradeIntegration:
     
     # ==================== 数据库操作 ====================
     
-    async def _save_strategy_to_db(self, strategy_id: str, strategy_type: str, name: str, config: dict):
+    async def _save_strategy_to_db(self, strategy_id: str, strategy_type: str, name: str, config: dict, user_id: Optional[int] = None):
         """保存策略到数据库"""
         try:
-            # TODO: 实现数据库保存
-            # INSERT INTO strategy_instances ...
-            pass
+            import json
+            from datetime import datetime
+            
+            # 检查策略实例是否已存在
+            existing = self.db_pool.query(
+                "SELECT id FROM strategy_instances WHERE instance_name = %s",
+                (strategy_id,)
+            )
+            
+            config_json = json.dumps(config, ensure_ascii=False)
+            
+            if existing:
+                # 更新现有策略实例
+                self.db_pool.execute(
+                    """UPDATE strategy_instances 
+                       SET config_json = %s, updated_at = NOW()
+                       WHERE instance_name = %s""",
+                    (config_json, strategy_id)
+                )
+                logger.info(f"更新策略实例配置: {strategy_id}")
+            else:
+                # 创建新策略实例
+                self.db_pool.execute(
+                    """INSERT INTO strategy_instances 
+                       (instance_name, strategy_name, symbol, timeframe, status, config_json, created_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, NOW())""",
+                    (
+                        strategy_id,
+                        strategy_type,
+                        config.get('symbol', 'BTC-USDT-SWAP'),
+                        config.get('timeframe', '1h'),
+                        'STOPPED',
+                        config_json
+                    )
+                )
+                logger.info(f"保存策略实例到数据库: {strategy_id}")
+                
         except Exception as e:
             logger.error(f"保存策略到数据库失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def _update_strategy_status(self, strategy_id: str, status: str):
         """更新策略状态"""
         try:
-            # TODO: 实现数据库更新
-            # UPDATE strategy_instances SET status = ? WHERE id = ?
-            pass
+            from datetime import datetime
+            
+            # 更新状态
+            update_fields = ["status = %s", "updated_at = NOW()"]
+            update_params = [status]
+            
+            # 根据状态更新相应的时间字段
+            if status == 'RUNNING':
+                update_fields.append("started_at = NOW()")
+            elif status in ['STOPPED', 'ERROR']:
+                update_fields.append("stopped_at = NOW()")
+            
+            update_params.insert(0, strategy_id)
+            
+            self.db_pool.execute(
+                f"UPDATE strategy_instances SET {', '.join(update_fields)} WHERE instance_name = %s",
+                tuple(update_params)
+            )
+            
+            logger.debug(f"更新策略状态: {strategy_id} -> {status}")
+            
         except Exception as e:
             logger.error(f"更新策略状态失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    def _check_customer_ownership(self, customer_id: str, user_id: Optional[int]) -> bool:
+        """
+        检查用户是否有权限使用指定的客户账号
+        
+        Args:
+            customer_id: 客户ID
+            user_id: 用户ID
+        
+        Returns:
+            True if user owns the customer account
+        """
+        if not user_id:
+            return False
+        
+        try:
+            customer_data = self.db_pool.query(
+                "SELECT owner_user_id FROM customers WHERE customer_uid = %s",
+                (customer_id,)
+            )
+            
+            if not customer_data:
+                return False
+            
+            owner_user_id = customer_data[0].get('owner_user_id')
+            return owner_user_id == user_id
+            
+        except Exception as e:
+            logger.error(f"检查客户账号所有权失败: {e}")
+            return False
+    
+    def _get_user_customer_id(self, user_id: Optional[int], is_demo: bool) -> Optional[str]:
+        """
+        获取用户的客户账号ID（返回第一个启用的账号）
+        
+        Args:
+            user_id: 用户ID
+            is_demo: 是否模拟盘
+        
+        Returns:
+            客户账号ID，如果不存在则返回None
+        """
+        if not user_id:
+            return None
+        
+        try:
+            customers = self.db_pool.query(
+                "SELECT customer_uid FROM customers WHERE owner_user_id = %s AND enabled = 1 AND is_demo = %s ORDER BY created_at DESC LIMIT 1",
+                (user_id, is_demo)
+            )
+            
+            if customers:
+                return customers[0].get('customer_uid')
+            return None
+            
+        except Exception as e:
+            logger.error(f"获取用户客户账号失败: {e}")
+            return None
+    
+    def _get_default_customer_id(self, is_demo: bool) -> Optional[str]:
+        """
+        获取默认客户账号ID（管理员使用，返回第一个启用的账号）
+        
+        Args:
+            is_demo: 是否模拟盘
+        
+        Returns:
+            客户账号ID，如果不存在则返回None
+        """
+        try:
+            customers = self.db_pool.query(
+                "SELECT customer_uid FROM customers WHERE enabled = 1 AND is_demo = %s ORDER BY created_at DESC LIMIT 1",
+                (is_demo,)
+            )
+            
+            if customers:
+                return customers[0].get('customer_uid')
+            return None
+            
+        except Exception as e:
+            logger.error(f"获取默认客户账号失败: {e}")
+            return None
+    
+    def _check_customer_exists(self, customer_id: str, is_demo: bool) -> bool:
+        """
+        检查客户账号是否存在
+        
+        Args:
+            customer_id: 客户ID
+            is_demo: 是否模拟盘
+        
+        Returns:
+            True if customer exists
+        """
+        try:
+            customers = self.db_pool.query(
+                "SELECT customer_uid FROM customers WHERE customer_uid = %s AND is_demo = %s",
+                (customer_id, is_demo)
+            )
+            return len(customers) > 0
+            
+        except Exception as e:
+            logger.error(f"检查客户账号是否存在失败: {e}")
+            return False
+    
+    def _check_signal_source_exists(self, signal_source_uid: str, is_demo: bool) -> bool:
+        """
+        检查信号源是否存在
+        
+        Args:
+            signal_source_uid: 信号源UID
+            is_demo: 是否模拟盘
+        
+        Returns:
+            True if signal source exists
+        """
+        try:
+            from database.db import get_signal_source_by_id
+            signal_source = get_signal_source_by_id(self.db_pool, signal_source_uid, is_demo)
+            return signal_source is not None
+            
+        except Exception as e:
+            logger.error(f"检查信号源是否存在失败: {e}")
+            return False
 

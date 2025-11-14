@@ -1342,9 +1342,14 @@ class OKXWebSocketClient(BaseWebSocketClient):
                 finally:
                     self.ws = None
             
-            # 重置状态
-            if hasattr(self, 'state_machine') and self._state_machine.current_status != WebSocketStatus.INIT:
-                await self._state_machine.transition_to(WebSocketStatus.DISCONNECTED)
+            # 重置状态（安全访问）
+            if hasattr(self, 'state_machine') and self._state_machine is not None:
+                try:
+                    current_status = getattr(self._state_machine, 'current_status', None)
+                    if current_status and current_status != WebSocketStatus.INIT:
+                        await self._state_machine.transition_to(WebSocketStatus.DISCONNECTED)
+                except (AttributeError, Exception) as e:
+                    logger.warning(f"重置状态时出现异常: {e}")
             
             logger.info("✅ 连接资源清理完成")
                 

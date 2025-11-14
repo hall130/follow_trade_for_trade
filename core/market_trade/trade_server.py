@@ -13,15 +13,7 @@ import traceback
 from utils.dingtalk_bot import init_dingtalk_bot, get_dingtalk_bot
 from config.dingtalk_config import get_dingtalk_config
 import time
-
-# 可选导入psutil
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    logger.warning("psutil不可用，将跳过系统监控功能")
-    PSUTIL_AVAILABLE = False
-    psutil = None
+import psutil
 
 class TradeServer:
     """交易服务器类，提供交易接口"""
@@ -340,7 +332,7 @@ async def memory_monitor():
     while True:
         try:
             
-            if PSUTIL_AVAILABLE and psutil:
+            if psutil:
                 process = psutil.Process()
                 memory_info = process.memory_info()
                 memory_mb = memory_info.rss / 1024 / 1024

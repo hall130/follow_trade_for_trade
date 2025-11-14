@@ -9,12 +9,22 @@
 - 模块管理器
 """
 
-from .market_trade.trade_service import TradeService
-from .market_trade.signal_service import SignalService
-from .market_trade.trade_server import TradeServer
-from .limit_trade.limit_follow_service import LimitFollowService
-from .limit_trade.limit_follow_executor import LimitFollowExecutor
-from .module_manager import ModuleManager, get_module_manager, initialize_system, cleanup_system
+# 延迟导入，避免在导入core包时立即触发所有依赖
+# 这样可以让消息转发模块等独立模块能够正常导入
+try:
+    from .market_trade.trade_service import TradeService
+    from .market_trade.signal_service import SignalService
+    from .market_trade.trade_server import TradeServer
+    from .limit_trade.limit_follow_service import LimitFollowService
+    from .limit_trade.limit_follow_executor import LimitFollowExecutor
+    from .module_manager import ModuleManager, get_module_manager, initialize_system, cleanup_system
+except ImportError as e:
+    # 如果导入失败，不影响其他模块的使用
+    # 静默处理，不阻止其他模块的导入
+    pass
+except Exception as e:
+    # 其他异常也静默处理
+    pass
 
 __all__ = [
     "TradeService",

@@ -153,6 +153,15 @@ class UnifiedWebSocketClient:
         except Exception:
             return None
     
+    @_listen_task.setter
+    def _listen_task(self, value):
+        """设置监听任务"""
+        try:
+            if hasattr(self._client, '_listen_task'):
+                self._client._listen_task = value
+        except Exception as e:
+            logger.error(f"设置监听任务失败: {e}")
+    
     @property
     def state_machine(self):
         """状态机属性"""
@@ -526,18 +535,64 @@ class WebSocketClientManager:
                 if client:
                     try:
                         # 检查客户端状态，避免无效的状态转换
-                        if hasattr(client, 'state_machine'):
-                            current_status = client.state_machine.current_status
-                            if current_status != 'INIT':
-                                await client.close()
-                            else:
-                                # 如果客户端处于INIT状态，直接清理资源
+                        if hasattr(client, 'state_machine') and client.state_machine is not None:
+                            # 安全访问current_status
+                            try:
+                                current_status = getattr(client.state_machine, 'current_status', None)
+                                if current_status and current_status != 'INIT':
+                                    # 安全调用close方法
+                                    if hasattr(client, 'close'):
+                                        close_method = getattr(client, 'close')
+                                        if asyncio.iscoroutinefunction(close_method):
+                                            await close_method()
+                                        else:
+                                            close_method()
+                                else:
+                                    # 如果客户端处于INIT状态或没有状态，直接清理资源
+                                    if hasattr(client, '_cleanup_connection'):
+                                        cleanup_method = getattr(client, '_cleanup_connection')
+                                        if asyncio.iscoroutinefunction(cleanup_method):
+                                            await cleanup_method()
+                                        else:
+                                            cleanup_method()
+                                    elif hasattr(client, 'close'):
+                                        close_method = getattr(client, 'close')
+                                        if asyncio.iscoroutinefunction(close_method):
+                                            await close_method()
+                                        else:
+                                            close_method()
+                            except AttributeError:
+                                # state_machine存在但没有current_status属性，直接清理
                                 if hasattr(client, '_cleanup_connection'):
-                                    await client._cleanup_connection()
+                                    cleanup_method = getattr(client, '_cleanup_connection')
+                                    if asyncio.iscoroutinefunction(cleanup_method):
+                                        await cleanup_method()
+                                    else:
+                                        cleanup_method()
+                                elif hasattr(client, 'close'):
+                                    close_method = getattr(client, 'close')
+                                    if asyncio.iscoroutinefunction(close_method):
+                                        await close_method()
+                                    else:
+                                        close_method()
                         else:
-                            await client.close()
+                            # 没有state_machine，直接调用close
+                            if hasattr(client, 'close'):
+                                close_method = getattr(client, 'close')
+                                if asyncio.iscoroutinefunction(close_method):
+                                    await close_method()
+                                else:
+                                    close_method()
+                            elif hasattr(client, '_cleanup_connection'):
+                                cleanup_method = getattr(client, '_cleanup_connection')
+                                if asyncio.iscoroutinefunction(cleanup_method):
+                                    await cleanup_method()
+                                else:
+                                    cleanup_method()
                     except Exception as e:
                         logger.error(f"关闭客户端 {client_key} 异常: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
                 
                 # 从池中移除
                 del self._clients[client_key]
@@ -549,6 +604,8 @@ class WebSocketClientManager:
                 
         except Exception as e:
             logger.error(f"清理客户端 {client_key} 异常: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     async def _start_cleanup_task(self):
         """启动清理任务"""

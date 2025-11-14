@@ -1,6 +1,7 @@
 """
-策略基类
-提供策略开发的基础功能
+策略基类（增强版）
+提供策略开发的基础功能和技术指标支持
+继承自统一的BaseStrategy，添加了技术指标计算等便捷功能
 """
 
 from typing import Dict, List, Any, Optional
@@ -8,7 +9,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-from ..core.strategy import BaseStrategy, MarketData, Signal, Position
+from ..base_strategy import BaseStrategy, MarketData, Signal, Position
 from ..utils.indicators import TechnicalIndicators
 from utils.logger import get_logger
 
@@ -33,8 +34,10 @@ class StrategyBase(BaseStrategy):
         
         logger.info(f"策略基类初始化: {name}")
     
-    def on_data(self, data: MarketData) -> None:
-        """处理市场数据"""
+    def process_market_data(self, data: MarketData) -> None:
+        """
+        处理市场数据（重写父类方法，添加技术指标支持）
+        """
         # 更新数据缓存
         self.price_data.append(data.close)
         self.volume_data.append(data.volume)
@@ -47,26 +50,15 @@ class StrategyBase(BaseStrategy):
         # 计算技术指标
         self._calculate_indicators()
         
-        # 调用策略逻辑
-        self.on_market_data(data)
+        # 调用父类方法（会调用on_market_data）
+        super().process_market_data(data)
     
-    def generate_signals(self) -> List[Signal]:
-        """生成交易信号"""
-        signals = self.pending_signals.copy()
-        if signals:
-            logger.info(f"🎯 策略产生 {len(signals)} 个信号: {[s.direction for s in signals]}")
-        self.pending_signals.clear()
-        return signals
-    
-    def get_signals(self) -> List[Signal]:
+    def on_market_data(self, data: MarketData) -> None:
         """
-        获取交易信号（回测引擎使用）
-        
-        重写父类方法，从 pending_signals 而不是 signals 获取信号
+        处理市场数据（子类实现）
+        注意：策略应该实现此方法，而不是on_data
         """
-        signals = self.pending_signals.copy()
-        self.pending_signals.clear()
-        return signals
+        pass
     
     def _calculate_indicators(self) -> None:
         """计算技术指标"""
@@ -123,26 +115,20 @@ class StrategyBase(BaseStrategy):
         """获取当前成交量"""
         return self.volume_data[-1] if self.volume_data else None
     
-    def create_signal(self, direction: str, strength: float = 1.0, volume: float = 1.0, reason: str = "") -> Signal:
-        """创建交易信号"""
+    def create_signal(self, direction: str, strength: float = 1.0, volume: float = 1.0, reason: str = "") -> Optional[Signal]:
+        """创建交易信号（重写父类方法，保持兼容性）"""
         current_price = self.get_current_price()
         if not current_price:
             return None
         
-        signal = Signal(
-            symbol=self.symbol,
+        # 调用父类的create_signal方法
+        return super().create_signal(
             direction=direction,
-            strength=strength,
             price=current_price,
             volume=volume,
-            timestamp=datetime.now(),
+            strength=strength,
             reason=reason
         )
-        
-        self.pending_signals.append(signal)
-        logger.info(f"生成信号: {direction} {self.symbol} @ {current_price:.2f} - {reason}")
-        
-        return signal
     
     def is_trending_up(self, period: int = 5) -> bool:
         """判断是否上涨趋势"""

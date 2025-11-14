@@ -149,9 +149,9 @@ class GlobalDBManager:
         """创建数据库连接池的内部方法"""
         try:
             mysql_config = get_mysql_config()
-            # 优化连接池配置
-            mysql_config["mincached"] = 10     # 最小连接数
-            mysql_config["maxcached"] = 30     # 最大连接数
+            # 优化连接池配置（提高并发能力）
+            mysql_config["mincached"] = 20     # 最小连接数（提高以应对高并发）
+            mysql_config["maxcached"] = 100    # 最大连接数（提高以应对高并发）
             
             # 移除所有不支持的参数
             mysql_config.pop("blocking", None)

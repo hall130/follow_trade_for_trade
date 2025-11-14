@@ -10,6 +10,9 @@ from flask_cors import CORS
 import json
 import uuid
 import time
+import hashlib
+import time
+from functools import wraps
 from datetime import datetime
 from typing import Dict, List, Optional
 import traceback
@@ -31,11 +34,27 @@ from exchange.exchange_factory import create_exchange_client
 from exchange.base_client import ExchangeType
 from core.limit_trade.limit_follow_models import LimitFollowLog
 from core.limit_trade.limit_follow_service import get_limit_follow_service
+from core.limit_trade.echosync_service import EchosyncService
 from core.market_trade.trade_service import TradeService, safe_float, get_price_on_demand
 from exchange.unified_ws_client import get_global_client_manager
 
+# 导入错误处理模块
+try:
+    from api.flask_error_handler import setup_flask_error_handlers, monitor_flask_health
+except ImportError:
+    logger.warning("Flask错误处理模块不可用，使用简化版本")
+    def setup_flask_error_handlers(app):
+        @app.errorhandler(Exception)
+        def handle_exception(e):
+            logger.error(f"[Flask异常] {e}\n{traceback.format_exc()}")
+            return jsonify({'success': False, 'message': str(e)}), 500
+    
+    def monitor_flask_health(app):
+        pass
 # 认证模块导入
 try:
+    from auth.auth_service import AuthService
+    auth_service = AuthService()
     # 直接导入auth_api，避免auth模块__init__.py的依赖问题
     from auth.auth_api import auth_bp
     from auth.decorators import (
@@ -59,6 +78,7 @@ try:
 except ImportError as e:
     logger.warning(f"认证API模块不可用: {e}")
     AUTH_MODULE_AVAILABLE = False
+    auth_service = None
     
     # 创建简化的认证装饰器作为fallback
     def login_required(f):
@@ -304,14 +324,181 @@ def convert_strategy_config_types(config, strategy_type):
         if 'max_trades_per_day' in converted and isinstance(converted['max_trades_per_day'], str):
             converted['max_trades_per_day'] = int(converted['max_trades_per_day'])
     
+    elif strategy_type == 'FMZGrid_Strategy':
+        # 发明者网格策略参数转换
+        if 'ratio' in converted and isinstance(converted['ratio'], str):
+            converted['ratio'] = float(converted['ratio'])
+        if 'grid_ratio' in converted and isinstance(converted['grid_ratio'], str):
+            converted['grid_ratio'] = float(converted['grid_ratio'])
+        if 'interval' in converted and isinstance(converted['interval'], str):
+            converted['interval'] = int(converted['interval'])
+        if 'price_precision' in converted and isinstance(converted['price_precision'], str):
+            converted['price_precision'] = int(converted['price_precision'])
+        if 'amount_precision' in converted and isinstance(converted['amount_precision'], str):
+            converted['amount_precision'] = int(converted['amount_precision'])
+        if 'max_positions' in converted and isinstance(converted['max_positions'], str):
+            converted['max_positions'] = int(converted['max_positions'])
+        if 'risk_per_trade' in converted and isinstance(converted['risk_per_trade'], str):
+            converted['risk_per_trade'] = float(converted['risk_per_trade'])
+        
+        # 处理 risk_config 对象
+        if 'risk_config' in converted:
+            risk_config = converted['risk_config']
+            # 如果是字符串 '[object Object]'，说明前端没有正确序列化，使用默认值
+            if isinstance(risk_config, str) and risk_config == '[object Object]':
+                logger.warning("risk_config 被序列化为字符串，使用默认配置")
+                converted['risk_config'] = {
+                    "max_daily_loss": 0.05,
+                    "max_position_size": 1.0,
+                    "max_drawdown": 0.2,
+                    "max_leverage": 1.0,
+                    "max_concentration": 1.0
+                }
+            # 如果是字符串但可能是JSON，尝试解析
+            elif isinstance(risk_config, str) and risk_config.startswith('{'):
+                try:
+                    converted['risk_config'] = json.loads(risk_config)
+                except:
+                    logger.warning("无法解析 risk_config JSON，使用默认配置")
+                    converted['risk_config'] = {
+                        "max_daily_loss": 0.05,
+                        "max_position_size": 1.0,
+                        "max_drawdown": 0.2,
+                        "max_leverage": 1.0,
+                        "max_concentration": 1.0
+                    }
+            # 如果已经是字典，确保数值类型正确
+            elif isinstance(risk_config, dict):
+                for key in ['max_daily_loss', 'max_position_size', 'max_drawdown', 'max_leverage', 'max_concentration']:
+                    if key in risk_config and isinstance(risk_config[key], str):
+                        try:
+                            risk_config[key] = float(risk_config[key])
+                        except:
+                            pass
+    
+    elif strategy_type == 'MartinScalpGrid_Strategy':
+        # 马丁剥头皮网格策略参数转换
+        float_params = [
+            'initial_amount', 'martin_multiplier', 'scalp_profit_pct', 'scalp_stop_loss_pct',
+            'grid_spacing_pct', 'take_profit_pct', 'stop_loss_pct', 'max_position_value',
+            'min_price_change', 'risk_per_trade'
+        ]
+        int_params = [
+            'max_levels', 'grid_count', 'price_precision', 'amount_precision', 'max_positions'
+        ]
+        
+        for param in float_params:
+            if param in converted and isinstance(converted[param], str):
+                try:
+                    converted[param] = float(converted[param])
+                except (ValueError, TypeError):
+                    logger.warning(f"无法转换参数 {param} 为float: {converted[param]}")
+        
+        for param in int_params:
+            if param in converted and isinstance(converted[param], str):
+                try:
+                    converted[param] = int(converted[param])
+                except (ValueError, TypeError):
+                    logger.warning(f"无法转换参数 {param} 为int: {converted[param]}")
+        
+        # 处理 risk_config 对象（同FMZGrid_Strategy）
+        if 'risk_config' in converted:
+            risk_config = converted['risk_config']
+            if isinstance(risk_config, str) and risk_config == '[object Object]':
+                logger.warning("risk_config 被序列化为字符串，使用默认配置")
+                converted['risk_config'] = {
+                    "max_daily_loss": 0.1,
+                    "max_position_size": 1.0,
+                    "max_drawdown": 0.3,
+                    "max_leverage": 1.0,
+                    "max_concentration": 1.0
+                }
+            elif isinstance(risk_config, str) and risk_config.startswith('{'):
+                try:
+                    converted['risk_config'] = json.loads(risk_config)
+                except:
+                    logger.warning("无法解析 risk_config JSON，使用默认配置")
+                    converted['risk_config'] = {
+                        "max_daily_loss": 0.1,
+                        "max_position_size": 1.0,
+                        "max_drawdown": 0.3,
+                        "max_leverage": 1.0,
+                        "max_concentration": 1.0
+                    }
+            elif isinstance(risk_config, dict):
+                for key in ['max_daily_loss', 'max_position_size', 'max_drawdown', 'max_leverage', 'max_concentration']:
+                    if key in risk_config and isinstance(risk_config[key], str):
+                        try:
+                            risk_config[key] = float(risk_config[key])
+                        except:
+                            pass
+    
     else:
         # 未知策略类型，记录日志但不报错
         logger.warning(f"未知策略类型: {strategy_type}")
     
     return converted
 
+# 简单的内存缓存
+query_cache = {}
+CACHE_TTL = 30  # 缓存30秒
+
+def cache_query(ttl=CACHE_TTL):
+    """查询缓存装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # 生成缓存键
+            cache_key = hashlib.md5(
+                f"{func.__name__}_{str(args)}_{str(kwargs)}".encode()
+            ).hexdigest()
+            
+            # 检查缓存
+            if cache_key in query_cache:
+                cached_data, timestamp = query_cache[cache_key]
+                if time.time() - timestamp < ttl:
+                    logger.info(f"缓存命中: {func.__name__}")
+                    return cached_data
+            
+            # 执行查询
+            result = func(*args, **kwargs)
+            
+            # 缓存结果
+            query_cache[cache_key] = (result, time.time())
+            
+            # 清理过期缓存
+            current_time = time.time()
+            expired_keys = [
+                key for key, (_, timestamp) in query_cache.items()
+                if current_time - timestamp > ttl
+            ]
+            for key in expired_keys:
+                del query_cache[key]
+            
+            return result
+        return wrapper
+    return decorator
+
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
+
+# 设置全局错误处理
+setup_flask_error_handlers(app)
+
+# 启动健康监控
+monitor_flask_health(app)
+
+# 导入并发管理和数据隔离模块
+try:
+    from core.concurrency_manager import get_concurrency_manager
+    from core.data_isolation import DataIsolation
+    concurrency_manager = get_concurrency_manager()
+    logger.info("✅ 并发管理和数据隔离模块已加载")
+except ImportError as e:
+    logger.warning(f"并发管理和数据隔离模块不可用: {e}")
+    concurrency_manager = None
+
+logger.info("✅ Flask 应用已初始化，错误处理和健康监控已启动")
 
 # 设置Flask Session密钥
 app.secret_key = 'your-secret-key-change-in-production'
@@ -319,6 +506,14 @@ app.secret_key = 'your-secret-key-change-in-production'
 # 注册认证蓝图
 app.register_blueprint(auth_bp)
 logger.info("认证蓝图已注册")
+
+# 注册公告蓝图
+try:
+    from api.announcements_api import announcements_bp
+    app.register_blueprint(announcements_bp, url_prefix='/api/v1')
+    logger.info("公告蓝图已注册")
+except ImportError as e:
+    logger.warning(f"公告蓝图导入失败: {e}")
 
 # 全局数据库连接池
 db_pool = get_global_db_pool()
@@ -657,12 +852,20 @@ def get_customers():
             total = 0
             customers = []
         
-        # 为每个客户处理字段映射
+        # 为每个客户处理字段映射并过滤敏感信息
         for customer in customers:
             # 使用表中已有的字段
             customer['current_asset'] = customer.get('total_asset', customer.get('init_asset', 0))
             customer['trading_asset'] = customer.get('trading_asset', customer.get('init_asset', 0))
             customer['stop_loss_enabled'] = bool(customer.get('stop_loss_enabled', False))
+            
+            # 过滤敏感信息（不在响应中返回）
+            if 'api_key' in customer:
+                customer['api_key'] = customer['api_key'][:8] + '***' if customer['api_key'] else None
+            if 'api_secret' in customer:
+                customer['api_secret'] = '***' if customer['api_secret'] else None
+            if 'passphrase' in customer:
+                customer['passphrase'] = '***' if customer['passphrase'] else None
         
         # 格式化数据
         formatted_data = format_datetime({
@@ -775,6 +978,14 @@ def get_customer(customer_uid):
         customer_data['current_asset'] = customer_data.get('total_asset', customer_data.get('init_asset', 0))
         customer_data['trading_asset'] = customer_data.get('trading_asset', customer_data.get('init_asset', 0))
         customer_data['stop_loss_enabled'] = bool(customer_data.get('stop_loss_enabled', False))
+        
+        # 过滤敏感信息（不在响应中返回）
+        if 'api_key' in customer_data:
+            customer_data['api_key'] = customer_data['api_key'][:8] + '***' if customer_data['api_key'] else None
+        if 'api_secret' in customer_data:
+            customer_data['api_secret'] = '***' if customer_data['api_secret'] else None
+        if 'passphrase' in customer_data:
+            customer_data['passphrase'] = '***' if customer_data['passphrase'] else None
         
         return jsonify({
             'success': 200,
@@ -992,7 +1203,7 @@ def get_signal_sources():
             tuple(query_params)
         )
         
-        # 获取每个信号源的资产信息
+        # 获取每个信号源的资产信息并过滤敏感信息
         for row in rows:
             asset_row = db_pool.query(
                 "SELECT asset FROM signal_account_assets WHERE signal_source_uid=%s ORDER BY snapshot_time DESC LIMIT 1",
@@ -1006,6 +1217,14 @@ def get_signal_sources():
                 (row['source_uid'],)
             )
             row['strategy_count'] = strategy_count[0]['count'] if strategy_count else 0
+            
+            # 过滤敏感信息（不在响应中返回）
+            if 'api_key' in row:
+                row['api_key'] = row['api_key'][:8] + '***' if row['api_key'] else None
+            if 'api_secret' in row:
+                row['api_secret'] = '***' if row['api_secret'] else None
+            if 'passphrase' in row:
+                row['passphrase'] = '***' if row['passphrase'] else None
         
         return jsonify({
             'success': 200,
@@ -1287,9 +1506,19 @@ def get_signal_source(source_uid):
         if not signal_source:
             return jsonify({'success': 404, 'data': None, 'message': '信号源不存在'}), 404
         
+        signal_data = signal_source[0].copy()
+        
+        # 过滤敏感信息（不在响应中返回）
+        if 'api_key' in signal_data:
+            signal_data['api_key'] = signal_data['api_key'][:8] + '***' if signal_data['api_key'] else None
+        if 'api_secret' in signal_data:
+            signal_data['api_secret'] = '***' if signal_data['api_secret'] else None
+        if 'passphrase' in signal_data:
+            signal_data['passphrase'] = '***' if signal_data['passphrase'] else None
+        
         return jsonify({
             'success': 200,
-            'data': signal_source[0],
+            'data': signal_data,
             'message': '获取信号源详情成功'
         })
     except Exception as e:
@@ -1419,10 +1648,10 @@ def create_strategy():
         
         strategy_uid = f"strategy_{uuid.uuid4().hex[:8]}"
         
-        # 创建策略
+        # 创建策略（strategies 表中没有 strategy_type 字段）
         db_pool.execute(
-            "INSERT INTO strategies (strategy_uid, name, strategy_type, enabled) VALUES (%s, %s, %s, %s)",
-            (strategy_uid, data['name'], data.get('strategy_type', 'trend'), data.get('enabled', True)))
+            "INSERT INTO strategies (strategy_uid, name, enabled) VALUES (%s, %s, %s)",
+            (strategy_uid, data['name'], data.get('enabled', True)))
         
         # 关联信号源
         if 'signal_source_uid' in data and data['signal_source_uid']:
@@ -1628,6 +1857,10 @@ def delete_strategy(strategy_uid):
 # ==================== 规则管理API ====================
 
 @app.route('/api/v1/rules', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('rules', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_rules():
     """获取所有规则（支持搜索和筛选）"""
     try:
@@ -1665,6 +1898,11 @@ def get_rules():
         raise APIError(f"获取规则失败: {str(e)}")
 
 @app.route('/api/v1/rules', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@validate_json_data(['rule_uid', 'strategy_uid', 'name', 'position_ratio', 'max_leverage']) if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def create_rule():
     """创建规则"""
     try:
@@ -1709,6 +1947,10 @@ def create_rule():
         raise APIError(f"创建规则失败: {str(e)}")
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['PUT'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def update_rule(rule_uid):
     """更新规则（RESTful风格）"""
     try:
@@ -2275,10 +2517,29 @@ def get_system_stats():
         })
 
 @app.route('/api/v1/trades', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_trades():
     """获取交易记录列表"""
     try:
         is_demo = get_global_is_demo()
+        
+        # 获取当前登录用户信息
+        current_user = None
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                current_user = get_current_user()
+            except Exception as e:
+                logger.warning(f"获取当前用户信息失败: {e}")
+        
+        # 权限控制：普通用户只能看到自己的交易记录
+        user_customer_uid = None
+        if current_user and current_user.get('role') != 'admin':
+            # 普通用户：获取用户关联的customer_uid
+            if AUTH_MODULE_AVAILABLE and auth_service:
+                user = auth_service.get_user_by_id(current_user.get('id'))
+                if user and user.customer_uid:
+                    user_customer_uid = user.customer_uid
+                    logger.info(f"普通用户 {current_user.get('username')} 只能查看客户 {user_customer_uid} 的交易记录")
         
         # 获取搜索参数
         customer_uid = request.args.get('customer_uid', '').strip()
@@ -2287,6 +2548,13 @@ def get_trades():
         direction = request.args.get('direction', '').strip()
         pos_side = request.args.get('pos_side', '').strip()
         status = request.args.get('status', '').strip()
+        
+        # 权限控制：如果是普通用户，强制使用用户关联的customer_uid
+        if user_customer_uid:
+            # 如果用户尝试查看其他客户的交易记录，忽略该参数
+            if customer_uid and customer_uid != user_customer_uid:
+                logger.warning(f"普通用户 {current_user.get('username')} 尝试查看其他客户 {customer_uid} 的交易记录，已强制使用 {user_customer_uid}")
+            customer_uid = user_customer_uid
         
         # 获取分页参数
         try:
@@ -2543,6 +2811,7 @@ def get_risk_logs():
         logger.error(f"获取风控日志失败: {e}")
         raise APIError(f"获取风控日志失败: {str(e)}")
 
+@app.route('/health', methods=['GET'])
 @app.route('/api/v1/health', methods=['GET'])
 def get_system_health():
     """获取系统健康状态"""
@@ -5716,6 +5985,419 @@ def get_customer_strategy_positions():
             'message': f'查询客户策略持仓失败: {str(e)}'
         }), 500
 
+# ==================== 热门带单员模块API ====================
+
+@app.route('/api/v1/popular-traders', methods=['GET'])
+def get_popular_traders():
+    """获取热门带单员列表"""
+    try:
+        import asyncio
+        from core.limit_trade.popular_traders_service import PopularTradersService
+        
+        # 获取请求参数
+        exchange = request.args.get('exchange', 'all')  # okx, binance, all
+        limit = request.args.get('limit', type=int)  # 限制返回数量
+        sort_by = request.args.get('sort_by', 'yield_ratio')  # 排序字段
+        fetch_all = request.args.get('fetch_all', 'true').lower() == 'true'  # 是否获取所有页面（默认true，但实际最多4页）
+        use_cache = request.args.get('use_cache', 'true').lower() == 'true'  # 是否使用缓存（默认true）
+        
+        # OKX参数
+        okx_size = request.args.get('okx_size', 9, type=int)
+        okx_start = request.args.get('okx_start', 1, type=int)
+        okx_latest_num = request.args.get('okx_latest_num', 90, type=int)
+        okx_full_state = request.args.get('okx_full_state', 1, type=int)
+        okx_country_id = request.args.get('okx_country_id', 'CN')
+        # 根据 sort_by 自动映射 OKX 的 data_type（type 参数，严格区分大小写，使用驼峰命名）
+        okx_data_type = request.args.get('okx_data_type', '')  # 如果前端明确指定，优先使用
+        if not okx_data_type:
+            # 根据 sort_by 自动映射
+            sort_mapping = {
+                'yield_ratio': 'yieldRatio',  # 收益率
+                'pnl': 'pnl',  # 收益额/总盈亏
+                'follower_num': 'traderFollowerLimit',  # 跟单人数
+                'win_ratio': 'winRatio',  # 胜率
+                'comprehensive': '',  # 综合排序
+                '': ''  # 综合排序
+            }
+            okx_data_type = sort_mapping.get(sort_by, '')
+        
+        # Binance参数
+        binance_page = request.args.get('binance_page', 1, type=int)
+        binance_page_size = request.args.get('binance_page_size', 18, type=int)
+        binance_time_range = request.args.get('binance_time_range', '30D')
+        # 根据 sort_by 自动映射 Binance 的 data_type（严格区分大小写，使用大写）
+        binance_data_type = request.args.get('binance_data_type', '')  # 如果前端明确指定，优先使用
+        if not binance_data_type:
+            # 根据 sort_by 自动映射
+            binance_sort_mapping = {
+                'yield_ratio': 'ROI',  # 收益率
+                'pnl': 'PNL',  # 总盈亏
+                'follower_num': 'COPY_COUNT',  # 跟单人数
+                'win_ratio': 'SHARP_RATIO',  # 胜率（使用夏普比率，但要注明）
+                'comprehensive': '',  # 综合排序（使用AUM）
+                'aum': '',  # 资产管理规模（综合排序）
+                '': ''  # 综合排序
+            }
+            binance_data_type = binance_sort_mapping.get(sort_by, '')
+        binance_order = request.args.get('binance_order', 'DESC')
+        
+        # 创建服务实例
+        service = PopularTradersService()
+        
+        # 构建参数
+        # 注意：OKX 和 Binance 都使用 data_type，但在服务层会分别处理
+        kwargs = {
+            # OKX 参数
+            'size': okx_size,
+            'start': okx_start,
+            'latest_num': okx_latest_num,
+            'full_state': okx_full_state,
+            'country_id': okx_country_id,
+            'okx_data_type': okx_data_type,  # OKX 排序类型（统一使用 data_type）
+            # Binance 参数
+            'page_number': binance_page,
+            'page_size': binance_page_size,
+            'time_range': binance_time_range,
+            'binance_data_type': binance_data_type,  # Binance 排序类型（空字符串=综合排序，使用AUM）
+            'order': binance_order
+        }
+        
+        # 运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        if limit:
+            # 获取合并后的列表
+            traders = loop.run_until_complete(
+                service.get_merged_popular_traders(
+                    exchange=exchange,
+                    limit=limit,
+                    sort_by=sort_by,
+                    fetch_all=fetch_all,
+                    use_cache=use_cache,
+                    **kwargs
+                )
+            )
+            
+            return jsonify({
+                'success': True,
+                'data': traders,
+                'total': len(traders),
+                'cached': use_cache,
+                'message': '获取热门带单员成功'
+            })
+        else:
+            # 获取分交易所的列表
+            traders_dict = loop.run_until_complete(
+                service.get_popular_traders(
+                    exchange=exchange,
+                    fetch_all=fetch_all,
+                    use_cache=use_cache,
+                    **kwargs
+                )
+            )
+            
+            total = sum(len(traders) for traders in traders_dict.values())
+            
+            return jsonify({
+                'success': True,
+                'data': traders_dict,
+                'total': total,
+                'cached': use_cache,
+                'message': '获取热门带单员成功'
+            })
+            
+    except Exception as e:
+        logger.error(f"获取热门带单员失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'data': None,
+            'message': f'获取热门带单员失败: {str(e)}'
+        }), 500
+
+# ==================== 巨鲸交易员模块API（已整合到 Echosync 排行榜）====================
+# 注：巨鲸交易员功能已整合到 /api/v1/echosync/leaderboard
+# 保留此端点用于向后兼容，直接重定向到 Echosync
+
+@app.route('/api/v1/whale-traders', methods=['GET'])
+def get_whale_traders():
+    """
+    获取巨鲸交易员列表（已废弃，重定向到 Echosync 排行榜）
+    
+    注意：此 API 已整合到 Echosync 排行榜功能中。
+    请使用 /api/v1/echosync/leaderboard 替代。
+    """
+    try:
+        # 获取请求参数并转换为 Echosync 参数
+        sort_by = request.args.get('sort_by', 'total_pnl')  # 默认按总盈亏排序
+        use_cache = request.args.get('use_cache', 'true').lower() == 'true'
+        
+        # 重定向到 Echosync 排行榜（使用1天数据）
+        import asyncio
+        from core.limit_trade.echosync_service import EchosyncService
+        
+        service = EchosyncService()
+        
+        # 运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            service.get_leaderboard(
+                sort_by=sort_by,
+                period_days=1,  # 使用1天数据
+                page_size=100,
+                use_cache=use_cache
+            )
+        )
+        
+        return jsonify(result)
+            
+    except Exception as e:
+        logger.error(f"获取巨鲸交易员失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'data': None,
+            'message': f'获取巨鲸交易员失败: {str(e)}'
+        }), 500
+
+# ==================== Echosync API ====================
+
+@app.route('/api/v1/echosync/leaderboard', methods=['GET'])
+@login_required
+def get_echosync_leaderboard():
+    """
+    获取 Echosync 排行榜数据
+    
+    查询参数:
+        sort_by: 排序字段 (total_pnl, avg_win_rate, total_winning_trades, updated_at)
+        period_days: 统计周期（天，默认180）
+        page_size: 每页数量（默认100）
+        use_cache: 是否使用缓存（默认true）
+    """
+    try:
+        sort_by = request.args.get('sort_by', 'total_pnl')
+        period_days = int(request.args.get('period_days', 180))
+        page_size = int(request.args.get('page_size', 100))
+        use_cache = request.args.get('use_cache', 'true').lower() == 'true'
+        
+        # 创建服务实例
+        service = EchosyncService()
+        
+        # 使用 asyncio 运行异步方法（在 Flask 线程中需要创建新的事件循环）
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            service.get_leaderboard(
+                sort_by=sort_by,
+                period_days=period_days,
+                page_size=page_size,
+                use_cache=use_cache
+            )
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"获取Echosync排行榜失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'获取排行榜失败: {str(e)}',
+            'data': []
+        }), 500
+
+
+@app.route('/api/v1/echosync/whale-orders', methods=['GET'])
+@login_required
+def get_echosync_whale_orders():
+    """
+    获取巨鲸订单数据
+    
+    查询参数:
+        min_trade_amount: 最小交易金额（默认100000）
+        start_date: 开始时间（毫秒时间戳）
+        end_date: 结束时间（毫秒时间戳）
+        page_size: 每页数量（默认100）
+        trade_type: 交易类型（perpetual/spot，默认perpetual）
+    """
+    try:
+        min_trade_amount = float(request.args.get('min_trade_amount', 100000))
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        page_size = int(request.args.get('page_size', 100))
+        trade_type = request.args.get('trade_type', 'perpetual')
+        
+        # 转换时间戳
+        if start_date:
+            start_date = int(start_date)
+        if end_date:
+            end_date = int(end_date)
+        
+        # 创建服务实例
+        service = EchosyncService()
+        
+        # 使用 asyncio 运行异步方法
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            service.get_whale_orders(
+                min_trade_amount=min_trade_amount,
+                start_date=start_date,
+                end_date=end_date,
+                page_size=page_size,
+                trade_type=trade_type,
+                use_cache=False  # 实时数据，不缓存
+            )
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"获取巨鲸订单失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'获取巨鲸订单失败: {str(e)}',
+            'data': []
+        }), 500
+
+
+@app.route('/api/v1/echosync/whale-moves', methods=['GET'])
+@login_required
+def get_echosync_whale_moves():
+    """
+    获取巨鲸资金转移数据
+    
+    查询参数:
+        min_amount: 最小金额（默认10000）
+        max_amount: 最大金额（默认99999999999）
+        start_date: 开始时间（秒时间戳）
+        end_date: 结束时间（秒时间戳）
+        page_size: 每页数量（默认20）
+    """
+    try:
+        min_amount = float(request.args.get('min_amount', 10000))
+        max_amount = float(request.args.get('max_amount', 99999999999))
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        page_size = int(request.args.get('page_size', 100))  # 默认改为100，匹配前端
+        
+        # 转换时间戳（如果提供了）
+        if start_date:
+            start_date = int(start_date)
+        else:
+            start_date = None
+        if end_date:
+            end_date = int(end_date)
+        else:
+            end_date = None
+        
+        # 创建服务实例
+        service = EchosyncService()
+        
+        # 使用 asyncio 运行异步方法
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            service.get_whale_moves(
+                min_amount=min_amount,
+                max_amount=max_amount,
+                start_date=start_date,
+                end_date=end_date,
+                page_size=page_size,
+                use_cache=False  # 实时数据，不缓存
+            )
+        )
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"获取巨鲸资金转移失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'获取巨鲸资金转移失败: {str(e)}',
+            'data': []
+        }), 500
+
+
+@app.route('/api/v1/echosync/user-portfolio/<string:address>', methods=['GET'])
+@login_required
+def get_echosync_user_portfolio(address):
+    """
+    获取用户详细信息
+    
+    路径参数:
+        address: 用户地址（0x...）
+    """
+    try:
+        logger.info(f"[用户详情API] 开始获取用户详情，地址: {address}")
+        
+        # 创建服务实例
+        service = EchosyncService()
+        
+        # 使用 asyncio 运行异步方法
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(
+            service.get_user_portfolio(
+                user_address=address,
+                use_cache=True  # 用户详情可以缓存
+            )
+        )
+        
+        logger.info(f"[用户详情API] 获取成功，结果: success={result.get('success')}, data类型={type(result.get('data'))}")
+        
+        # 如果数据是字典，记录其键
+        if isinstance(result.get('data'), dict):
+            logger.debug(f"[用户详情API] 数据字段: {list(result.get('data', {}).keys())}")
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"获取用户详细信息失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': f'获取用户详细信息失败: {str(e)}',
+            'data': None
+        }), 500
+
 # ==================== 限价跟单模块API ====================
 
 @app.route('/api/v1/limit-follow/traders', methods=['GET'])
@@ -5945,17 +6627,34 @@ def get_limit_follow_strategies():
                 tuple(params) if params else None
             )
             
-            # 为每个策略添加关联的客户信息
-            for strategy in strategies:
-                # 获取关联的客户列表
-                customers = db_pool.query(
-                    """SELECT sc.*, c.name as customer_name, c.enabled as customer_enabled
+            # 优化：批量获取所有策略的客户信息（避免N+1查询）
+            strategy_ids = [s['id'] for s in strategies]
+            if strategy_ids:
+                # 一次性查询所有策略的客户信息
+                placeholders = ','.join(['%s'] * len(strategy_ids))
+                all_customers = db_pool.query(
+                    f"""SELECT sc.*, c.name as customer_name, c.enabled as customer_enabled, sc.strategy_id
                        FROM limit_follow_strategy_customers sc
                        LEFT JOIN customers c ON sc.customer_uid = c.customer_uid
-                       WHERE sc.strategy_id = %s
-                       ORDER BY sc.created_at DESC""",
-                    (strategy['id'],)
+                       WHERE sc.strategy_id IN ({placeholders})
+                       ORDER BY sc.strategy_id, sc.created_at DESC""",
+                    tuple(strategy_ids)
                 )
+                
+                # 按strategy_id分组
+                customers_by_strategy = {}
+                for customer in all_customers:
+                    strategy_id = customer['strategy_id']
+                    if strategy_id not in customers_by_strategy:
+                        customers_by_strategy[strategy_id] = []
+                    customers_by_strategy[strategy_id].append(customer)
+            else:
+                customers_by_strategy = {}
+            
+            # 为每个策略添加关联的客户信息
+            for strategy in strategies:
+                strategy_id = strategy['id']
+                customers = customers_by_strategy.get(strategy_id, [])
                 strategy['customers'] = customers
                 strategy['customer_count'] = len(customers)
                 
@@ -6907,6 +7606,9 @@ def limit_follow_closed_by_order_id():
         ))
         
         if close_result and close_result.get('code') == '0':
+            # 平仓请求成功，获取交易所订单ID
+            exchange_close_order_id = close_result.get('data', [{}])[0].get('ordId')
+            
             # 更新数据库状态
             if reduce_volume is not None:
                 # 部分减仓，更新减仓量
@@ -6914,26 +7616,26 @@ def limit_follow_closed_by_order_id():
                 new_reduced = current_reduced + reduce_volume  # 使用原始的reduce_volume，不是调整后的
                 
                 if new_reduced >= float(order_size):
-                    # 完全减仓
+                    # 完全减仓 - 但订单状态仍为filled，只有确认完全平仓后才改为closed
                     db_pool.execute(
-                        "UPDATE limit_follow_orders SET status='closed', limit_close_size=%s, updated_at=NOW() WHERE order_uid=%s",
-                        (new_reduced, order_uid)
+                        "UPDATE limit_follow_orders SET limit_close_size=%s, close_order_id=%s, updated_at=NOW() WHERE order_uid=%s",
+                        (new_reduced, exchange_close_order_id, order_uid)
                     )
-                    logger.info(f"[平仓] 订单完全减仓: {order_uid}")
+                    logger.info(f"[减仓] 订单完全减仓: {order_uid}, 交易所平仓订单: {exchange_close_order_id}")
                 else:
-                    # 部分减仓
+                    # 部分减仓 - 订单状态保持filled
                     db_pool.execute(
-                        "UPDATE limit_follow_orders SET limit_close_size=%s, updated_at=NOW() WHERE order_uid=%s",
-                        (new_reduced, order_uid)
+                        "UPDATE limit_follow_orders SET limit_close_size=%s, close_order_id=%s, updated_at=NOW() WHERE order_uid=%s",
+                        (new_reduced, exchange_close_order_id, order_uid)
                     )
-                    logger.info(f"[平仓] 订单部分减仓: {order_uid}, 已减仓: {new_reduced}/{order_size}")
+                    logger.info(f"[减仓] 订单部分减仓: {order_uid}, 已减仓: {new_reduced}/{order_size}, 交易所平仓订单: {exchange_close_order_id}")
             else:
-                # 完全平仓
+                # 完全平仓 - 先标记为平仓中，等待确认后再改为closed
                 db_pool.execute(
-                    "UPDATE limit_follow_orders SET status='closed', updated_at=NOW() WHERE order_uid=%s",
-                    (order_uid,)
+                    "UPDATE limit_follow_orders SET close_order_id=%s, updated_at=NOW() WHERE order_uid=%s",
+                    (exchange_close_order_id, order_uid)
                 )
-                logger.info(f"[平仓] 订单完全平仓: {order_uid}")
+                logger.info(f"[平仓] 订单平仓请求已发送: {order_uid}, 交易所平仓订单: {exchange_close_order_id}")
             
             return jsonify({
                 'success': 200,
@@ -6953,7 +7655,7 @@ def limit_follow_closed_by_order_id():
             'success': 500,
             'message': f'平仓异常: {str(e)}'
         })
-
+    
 
 def _get_account_data(strategy, is_demo):
     """获取账户信息"""
@@ -7391,8 +8093,9 @@ def _cancel_orders_by_leverage_control_optimized(rest_client, orders, strategy, 
 
 @app.route('/api/v1/limit-follow/orders', methods=['GET'])
 @ensure_db_pool()
+@cache_query(ttl=15)  # 缓存15秒
 def get_limit_follow_orders():
-    """获取限价跟单订单列表"""
+    """获取限价跟单订单列表（支持市价/限价筛选、分页、关键字与时间范围）"""
     try:
         customer_uid = request.args.get('customer_uid')
         trader_unique_name = request.args.get('trader_unique_name')
@@ -7400,61 +8103,108 @@ def get_limit_follow_orders():
         status = request.args.get('status')
         symbol = request.args.get('symbol')
         pos_side = request.args.get('pos_side')
-        
+        order_type = request.args.get('order_type')
+        keyword = request.args.get('keyword')
+        start_time = request.args.get('start_time')
+        end_time = request.args.get('end_time')
+
+        try:
+            page = int(request.args.get('page', 1))
+            page_size = int(request.args.get('page_size', 50))
+        except Exception:
+            page = 1
+            page_size = 50
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 500)
+        offset = (page - 1) * page_size
+
         # 构建查询条件
         conditions = []
         params = []
-        
+
         if customer_uid:
             conditions.append("lfo.customer_uid=%s")
             params.append(customer_uid)
-        
         if trader_unique_name:
             conditions.append("lfo.trader_unique_name=%s")
             params.append(trader_unique_name)
-        
         if strategy_id:
             conditions.append("lfo.strategy_id=%s")
             params.append(strategy_id)
-        
         if status:
             conditions.append("lfo.status=%s")
             params.append(status)
         else:
-            # 默认只显示活跃订单（pending, live, filled）
-            conditions.append("lfo.status IN ('pending', 'live', 'filled')")
-        
+            # 默认展示活跃订单（含市价已成交）：增加partially_filled
+            conditions.append("lfo.status IN ('pending', 'live', 'partially_filled', 'filled')")
         if symbol:
             conditions.append("lfo.symbol=%s")
             params.append(symbol)
-        
         if pos_side:
             conditions.append("lfo.pos_side=%s")
             params.append(pos_side)
-        
-        where_clause = " AND ".join(conditions) if conditions else "lfo.status IN ('pending', 'live', 'filled')"
-        
-        # 查询订单（关联客户和跟单员信息）
-        orders = db_pool.query(
-            f"""SELECT lfo.*, 
-                COALESCE(c.name, s.name) as customer_name,
-                lt.name as trader_name
-                FROM limit_follow_orders lfo
-                LEFT JOIN customers c ON lfo.customer_uid = c.customer_uid
-                LEFT JOIN signal_sources s ON lfo.customer_uid = s.source_uid
-                LEFT JOIN limit_follow_traders lt ON lfo.trader_unique_name = lt.unique_name
-                WHERE {where_clause}
-                ORDER BY lfo.created_at DESC""",
-            tuple(params) if params else None
-        )
-        
+        if order_type:
+            conditions.append("lfo.order_type=%s")
+            params.append(order_type)
+        if keyword:
+            conditions.append("(lfo.order_uid LIKE %s OR lfo.exchange_order_id LIKE %s)")
+            kw = f"%{keyword}%"
+            params.extend([kw, kw])
+        if start_time:
+            conditions.append("lfo.created_at >= %s")
+            params.append(start_time)
+        if end_time:
+            conditions.append("lfo.created_at <= %s")
+            params.append(end_time)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        # 统计总数（优化：减少JOIN，只查询必要字段）
+        count_sql = f"SELECT COUNT(1) AS cnt FROM limit_follow_orders lfo WHERE {where_clause}"
+        total_row = db_pool.query(count_sql, tuple(params) if params else None)
+        total = total_row[0]['cnt'] if total_row else 0
+
+        # 查询分页数据（优化：使用LEFT JOIN，避免不必要的关联）
+        data_sql = f"""
+            SELECT lfo.*, 
+                   COALESCE(c.name, s.name) as customer_name,
+                   lt.name as trader_name
+            FROM limit_follow_orders lfo
+            LEFT JOIN customers c ON lfo.customer_uid = c.customer_uid
+            LEFT JOIN signal_sources s ON lfo.customer_uid = s.source_uid
+            LEFT JOIN limit_follow_traders lt ON lfo.trader_unique_name = lt.unique_name
+            WHERE {where_clause}
+            ORDER BY lfo.created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        data_params = list(params) if params else []
+        data_params.extend([page_size, offset])
+        orders = db_pool.query(data_sql, tuple(data_params))
+
+        # 补充派生字段：reduced_size, remaining_size, reduce_progress, is_fully_reduced
+        enriched = []
+        for o in orders or []:
+            filled_size = float(o.get('filled_size') or 0)
+            reduced_size = float(o.get('limit_close_size') or 0)
+            remaining_size = max(filled_size - reduced_size, 0.0)
+            reduce_progress = (reduced_size / filled_size) if filled_size > 0 else 0.0
+            is_fully_reduced = 1 if filled_size > 0 and reduced_size >= filled_size else 0
+
+            o['reduced_size'] = reduced_size
+            o['remaining_size'] = remaining_size
+            o['reduce_progress'] = round(reduce_progress, 6)
+            o['is_fully_reduced'] = is_fully_reduced
+            enriched.append(o)
+
         return jsonify({
             'success': 200,
-            'data': format_datetime(orders),
-            'count': len(orders),
+            'data': format_datetime(enriched),
+            'count': len(enriched),
+            'total': total,
+            'page': page,
+            'page_size': page_size,
             'message': '限价跟单订单获取成功'
         })
-        
     except Exception as e:
         logger.error(f"获取限价跟单订单失败: {e}")
         raise APIError(f"获取限价跟单订单失败: {str(e)}")
@@ -7581,58 +8331,87 @@ def get_all_limit_follow_orders():
         status = request.args.get('status')
         symbol = request.args.get('symbol')
         pos_side = request.args.get('pos_side')
+        order_type = request.args.get('order_type')
+        keyword = request.args.get('keyword')
+        start_time = request.args.get('start_time')
+        end_time = request.args.get('end_time')
         
-        # 构建查询条件
+        try:
+            page = int(request.args.get('page', 1))
+            page_size = int(request.args.get('page_size', 50))
+        except Exception:
+            page = 1
+            page_size = 50
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 500)
+        offset = (page - 1) * page_size
+
         conditions = []
         params = []
-        
+
         if customer_uid:
             conditions.append("lfo.customer_uid=%s")
             params.append(customer_uid)
-        
         if trader_unique_name:
             conditions.append("lfo.trader_unique_name=%s")
             params.append(trader_unique_name)
-        
         if strategy_id:
             conditions.append("lfo.strategy_id=%s")
             params.append(strategy_id)
-        
         if status:
             conditions.append("lfo.status=%s")
             params.append(status)
-        
         if symbol:
             conditions.append("lfo.symbol=%s")
             params.append(symbol)
-        
         if pos_side:
             conditions.append("lfo.pos_side=%s")
             params.append(pos_side)
-        
+        if order_type:
+            conditions.append("lfo.order_type=%s")
+            params.append(order_type)
+        if keyword:
+            conditions.append("(lfo.order_uid LIKE %s OR lfo.exchange_order_id LIKE %s)")
+            kw = f"%{keyword}%"
+            params.extend([kw, kw])
+        if start_time:
+            conditions.append("lfo.created_at >= %s")
+            params.append(start_time)
+        if end_time:
+            conditions.append("lfo.created_at <= %s")
+            params.append(end_time)
+
         where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
-        # 查询订单（关联客户和跟单员信息）
-        orders = db_pool.query(
-            f"""SELECT lfo.*, 
-                COALESCE(c.name, s.name) as customer_name,
-                lt.name as trader_name
-                FROM limit_follow_orders lfo
-                LEFT JOIN customers c ON lfo.customer_uid = c.customer_uid
-                LEFT JOIN signal_sources s ON lfo.customer_uid = s.source_uid
-                LEFT JOIN limit_follow_traders lt ON lfo.trader_unique_name = lt.unique_name
-                WHERE {where_clause}
-                ORDER BY lfo.created_at DESC""",
-            tuple(params) if params else None
-        )
-        
+
+        count_sql = f"SELECT COUNT(1) AS cnt FROM limit_follow_orders lfo WHERE {where_clause}"
+        total_row = db_pool.query(count_sql, tuple(params) if params else None)
+        total = total_row[0]['cnt'] if total_row else 0
+
+        data_sql = f"""
+            SELECT lfo.*, 
+                   COALESCE(c.name, s.name) as customer_name,
+                   lt.name as trader_name
+            FROM limit_follow_orders lfo
+            LEFT JOIN customers c ON lfo.customer_uid = c.customer_uid
+            LEFT JOIN signal_sources s ON lfo.customer_uid = s.source_uid
+            LEFT JOIN limit_follow_traders lt ON lfo.trader_unique_name = lt.unique_name
+            WHERE {where_clause}
+            ORDER BY lfo.created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        data_params = list(params) if params else []
+        data_params.extend([page_size, offset])
+        orders = db_pool.query(data_sql, tuple(data_params))
+
         return jsonify({
             'success': 200,
             'data': format_datetime(orders),
             'count': len(orders),
+            'total': total,
+            'page': page,
+            'page_size': page_size,
             'message': '所有限价跟单订单获取成功'
         })
-        
     except Exception as e:
         logger.error(f"获取所有限价跟单订单失败: {e}")
         raise APIError(f"获取所有限价跟单订单失败: {str(e)}")
@@ -7837,44 +8616,6 @@ def update_limit_follow_config():
     except Exception as e:
         logger.error(f"更新限价跟单配置失败: {e}")
         raise APIError(f"更新限价跟单配置失败: {str(e)}")
-        
-        # 检查策略是否存在
-        existing = db_pool.query(
-            "SELECT 1 FROM limit_follow_strategies WHERE id=%s",
-            (strategy_id,)
-        )
-        
-        if not existing:
-            raise APIError("策略不存在", 404)
-        
-        # 构建更新字段
-        update_fields = []
-        update_values = []
-        
-        updatable_fields = ['follow_value', 'min_follow_value', 'max_follow_value', 'max_orders_per_signal', 'auto_cancel_on_signal_close', 'enabled']
-        
-        for field in updatable_fields:
-            if field in data:
-                update_fields.append(f"{field}=%s")
-                update_values.append(data[field])
-        
-        if not update_fields:
-            raise APIError("没有提供更新字段")
-        
-        update_values.append(strategy_id)
-        
-        sql = f"UPDATE limit_follow_strategies SET {', '.join(update_fields)} WHERE id=%s"
-        db_pool.execute(sql, tuple(update_values))
-        
-        return jsonify({
-            'success': 200,
-            'message': '限价跟单策略更新成功'
-        })
-        
-    except Exception as e:
-        logger.error(f"更新限价跟单策略失败: {e}")
-        raise APIError(f"更新限价跟单策略失败: {str(e)}")
-
 
 
 def calculate_limit_follow_order_size(strategy, signal_price):
@@ -8129,6 +8870,115 @@ def fix_limit_follow_position_status():
             'data': None,
             'message': f'修复失败: {str(e)}'
         }), 500
+
+
+@app.route('/api/v1/limit-follow/confirm-close-status', methods=['POST'])
+@ensure_db_pool()
+def confirm_close_status():
+    """确认平仓订单状态，将平仓成功的订单状态改为closed"""
+    try:
+        data = request.get_json() or {}
+        order_uid = data.get('order_uid')
+        
+        if not order_uid:
+            return jsonify({
+                'success': 400,
+                'message': '缺少订单UID参数'
+            }), 400
+        
+        # 查询订单信息
+        order = db_pool.query(
+            "SELECT * FROM limit_follow_orders WHERE order_uid = %s",
+            (order_uid,)
+        )
+        
+        if not order:
+            return jsonify({
+                'success': 404,
+                'message': '订单不存在'
+            }), 404
+        
+        order = order[0]
+        close_order_id = order.get('close_order_id')
+        
+        if not close_order_id:
+            return jsonify({
+                'success': 400,
+                'message': '订单没有关联的平仓订单ID'
+            }), 400
+        
+        # 获取客户配置
+        customer_config = get_customer_limit_follow_config(order['customer_uid'])
+        if not customer_config or 'customer_info' not in customer_config:
+            return jsonify({
+                'success': 400,
+                'message': '客户配置不存在'
+            }), 400
+        
+        customer_info = customer_config['customer_info']
+        
+        # 创建OKX客户端
+        
+        okx_client = create_exchange_client(
+            exchange=customer_info.get('exchange', 'okx'),
+            client_type='rest',
+            api_key=customer_info['api_key'],
+            api_secret=customer_info['api_secret'],
+            passphrase=customer_info['passphrase'],
+            is_demo=customer_info.get('is_demo', False)
+        )
+        
+        # 查询平仓订单状态
+        import asyncio
+        close_order_info = asyncio.run(okx_client.get_order(
+            instId=order['symbol'],
+            ordId=close_order_id
+        ))
+        
+        if close_order_info and close_order_info.get('code') == '0' and close_order_info.get('data'):
+            close_order_data = close_order_info['data'][0]
+            close_status = close_order_data['state']
+            
+            if close_status == 'filled':
+                # 平仓订单已成交，确认原订单状态为closed
+                db_pool.execute(
+                    "UPDATE limit_follow_orders SET status='closed', updated_at=NOW() WHERE order_uid=%s",
+                    (order_uid,)
+                )
+                
+                return jsonify({
+                    'success': 200,
+                    'message': f'订单 {order_uid} 平仓确认成功，状态已更新为closed',
+                    'data': {
+                        'order_uid': order_uid,
+                        'close_order_id': close_order_id,
+                        'close_status': close_status
+                    }
+                })
+            else:
+                return jsonify({
+                    'success': 200,
+                    'message': f'平仓订单状态: {close_status}',
+                    'data': {
+                        'order_uid': order_uid,
+                        'close_order_id': close_order_id,
+                        'close_status': close_status
+                    }
+                })
+        else:
+            return jsonify({
+                'success': 400,
+                'message': '无法获取平仓订单状态'
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"确认平仓状态失败: {e}")
+        return jsonify({
+            'success': 500,
+            'message': f'确认平仓状态失败: {str(e)}'
+        }), 500
+
+
 
 @app.route('/api/v1/limit-follow/sync-status', methods=['POST'])
 def sync_limit_follow_status():
@@ -8631,6 +9481,10 @@ def get_all_customer_positions():
         raise APIError(f"获取客户持仓失败: {str(e)}")
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('rules', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_rule(rule_uid):
     """获取单个规则详情"""
     try:
@@ -8653,6 +9507,10 @@ def get_rule(rule_uid):
         return jsonify({'success': 500, 'data': None, 'message': str(e)}), 500
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['PUT'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def update_rule_simple(rule_uid):
     """更新规则（简化版本）"""
     try:
@@ -8693,6 +9551,10 @@ def update_rule_simple(rule_uid):
         return jsonify({'success': 500, 'data': None, 'message': str(e)}), 500
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['DELETE'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
 def delete_rule(rule_uid):
     """删除规则"""
     try:
@@ -8789,6 +9651,14 @@ def start_follow_monitor_in_background():
     try:
         from core.limit_trade.limit_follow_executor import LimitFollowExecutor
         
+        # 确保数据库连接池已初始化
+        global db_pool
+        if db_pool is None:
+            db_pool = get_db_pool()
+            if db_pool is None:
+                logger.error("无法初始化数据库连接池，无法启动跟单监控器")
+                return
+        
         # 创建跟单执行器
         executor = LimitFollowExecutor(db_pool)
         
@@ -8851,23 +9721,36 @@ def get_strategy_manager(force_reload=False):
             logger.info("创建策略管理器实例...")
             strategy_manager = StrategyManager()
             
-            # 🆕 使用策略扫描器自动注册所有策略
+            # 🆕 使用策略加载器自动注册所有策略
             try:
-                from core.strategy_trade.strategy_scanner import get_strategy_scanner
+                from core.strategy_trade.strategy_loader import get_strategy_loader
                 
-                scanner = get_strategy_scanner()
-                logger.info(f"🔍 策略扫描器发现 {len(scanner.discovered_strategies)} 个策略")
+                loader = get_strategy_loader()
+                all_strategies = loader.list_all_strategies()
                 
-                # 自动注册所有发现的策略
-                for strategy_name, metadata in scanner.discovered_strategies.items():
-                    if metadata.strategy_class:
-                        strategy_manager.register_strategy_type(strategy_name, metadata.strategy_class)
-                        logger.info(f"  ✅ 自动注册: {strategy_name} ({metadata.display_name})")
+                # 注册系统策略
+                for strategy_info in all_strategies.get('system', []):
+                    strategy_id = strategy_info['id']
+                    strategy_class = loader.get_strategy(strategy_id)
+                    if strategy_class:
+                        strategy_manager.register_strategy_type(strategy_id, strategy_class)
+                        logger.info(f"  ✅ 自动注册系统策略: {strategy_id} ({strategy_info['name']})")
                 
-                logger.info(f"✅ 已自动注册 {len(scanner.discovered_strategies)} 个策略")
+                # 注册用户策略
+                for strategy_info in all_strategies.get('user', []):
+                    strategy_id = strategy_info['id']
+                    strategy_class = loader.get_strategy(strategy_id)
+                    if strategy_class:
+                        strategy_manager.register_strategy_type(strategy_id, strategy_class)
+                        logger.info(f"  ✅ 自动注册用户策略: {strategy_id} ({strategy_info.get('name', strategy_id)})")
                 
-            except Exception as scanner_error:
-                logger.warning(f"策略扫描器启动失败，使用手动注册: {scanner_error}")
+                total = all_strategies.get('total', 0)
+                logger.info(f"✅ 已自动注册 {total} 个策略（系统: {len(all_strategies.get('system', []))}, 用户: {len(all_strategies.get('user', []))}）")
+                
+            except Exception as loader_error:
+                logger.warning(f"策略加载器启动失败，使用手动注册: {loader_error}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 
                 # 备用方案：手动注册核心策略
                 strategy_manager.register_strategy_type('MA_Cross_Strategy', MACrossStrategy)
@@ -8974,7 +9857,7 @@ def get_strategy_instances():
 
 @app.route('/api/v1/strategy/instances/<strategy_name>', methods=['GET'])
 def get_strategy_instance(strategy_name):
-    """获取单个策略实例详情"""
+    """获取单个策略实例详情（包含完整配置）"""
     try:
         if not STRATEGY_MODULE_AVAILABLE:
             return jsonify({
@@ -8982,6 +9865,21 @@ def get_strategy_instance(strategy_name):
                 'message': '策略交易模块不可用'
             })
         
+        # 优先从数据库读取（包含完整配置）
+        integration = get_strategy_trade_integration()
+        if integration:
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            result = loop.run_until_complete(integration.api_get_strategy_config(strategy_name))
+            if result.get('success'):
+                return jsonify(result)
+        
+        # 降级：从策略管理器读取
         manager = get_strategy_manager()
         if not manager:
             return jsonify({
@@ -8995,6 +9893,9 @@ def get_strategy_instance(strategy_name):
         for strategy in strategies:
             if strategy.name == strategy_name:
                 strategy_info = strategy.to_dict()
+                # 添加配置信息
+                if hasattr(strategy, 'config'):
+                    strategy_info['config'] = strategy.config
                 break
         if strategy_info:
             return jsonify({
@@ -9010,6 +9911,8 @@ def get_strategy_instance(strategy_name):
             
     except Exception as e:
         logger.error(f"获取策略详情失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': f'获取策略详情失败: {str(e)}'
@@ -9687,18 +10590,88 @@ def get_strategy_template_config(strategy_type):
                 'parameters': {}
             }
             
-            # 从模板配置中提取参数信息
-            for param_name, default_value in template.default_config.items():
-                if param_name in ['symbol', 'timeframe']:  # 跳过基础参数
-                    continue
+            # 从模板配置中提取参数信息（包括所有参数，递归处理嵌套对象）
+            def extract_parameters(config_dict, prefix='', parent_validation=None):
+                """递归提取所有参数"""
+                params = {}
+                for param_name, default_value in config_dict.items():
+                    # 跳过基础参数
+                    if param_name in ['symbol', 'timeframe']:
+                        continue
                     
-                validation = template.validation_rules.get(param_name, {})
-                strategy_info['parameters'][param_name] = {
-                    'default': default_value,
-                    'type': validation.get('type', 'float'),
-                    'min': validation.get('min'),
-                    'max': validation.get('max')
-                }
+                    full_name = f"{prefix}{param_name}" if prefix else param_name
+                    
+                    # 处理嵌套对象（递归展开）
+                    if isinstance(default_value, dict):
+                        # 嵌套对象，递归提取
+                        nested_validation = parent_validation.get(param_name, {}) if parent_validation else {}
+                        nested_params = extract_parameters(default_value, f"{full_name}.", nested_validation)
+                        params.update(nested_params)
+                        continue
+                    
+                    # 处理列表（跳过，不展开）
+                    if isinstance(default_value, list):
+                        continue
+                    
+                    # 普通参数
+                    # 获取验证规则（支持嵌套路径）
+                    validation = {}
+                    if prefix:
+                        # 嵌套参数，从父级验证规则中查找
+                        parent_key = prefix.rstrip('.')
+                        if parent_validation and parent_key in parent_validation:
+                            validation = parent_validation[parent_key].get(param_name, {})
+                        else:
+                            # 尝试从顶层验证规则查找
+                            validation = template.validation_rules.get(param_name, {})
+                    else:
+                        validation = template.validation_rules.get(param_name, {})
+                    
+                    # 推断类型
+                    param_type = 'float'
+                    input_type = 'number'
+                    if isinstance(default_value, bool):
+                        param_type = 'boolean'
+                        input_type = 'checkbox'
+                    elif isinstance(default_value, int):
+                        param_type = 'int'
+                        input_type = 'number'
+                    elif isinstance(default_value, float):
+                        param_type = 'float'
+                        input_type = 'number'
+                    elif isinstance(default_value, str):
+                        param_type = 'string'
+                        input_type = 'text'
+                    
+                    # 使用验证规则中的类型（如果存在）
+                    if validation.get('type'):
+                        param_type = validation['type']
+                        if param_type in ['int', 'integer']:
+                            input_type = 'number'
+                        elif param_type == 'bool' or param_type == 'boolean':
+                            input_type = 'checkbox'
+                    
+                    # 计算step
+                    step = 0.001
+                    if param_type == 'int':
+                        step = 1
+                    elif 'std' in param_name or 'ratio' in param_name:
+                        step = 0.1
+                    elif 'pct' in param_name or 'percent' in param_name:
+                        step = 0.001
+                    
+                    params[full_name] = {
+                        'default': default_value,
+                        'type': param_type,
+                        'input_type': input_type,
+                        'min': validation.get('min'),
+                        'max': validation.get('max'),
+                        'step': step
+                    }
+                
+                return params
+            
+            strategy_info['parameters'] = extract_parameters(template.default_config, '', template.validation_rules)
             
             logger.info(f"✅ 从配置管理器获取策略模板: {strategy_type}")
         
@@ -9806,7 +10779,11 @@ def run_backtest():
             'RSI_Strategy': 'RSI_Strategy',
             'Bollinger_Strategy': 'Bollinger_Strategy',
             'MACD_Strategy': 'MACD_Strategy',
-            'Grid_Strategy': 'Grid_Strategy'
+            'Grid_Strategy': 'Grid_Strategy',
+            'FMZGrid_Strategy': 'FMZGrid_Strategy',
+            'MartinScalpGrid_Strategy': 'MartinScalpGrid_Strategy',
+            'MarketMaker_Strategy': 'MarketMaker_Strategy',
+            'MarketMakerHedge_Strategy': 'MarketMakerHedge_Strategy'
         }
         
         # 映射策略类型
@@ -9907,14 +10884,33 @@ def run_backtest():
                     logger.info(f"现有策略配置: {existing_strategy.performance}")
                     logger.info(f"新策略配置: {converted_config}")
                     
-                    # 策略配置更新（新架构中配置在创建时确定）
-                    update_success = True
-                    logger.info(f"策略参数更新: {template_strategy_name}")
+                    # 更新策略实例的配置
+                    # 注意：策略参数在__init__时已经读取为实例变量，所以需要重新创建策略实例
+                    logger.info(f"删除旧策略实例并重新创建: {template_strategy_name}")
+                    old_strategy_id = existing_strategy.id
                     
-                    if not update_success:
-                        logger.warning(f"策略参数更新失败，使用现有配置")
+                    # 删除旧策略
+                    manager.remove_strategy(old_strategy_id)
+                    
+                    # 使用新配置重新创建策略实例
+                    strategy_id = manager.create_strategy(
+                        strategy_type=actual_strategy_type,
+                        name=template_strategy_name,
+                        symbol=converted_config.get('symbol', 'BTC-USDT'),
+                        config=converted_config
+                    )
+                    
+                    if strategy_id:
+                        logger.info(f"策略实例已用新配置重新创建: {template_strategy_name}")
+                        logger.info(f"新配置中的ratio参数: {converted_config.get('ratio', '未设置')}")
                     else:
-                        logger.info(f"策略参数更新成功: {template_strategy_name}")
+                        logger.error(f"策略实例重新创建失败: {template_strategy_name}")
+                        return jsonify({
+                            'success': False,
+                            'message': f'策略实例重新创建失败: {template_strategy_name}'
+                        }), 500
+                    
+                    logger.info(f"策略参数更新成功: {template_strategy_name}")
                 
                 actual_strategy_name = template_strategy_name
                 
@@ -10127,8 +11123,14 @@ def run_backtest():
                 # 保存回测结果到数据库
                 try:
                     if db_pool:
-                        # 计算最终资金
-                        final_capital = backtest_config.initial_capital * (1 + backtest_result.total_return)
+                        # 从回测结果直接获取最终资金（更准确）
+                        if hasattr(backtest_result, 'final_capital') and backtest_result.final_capital > 0:
+                            final_capital = backtest_result.final_capital
+                            logger.info(f"从回测结果获取最终资金: {final_capital:.2f}")
+                        else:
+                            # 如果没有，则通过总收益率计算（向后兼容）
+                            final_capital = backtest_config.initial_capital * (1 + backtest_result.total_return)
+                            logger.info(f"通过总收益率计算最终资金: {final_capital:.2f}")
                         
                         # 计算盈利因子
                         profit_factor = 1.0
@@ -10255,7 +11257,7 @@ def init_strategy_database():
 
 @app.route('/api/v1/strategy/scan', methods=['POST'])
 def scan_strategies():
-    """重新扫描策略文件夹"""
+    """重新扫描策略文件夹（已废弃，使用strategy/loader接口）"""
     try:
         if not STRATEGY_MODULE_AVAILABLE:
             return jsonify({
@@ -10263,32 +11265,26 @@ def scan_strategies():
                 'message': '策略交易模块不可用'
             })
         
-        from core.strategy_trade.strategy_scanner import get_strategy_scanner
+        from core.strategy_trade.strategy_loader import get_strategy_loader
         
-        scanner = get_strategy_scanner()
-        scanner.reload_strategies()
+        loader = get_strategy_loader()
+        loader.reload_user_strategies()
         
         # 重新加载策略管理器
         get_strategy_manager(force_reload=True)
         
         # 返回发现的策略列表
-        strategies = []
-        for name, metadata in scanner.discovered_strategies.items():
-            strategies.append({
-                'name': name,
-                'display_name': metadata.display_name,
-                'description': metadata.description,
-                'category': metadata.category,
-                'class_name': metadata.class_name,
-                'file_path': metadata.file_path
-            })
+        all_strategies = loader.list_all_strategies()
         
         return jsonify({
             'success': True,
-            'message': f'扫描完成，发现 {len(strategies)} 个策略',
+            'message': f'扫描完成，发现 {all_strategies.get("total", 0)} 个策略',
             'data': {
-                'count': len(strategies),
-                'strategies': strategies
+                'count': all_strategies.get('total', 0),
+                'strategies': {
+                    'system': all_strategies.get('system', []),
+                    'user': all_strategies.get('user', [])
+                }
             }
         })
         
@@ -10303,7 +11299,7 @@ def scan_strategies():
 
 @app.route('/api/v1/strategy/custom/add', methods=['POST'])
 def add_custom_strategy():
-    """添加自定义策略"""
+    """添加自定义策略（已废弃，使用strategy/user/upload接口）"""
     try:
         if not STRATEGY_MODULE_AVAILABLE:
             return jsonify({
@@ -10314,7 +11310,6 @@ def add_custom_strategy():
         data = request.get_json()
         strategy_code = data.get('strategy_code')
         strategy_name = data.get('strategy_name')
-        category = data.get('category', '自定义策略')
         
         if not strategy_code or not strategy_name:
             return jsonify({
@@ -10322,18 +11317,27 @@ def add_custom_strategy():
                 'message': '缺少必需参数: strategy_code 或 strategy_name'
             }), 400
         
-        from core.strategy_trade.strategy_scanner import get_strategy_scanner
+        # 使用新的用户策略管理器
+        from core.strategy_trade.user_strategy_manager import get_user_strategy_manager
         
-        scanner = get_strategy_scanner()
-        success = scanner.add_custom_strategy(strategy_code, strategy_name, category)
+        user_manager = get_user_strategy_manager()
+        strategy_id = user_manager.upload_strategy(
+            strategy_id=strategy_name.lower().replace(' ', '_'),
+            code=strategy_code,
+            metadata={
+                'name': strategy_name,
+                'description': data.get('description', '')
+            }
+        )
         
-        if success:
+        if strategy_id:
             # 重新加载策略管理器
             get_strategy_manager(force_reload=True)
             
             return jsonify({
                 'success': True,
-                'message': f'成功添加自定义策略: {strategy_name}'
+                'message': f'成功添加自定义策略: {strategy_name}',
+                'data': {'strategy_id': strategy_id}
             })
         else:
             return jsonify({
@@ -10360,24 +11364,78 @@ def generate_strategy_template():
                 'message': '策略交易模块不可用'
             })
         
-        data = request.get_json()
-        strategy_name = data.get('strategy_name')
-        display_name = data.get('display_name')
-        description = data.get('description', '')
-        parameters = data.get('parameters', {})
+        # 返回标准策略模板
+        template_code = """from core.strategy_trade.base_strategy import BaseStrategy, MarketData, Signal
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+class MyStrategy(BaseStrategy):
+    '''
+    自定义策略示例
+    请修改类名和策略逻辑
+    '''
+    
+    def __init__(self, name: str, symbol: str, config: dict):
+        super().__init__(name, symbol, config)
         
-        if not strategy_name or not display_name:
-            return jsonify({
-                'success': False,
-                'message': '缺少必需参数: strategy_name 或 display_name'
-            }), 400
+        # 从配置中获取参数
+        self.param1 = self.get_parameter('param1', 10)
+        self.param2 = self.get_parameter('param2', 0.5)
         
-        from core.strategy_trade.strategy_scanner import get_strategy_scanner
+        logger.info(f"策略初始化: {name}")
+    
+    def on_market_data(self, data: MarketData) -> None:
+        '''
+        处理市场数据（必须实现）
         
-        scanner = get_strategy_scanner()
-        template_code = scanner.generate_strategy_template(
-            strategy_name, display_name, description, parameters
-        )
+        Args:
+            data: 市场数据对象，包含 open, high, low, close, volume 等字段
+        '''
+        current_price = data.close
+        
+        # 获取历史价格数据
+        prices = self.get_price_data(length=20)  # 获取最近20个价格
+        
+        if len(prices) < 20:
+            return  # 数据不足，等待更多数据
+        
+        # 示例：简单的移动平均策略
+        ma_short = sum(prices[-5:]) / 5   # 5日均线
+        ma_long = sum(prices[-20:]) / 20  # 20日均线
+        
+        # 生成买入信号
+        if ma_short > ma_long and current_price > ma_short:
+            self.create_signal(
+                direction='BUY',
+                price=current_price,
+                volume=self.param2,
+                strength=0.8,
+                reason=f"短期均线上穿长期均线"
+            )
+        
+        # 生成卖出信号
+        elif ma_short < ma_long and current_price < ma_short:
+            self.create_signal(
+                direction='SELL',
+                price=current_price,
+                volume=self.param2,
+                strength=0.8,
+                reason=f"短期均线下穿长期均线"
+            )
+    
+    def on_initialize(self) -> None:
+        '''策略初始化时调用（可选）'''
+        logger.info(f"策略 {self.name} 初始化完成")
+    
+    def on_start(self) -> None:
+        '''策略启动时调用（可选）'''
+        logger.info(f"策略 {self.name} 已启动")
+    
+    def on_stop(self) -> None:
+        '''策略停止时调用（可选）'''
+        logger.info(f"策略 {self.name} 已停止")
+"""
         
         return jsonify({
             'success': True,
@@ -10394,6 +11452,274 @@ def generate_strategy_template():
         return jsonify({
             'success': False,
             'message': f'生成策略模板失败: {str(e)}'
+        }), 500
+
+# ========== 用户策略管理API ==========
+
+@app.route('/api/v1/strategy/user/upload', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('strategies', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+def upload_user_strategy():
+    """上传用户自定义策略"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            }), 503
+        
+        data = request.get_json()
+        strategy_id = data.get('strategy_id')
+        code = data.get('code')
+        metadata = data.get('metadata', {})
+        
+        if not strategy_id or not code:
+            return jsonify({
+                'success': False,
+                'message': '缺少必需参数: strategy_id 或 code'
+            }), 400
+        
+        # 验证策略ID格式
+        import re
+        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', strategy_id):
+            return jsonify({
+                'success': False,
+                'message': '策略ID格式无效，只能包含字母、数字和下划线，且必须以字母开头'
+            }), 400
+        
+        from core.strategy_trade.user_strategy_manager import get_user_strategy_manager
+        
+        manager = get_user_strategy_manager()
+        
+        # 验证代码
+        is_valid, error_msg = manager.validate_strategy_code(code)
+        if not is_valid:
+            return jsonify({
+                'success': False,
+                'message': f'代码验证失败: {error_msg}'
+            }), 400
+        
+        # 保存策略
+        success = manager.save_strategy(strategy_id, code, metadata)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '策略上传成功',
+                'data': {
+                    'strategy_id': strategy_id,
+                    'metadata': manager.get_strategy_metadata(strategy_id)
+                }
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '策略保存失败'
+            }), 500
+        
+    except ValueError as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 400
+    except Exception as e:
+        logger.error(f"上传用户策略失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'上传策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/user/list', methods=['GET'])
+def list_user_strategies():
+    """列出所有用户策略"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            }), 503
+        
+        # 如果启用了认证，检查用户权限，但未登录时返回空列表
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.decorators import get_current_user_id
+                user_id = get_current_user_id()
+                if not user_id:
+                    # 未登录，返回空列表
+                    return jsonify({
+                        'success': True,
+                        'message': '未登录，返回空列表',
+                        'data': []
+                    })
+                # 已登录，检查权限（可选）
+                # 这里不强制要求权限，因为列表查看是基本功能
+            except:
+                # 认证模块错误，继续返回数据
+                pass
+        
+        from core.strategy_trade.user_strategy_manager import get_user_strategy_manager
+        
+        manager = get_user_strategy_manager()
+        strategies = manager.list_strategies()
+        
+        return jsonify({
+            'success': True,
+            'message': f'获取到 {len(strategies)} 个用户策略',
+            'data': strategies
+        })
+        
+    except Exception as e:
+        logger.error(f"获取用户策略列表失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略列表失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/user/<strategy_id>', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('strategies', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+def get_user_strategy(strategy_id):
+    """获取用户策略详情"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            }), 503
+        
+        from core.strategy_trade.user_strategy_manager import get_user_strategy_manager
+        
+        manager = get_user_strategy_manager()
+        code = manager.get_strategy_code(strategy_id)
+        metadata = manager.get_strategy_metadata(strategy_id)
+        
+        if code is None:
+            return jsonify({
+                'success': False,
+                'message': '策略不存在'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'message': '获取策略成功',
+            'data': {
+                'strategy_id': strategy_id,
+                'code': code,
+                'metadata': metadata
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"获取用户策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/user/<strategy_id>', methods=['DELETE'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('strategies', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+def delete_user_strategy(strategy_id):
+    """删除用户策略"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            }), 503
+        
+        from core.strategy_trade.user_strategy_manager import get_user_strategy_manager
+        
+        manager = get_user_strategy_manager()
+        success = manager.delete_strategy(strategy_id)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '策略删除成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '策略删除失败'
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"删除用户策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'删除策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/user/<strategy_id>/reload', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('strategies', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+def reload_user_strategy(strategy_id):
+    """重新加载用户策略"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            }), 503
+        
+        from core.strategy_trade.user_strategy_manager import get_user_strategy_manager
+        from core.strategy_trade.strategy_loader import get_strategy_loader
+        
+        manager = get_user_strategy_manager()
+        loader = get_strategy_loader()
+        
+        # 重新加载策略
+        strategy_class = manager.load_strategy(strategy_id)
+        if strategy_class:
+            loader.reload_user_strategies()
+            return jsonify({
+                'success': True,
+                'message': '策略重新加载成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': '策略加载失败'
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"重新加载用户策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'重新加载失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/all', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('strategies', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+def list_all_strategies():
+    """列出所有策略（系统策略+用户策略）"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            }), 503
+        
+        from core.strategy_trade.strategy_loader import get_strategy_loader
+        
+        loader = get_strategy_loader()
+        all_strategies = loader.list_all_strategies()
+        
+        return jsonify({
+            'success': True,
+            'message': f'获取到 {all_strategies["total"]} 个策略',
+            'data': all_strategies
+        })
+        
+    except Exception as e:
+        logger.error(f"获取所有策略失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取策略列表失败: {str(e)}'
         }), 500
 
 # 添加策略交易简化API端点
@@ -10453,7 +11779,7 @@ def strategy_trade_health_check():
 # ============================================================================
 
 @app.route('/api/v1/strategy-live/strategies', methods=['POST'])
-async def create_live_strategy():
+def create_live_strategy():
     """创建策略实盘交易实例"""
     try:
         integration = get_strategy_trade_integration()
@@ -10463,12 +11789,21 @@ async def create_live_strategy():
                 'message': '策略交易服务未初始化'
             }), 503
         
-        data = await request.get_json()
-        result = await integration.api_create_strategy(
+        data = request.get_json()
+        
+        # 使用 asyncio 运行异步函数
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(integration.api_create_strategy(
             strategy_type=data.get('strategy_type'),
             name=data.get('name'),
             config=data.get('config', {})
-        )
+        ))
         
         if result.get('success'):
             return jsonify(result), 201
@@ -10477,14 +11812,23 @@ async def create_live_strategy():
             
     except Exception as e:
         logger.error(f"创建策略失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
         }), 500
 
 @app.route('/api/v1/strategy-live/strategies/<strategy_id>/start', methods=['POST'])
-async def start_live_strategy(strategy_id):
-    """启动策略实盘交易"""
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def start_live_strategy(strategy_id):
+    """
+    启动策略实盘交易（带权限控制）
+    
+    权限规则：
+    - 普通用户：只能使用自己的账号（customer_id自动选择，不可指定）
+    - 管理员：可以选择任意账号（可以指定customer_id）
+    """
     try:
         integration = get_strategy_trade_integration()
         if not integration:
@@ -10493,23 +11837,34 @@ async def start_live_strategy(strategy_id):
                 'message': '策略交易服务未初始化'
             }), 503
         
-        data = await request.get_json()
-        result = await integration.api_start_strategy(
+        data = request.get_json() or {}
+        
+        # 使用 asyncio 运行异步函数
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(integration.api_start_strategy(
             strategy_id=strategy_id,
             config=data
-        )
+        ))
         
         return jsonify(result)
         
     except Exception as e:
         logger.error(f"启动策略失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
         }), 500
 
 @app.route('/api/v1/strategy-live/strategies/<strategy_id>/stop', methods=['POST'])
-async def stop_live_strategy(strategy_id):
+def stop_live_strategy(strategy_id):
     """停止策略实盘交易"""
     try:
         integration = get_strategy_trade_integration()
@@ -10519,25 +11874,35 @@ async def stop_live_strategy(strategy_id):
                 'message': '策略交易服务未初始化'
             }), 503
         
-        data = await request.get_json() if request.data else {}
+        data = request.get_json() if request.data else {}
         close_positions = data.get('close_positions', True)
         
-        result = await integration.api_stop_strategy(
+        # 使用 asyncio 运行异步函数
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(integration.api_stop_strategy(
             strategy_id=strategy_id,
             close_positions=close_positions
-        )
+        ))
         
         return jsonify(result)
         
     except Exception as e:
         logger.error(f"停止策略失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
         }), 500
 
 @app.route('/api/v1/strategy-live/strategies/<strategy_id>/status', methods=['GET'])
-async def get_live_strategy_status(strategy_id):
+def get_live_strategy_status(strategy_id):
     """获取策略运行状态"""
     try:
         integration = get_strategy_trade_integration()
@@ -10547,18 +11912,28 @@ async def get_live_strategy_status(strategy_id):
                 'message': '策略交易服务未初始化'
             }), 503
         
-        result = await integration.api_get_strategy_status(strategy_id)
+        # 使用 asyncio 运行异步函数
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(integration.api_get_strategy_status(strategy_id))
         return jsonify(result)
         
     except Exception as e:
         logger.error(f"获取策略状态失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
         }), 500
 
 @app.route('/api/v1/strategy-live/strategies', methods=['GET'])
-async def list_live_strategies():
+def list_live_strategies():
     """列出所有策略（包括运行状态）"""
     try:
         integration = get_strategy_trade_integration()
@@ -10568,11 +11943,21 @@ async def list_live_strategies():
                 'message': '策略交易服务未初始化'
             }), 503
         
-        result = await integration.api_list_strategies()
+        # 使用 asyncio 运行异步函数
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(integration.api_list_strategies())
         return jsonify(result)
         
     except Exception as e:
         logger.error(f"列出策略失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10582,14 +11967,42 @@ async def list_live_strategies():
 
 # ==================== 消息转发模块 API ====================
 
-# 导入消息转发服务
+# 全局变量：由 main.py 统一初始化和管理
+# 这些变量在 main.py 的 start_flask() 中设置
+_message_forward_service = None  # 消息转发服务实例
+_message_forward_loop = None     # 消息转发服务的事件循环
+
+# 检查模块是否可用
 try:
-    from core.message_forward.api_service import get_message_forward_service
+    from core.message_forward.api_service import MessageForwardAPIService
     MESSAGE_FORWARD_AVAILABLE = True
     logger.info("✅ 消息转发模块已加载")
 except ImportError as e:
     MESSAGE_FORWARD_AVAILABLE = False
     logger.warning(f"⚠️ 消息转发模块不可用: {e}")
+    import traceback
+    logger.warning(traceback.format_exc())
+except Exception as e:
+    MESSAGE_FORWARD_AVAILABLE = False
+    logger.warning(f"⚠️ 消息转发模块不可用: {e}")
+    import traceback
+    logger.warning(traceback.format_exc())
+
+def get_message_forward_service():
+    """
+    获取消息转发服务实例
+    注意：此函数返回由 main.py 创建和管理的服务实例
+    不再每次创建新实例，确保服务的单例性
+    """
+    global _message_forward_service
+    if _message_forward_service is None:
+        raise RuntimeError("消息转发服务未初始化，请检查 main.py 的启动逻辑")
+    return _message_forward_service
+
+# ==================== Telegram监听服务 API ====================
+
+# Telegram监听服务已移除，现在使用统一的消息转发服务
+# 平台监听由转发规则自动管理
 
 # 获取服务状态
 @app.route('/api/v1/message-forward/status', methods=['GET'])
@@ -10602,8 +12015,8 @@ def get_message_forward_status():
         }), 503
     
     try:
-        # 传递MySQL连接池
-        service = get_message_forward_service(db_pool)
+        # 获取由 main.py 创建的服务实例
+        service = get_message_forward_service()
         result = service.get_service_status()
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
@@ -10617,7 +12030,7 @@ def get_message_forward_status():
 
 # 启动服务
 @app.route('/api/v1/message-forward/start', methods=['POST'])
-async def start_message_forward_service():
+def start_message_forward_service():
     """启动消息转发服务"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10626,8 +12039,15 @@ async def start_message_forward_service():
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.start_service()
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.start_service())
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"启动服务失败: {e}")
@@ -10638,7 +12058,7 @@ async def start_message_forward_service():
 
 # 停止服务
 @app.route('/api/v1/message-forward/stop', methods=['POST'])
-async def stop_message_forward_service():
+def stop_message_forward_service():
     """停止消息转发服务"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10647,8 +12067,15 @@ async def stop_message_forward_service():
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.stop_service()
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.stop_service())
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"停止服务失败: {e}")
@@ -10682,7 +12109,7 @@ def get_message_platforms():
 
 # 添加平台
 @app.route('/api/v1/message-forward/platforms', methods=['POST'])
-async def add_message_platform():
+def add_message_platform():
     """添加新平台"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10691,20 +12118,29 @@ async def add_message_platform():
         }), 503
     
     try:
-        data = await request.get_json() if asyncio.iscoroutinefunction(request.get_json) else request.get_json()
+        import asyncio
+        data = request.get_json()
         
         # 验证必填字段
-        if not data.get('platform_type') or not data.get('platform_name'):
+        if not data or not data.get('platform_type') or not data.get('platform_name'):
             return jsonify({
                 'success': False,
                 'message': '缺少必填字段: platform_type 和 platform_name'
             }), 400
         
         service = get_message_forward_service()
-        result = await service.add_platform(data)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.add_platform(data))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"添加平台失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10733,7 +12169,7 @@ def get_message_platform(platform_id):
 
 # 更新平台
 @app.route('/api/v1/message-forward/platforms/<int:platform_id>', methods=['PUT'])
-async def update_message_platform(platform_id):
+def update_message_platform(platform_id):
     """更新平台"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10742,13 +12178,22 @@ async def update_message_platform(platform_id):
         }), 503
     
     try:
-        data = await request.get_json() if asyncio.iscoroutinefunction(request.get_json) else request.get_json()
+        import asyncio
+        data = request.get_json()
         
         service = get_message_forward_service()
-        result = await service.update_platform(platform_id, data)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.update_platform(platform_id, data))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"更新平台失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10756,7 +12201,7 @@ async def update_message_platform(platform_id):
 
 # 删除平台
 @app.route('/api/v1/message-forward/platforms/<int:platform_id>', methods=['DELETE'])
-async def delete_message_platform(platform_id):
+def delete_message_platform(platform_id):
     """删除平台"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10765,11 +12210,20 @@ async def delete_message_platform(platform_id):
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.delete_platform(platform_id)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.delete_platform(platform_id))
         return jsonify(result), 200 if result['success'] else 404
     except Exception as e:
         logger.error(f"删除平台失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10777,7 +12231,7 @@ async def delete_message_platform(platform_id):
 
 # 启用平台
 @app.route('/api/v1/message-forward/platforms/<int:platform_id>/enable', methods=['POST'])
-async def enable_message_platform(platform_id):
+def enable_message_platform(platform_id):
     """启用平台"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10786,11 +12240,215 @@ async def enable_message_platform(platform_id):
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.enable_platform(platform_id)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.enable_platform(platform_id))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"启用平台失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# 测试平台监听
+@app.route('/api/v1/message-forward/platforms/<int:platform_id>/test', methods=['POST'])
+def test_message_platform(platform_id):
+    """测试平台监听功能"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        import asyncio
+        data = request.get_json() or {}
+        duration = data.get('duration', 30)  # 默认测试30秒
+        
+        service = get_message_forward_service()
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.test_platform(platform_id, duration))
+        return jsonify(result), 200 if result['success'] else 500
+    except Exception as e:
+        logger.error(f"测试平台失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# 发送登录验证码
+@app.route('/api/v1/message-forward/platforms/<int:platform_id>/login/send-code', methods=['POST'])
+def send_platform_login_code(platform_id):
+    """发送平台登录验证码"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        import asyncio
+        service = get_message_forward_service()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.send_login_code(platform_id))
+        return jsonify(result), 200 if result['success'] else 500
+    except Exception as e:
+        logger.error(f"发送登录验证码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# 验证登录验证码
+@app.route('/api/v1/message-forward/platforms/<int:platform_id>/login/verify-code', methods=['POST'])
+def verify_platform_login_code(platform_id):
+    """验证平台登录验证码"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        import asyncio
+        data = request.get_json() or {}
+        phone_code = data.get('phone_code')
+        password = data.get('password')  # 两步验证密码（可选）
+        
+        if not phone_code:
+            return jsonify({
+                'success': False,
+                'message': '缺少验证码'
+            }), 400
+        
+        service = get_message_forward_service()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.verify_login_code(platform_id, phone_code, password))
+        return jsonify(result), 200 if result['success'] else 500
+    except Exception as e:
+        logger.error(f"验证登录验证码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# 获取平台群组列表（仅Telegram等支持）
+@app.route('/api/v1/message-forward/platforms/<int:platform_id>/chats', methods=['GET'])
+def get_platform_chats(platform_id):
+    """获取平台的群组/频道列表"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        import asyncio
+        service = get_message_forward_service()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.get_platform_chats(platform_id))
+        return jsonify(result), 200 if result['success'] else 500
+    except Exception as e:
+        logger.error(f"获取平台群组列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# 添加监听群组
+@app.route('/api/v1/message-forward/platforms/<int:platform_id>/monitored-chats', methods=['POST'])
+def add_monitored_chat(platform_id):
+    """添加要监听的群组/频道"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        import asyncio
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'message': '请求数据为空'
+            }), 400
+        
+        service = get_message_forward_service()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.add_monitored_chat(platform_id, data))
+        return jsonify(result), 200 if result['success'] else 500
+    except Exception as e:
+        logger.error(f"添加监听群组失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# 移除监听群组
+@app.route('/api/v1/message-forward/platforms/<int:platform_id>/monitored-chats/<chat_id>', methods=['DELETE'])
+def remove_monitored_chat(platform_id, chat_id):
+    """移除要监听的群组/频道"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        import asyncio
+        service = get_message_forward_service()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.remove_monitored_chat(platform_id, chat_id))
+        return jsonify(result), 200 if result['success'] else 500
+    except Exception as e:
+        logger.error(f"移除监听群组失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10798,7 +12456,7 @@ async def enable_message_platform(platform_id):
 
 # 禁用平台
 @app.route('/api/v1/message-forward/platforms/<int:platform_id>/disable', methods=['POST'])
-async def disable_message_platform(platform_id):
+def disable_message_platform(platform_id):
     """禁用平台"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10807,11 +12465,20 @@ async def disable_message_platform(platform_id):
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.disable_platform(platform_id)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.disable_platform(platform_id))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"禁用平台失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10842,7 +12509,7 @@ def get_message_forward_rules():
 
 # 添加规则
 @app.route('/api/v1/message-forward/rules', methods=['POST'])
-async def add_message_forward_rule():
+def add_message_forward_rule():
     """添加新转发规则"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10851,20 +12518,36 @@ async def add_message_forward_rule():
         }), 503
     
     try:
-        data = await request.get_json() if asyncio.iscoroutinefunction(request.get_json) else request.get_json()
+        import asyncio
+        data = request.get_json()
         
-        # 验证必填字段
-        if not data.get('rule_name') or not data.get('source_platform'):
+        # 验证必填字段（支持新旧两种方式）
+        if not data or not data.get('rule_name'):
             return jsonify({
                 'success': False,
-                'message': '缺少必填字段: rule_name 和 source_platform'
+                'message': '缺少必填字段: rule_name'
+            }), 400
+        
+        # 检查源平台：优先使用 source_platform_id，兼容旧的 source_platform
+        if not data.get('source_platform_id') and not data.get('source_platform'):
+            return jsonify({
+                'success': False,
+                'message': '缺少必填字段: source_platform_id 或 source_platform'
             }), 400
         
         service = get_message_forward_service()
-        result = await service.add_rule(data)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.add_rule(data))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"添加规则失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10893,7 +12576,7 @@ def get_message_forward_rule(rule_id):
 
 # 更新规则
 @app.route('/api/v1/message-forward/rules/<rule_id>', methods=['PUT'])
-async def update_message_forward_rule(rule_id):
+def update_message_forward_rule(rule_id):
     """更新转发规则"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10902,13 +12585,22 @@ async def update_message_forward_rule(rule_id):
         }), 503
     
     try:
-        data = await request.get_json() if asyncio.iscoroutinefunction(request.get_json) else request.get_json()
+        import asyncio
+        data = request.get_json()
         
         service = get_message_forward_service()
-        result = await service.update_rule(rule_id, data)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.update_rule(rule_id, data))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"更新规则失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10916,7 +12608,7 @@ async def update_message_forward_rule(rule_id):
 
 # 删除规则
 @app.route('/api/v1/message-forward/rules/<rule_id>', methods=['DELETE'])
-async def delete_message_forward_rule(rule_id):
+def delete_message_forward_rule(rule_id):
     """删除转发规则"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10925,11 +12617,20 @@ async def delete_message_forward_rule(rule_id):
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.delete_rule(rule_id)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.delete_rule(rule_id))
         return jsonify(result), 200 if result['success'] else 404
     except Exception as e:
         logger.error(f"删除规则失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10937,7 +12638,7 @@ async def delete_message_forward_rule(rule_id):
 
 # 启用规则
 @app.route('/api/v1/message-forward/rules/<rule_id>/enable', methods=['POST'])
-async def enable_message_forward_rule(rule_id):
+def enable_message_forward_rule(rule_id):
     """启用转发规则"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10946,11 +12647,20 @@ async def enable_message_forward_rule(rule_id):
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.enable_rule(rule_id)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.enable_rule(rule_id))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"启用规则失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -10958,7 +12668,7 @@ async def enable_message_forward_rule(rule_id):
 
 # 禁用规则
 @app.route('/api/v1/message-forward/rules/<rule_id>/disable', methods=['POST'])
-async def disable_message_forward_rule(rule_id):
+def disable_message_forward_rule(rule_id):
     """禁用转发规则"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
@@ -10967,11 +12677,20 @@ async def disable_message_forward_rule(rule_id):
         }), 503
     
     try:
+        import asyncio
         service = get_message_forward_service()
-        result = await service.disable_rule(rule_id)
+        # 在同步函数中运行异步函数
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(service.disable_rule(rule_id))
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"禁用规则失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)
@@ -11019,7 +12738,7 @@ def start_auto_cleanup_task():
                 # 调用自动清理API
                 import requests
                 try:
-                    response = requests.post('http://localhost:5000/api/v1/manual/auto_cleanup_invalid_orders', 
+                    response = requests.post('http://localhost:5001/api/v1/manual/auto_cleanup_invalid_orders', 
                                             timeout=60)
                     if response.status_code == 200:
                         result = response.json()
@@ -11049,7 +12768,89 @@ if __name__ == '__main__':
     start_auto_cleanup_task()
     
     # 启动Flask应用
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5001, debug=False)
+
+# ==================== TradingView Webhook ====================
+
+@app.route('/webhook/tradingview', methods=['POST'])
+def receive_tradingview_webhook():
+    """接收 TradingView Alert Webhook"""
+    try:
+        import json
+        import hmac
+        import hashlib
+        from core.tradingview.alert_receiver import get_alert_receiver
+        from core.tradingview.alert_parser import TradingViewAlertParser
+        
+        # 获取原始数据
+        payload = request.get_data(as_text=True)
+        signature = request.headers.get('X-Signature', '')
+        
+        # 解析 JSON
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.error(f"无效的 JSON 数据: {payload}")
+            return jsonify({'error': 'Invalid JSON'}), 400
+        
+        logger.info(f"收到 TradingView Alert: {data}")
+        
+        # 获取警报接收器
+        receiver = get_alert_receiver(
+            trade_service=get_trade_service(),
+            message_manager=None
+        )
+        
+        # 验证签名（如果配置了）
+        if receiver.config.get('secret_key'):
+            if not receiver._verify_signature(payload, signature):
+                logger.warning("TradingView Webhook 签名验证失败")
+                return jsonify({'error': 'Invalid signature'}), 401
+        
+        # 更新统计
+        receiver.trade_stats['total_alerts'] += 1
+        receiver.trade_stats['last_alert_time'] = datetime.now().isoformat()
+        
+        # 异步处理警报（使用现有的处理方法）
+        import asyncio
+        asyncio.create_task(receiver._process_tradingview_alert(data))
+        
+        return jsonify({
+            'status': 'received',
+            'message': '警报已接收并处理',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"处理 TradingView Webhook 失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Webhook 处理失败'
+        }), 500
+
+@app.route('/webhook/status', methods=['GET'])
+def get_webhook_status():
+    """获取 TradingView Webhook 状态"""
+    try:
+        from core.tradingview.alert_receiver import get_alert_receiver
+        
+        receiver = get_alert_receiver()
+        status = receiver.get_status()
+        
+        return jsonify({
+            'success': True,
+            'data': status
+        })
+        
+    except Exception as e:
+        logger.error(f"获取 Webhook 状态失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/v1/symbols', methods=['GET'])
 def get_symbols():
@@ -11119,15 +12920,23 @@ if __name__ == '__main__':
     start_auto_cleanup_task()
     
     # 启动Flask应用
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5001, debug=False)
 else:
-    # 当作为模块导入时，也启动跟单监控器
+    # 当作为模块导入时，先初始化数据库，然后启动跟单监控器
     import threading
     import time
     
     def delayed_start_monitor():
         """延迟启动监控器，等待Flask完全启动"""
-        time.sleep(3)  # 等待3秒
+        # 先确保数据库连接池已初始化
+        try:
+            init_db()
+            logger.info("✅ 数据库连接池已在模块导入时初始化")
+        except Exception as e:
+            logger.error(f"❌ 数据库连接池初始化失败: {e}")
+            return
+        
+        time.sleep(3)  # 等待3秒，确保Flask完全启动
         start_follow_monitor_in_background()
     
     # 在后台线程中延迟启动监控器
@@ -11595,4 +13404,727 @@ else:
                 'success': False,
                 'message': '应用权限模板失败',
                 'code': 'APPLY_PERMISSION_TEMPLATE_ERROR'
+            }), 500
+
+    # 用户权限管理API
+    @app.route('/api/v1/auth/users/<int:user_id>/permissions', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_user_permissions(user_id):
+        """获取用户权限（用于编辑）"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            permissions_data = permission_service.get_user_permissions_for_edit(user_id)
+            
+            if permissions_data:
+                return jsonify({
+                    'success': True,
+                    'data': permissions_data,
+                    'message': '获取用户权限成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户不存在',
+                    'code': 'USER_NOT_FOUND'
+                }), 404
+                
+        except Exception as e:
+            logger.error(f"获取用户权限失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '获取用户权限失败',
+                'code': 'GET_USER_PERMISSIONS_ERROR'
+            }), 500
+
+    @app.route('/api/v1/auth/users/<int:user_id>/permissions', methods=['PUT'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def update_user_permissions(user_id):
+        """更新用户权限"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            data = request.get_json()
+            permissions = data.get('permissions', [])
+            
+            # 获取当前用户ID（授权人）
+            from auth.decorators import get_current_user_id
+            granted_by = get_current_user_id()
+            if not granted_by:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录',
+                    'code': 'NOT_AUTHENTICATED'
+                }), 401
+            
+            success = permission_service.update_user_permissions(user_id, permissions, granted_by)
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '用户权限更新成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '用户权限更新失败',
+                    'code': 'UPDATE_USER_PERMISSIONS_FAILED'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"更新用户权限失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '更新用户权限失败',
+                'code': 'UPDATE_USER_PERMISSIONS_ERROR'
+            }), 500
+    
+    # ==================== 做市模块API ====================
+    
+    @app.route('/api/v1/market-maker/accounts', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @require_permission('market_maker', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_market_maker_accounts():
+        """获取当前用户的做市账号列表"""
+        try:
+            # 获取当前用户ID
+            user_id = None
+            if AUTH_MODULE_AVAILABLE:
+                user_id = get_current_user_id()
+            
+            # 如果没有用户ID，尝试从session获取
+            if not user_id:
+                user_id = session.get('user_id') if hasattr(session, 'get') else None
+            
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录或用户信息无效'
+                }), 401
+            
+            # 优先使用数据库，如果表不存在则回退到配置文件
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                accounts = db_manager.get_user_accounts(user_id)
+                
+                # 如果数据库中没有账号，尝试从配置文件加载（兼容旧数据）
+                if not accounts:
+                    logger.info("数据库中无账号，尝试从配置文件加载...")
+                    from core.market_maker.process_manager import MarketMakerProcessManager
+                    manager = MarketMakerProcessManager()
+                    file_accounts = manager.config_manager.load_accounts()
+                    
+                    # 将配置文件中的账号迁移到数据库（可选）
+                    # 这里暂时只返回空列表，让用户通过界面添加
+                    accounts = []
+            except Exception as db_error:
+                logger.warning(f"数据库查询失败，使用配置文件: {db_error}")
+                # 回退到配置文件方式
+                from core.market_maker.process_manager import MarketMakerProcessManager
+                manager = MarketMakerProcessManager()
+                file_accounts = manager.config_manager.load_accounts()
+                accounts = file_accounts
+            
+            # 获取每个账号的状态
+            from core.market_maker.process_manager import MarketMakerProcessManager
+            manager = MarketMakerProcessManager()
+            
+            result = []
+            for account in accounts:
+                symbols = account.get('symbols', [])
+                for symbol in symbols:
+                    account_key = manager.get_account_key(account['name'], symbol)
+                    status = 'running' if account_key in manager.processes and manager.processes[account_key].poll() is None else 'stopped'
+                    
+                    # 获取运行时长
+                    runtime = '0:00:00'
+                    if status == 'running' and account_key in manager.processes:
+                        try:
+                            from core.market_maker.db_manager import MarketMakerDBManager
+                            db_mgr = MarketMakerDBManager()
+                            status_info = db_mgr.get_account_status(account['name'], symbol)
+                            if status_info and status_info.get('start_time'):
+                                start_time = status_info['start_time']
+                                if isinstance(start_time, str):
+                                    from datetime import datetime
+                                    start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                                delta = datetime.now() - start_time
+                                hours = delta.seconds // 3600
+                                minutes = (delta.seconds % 3600) // 60
+                                seconds = delta.seconds % 60
+                                runtime = f"{hours}:{minutes:02d}:{seconds:02d}"
+                        except:
+                            pass
+                    
+                    # 获取统计数据
+                    volume = '0'
+                    profit = '0.00'
+                    try:
+                        from core.market_maker.db_manager import MarketMakerDBManager
+                        db_mgr = MarketMakerDBManager()
+                        stats = db_mgr.get_account_stats(account['name'], symbol)
+                        if stats:
+                            volume = f"{stats.get('buy_volume', 0) + stats.get('sell_volume', 0):.2f}"
+                            profit = f"{stats.get('net_profit', 0):.2f}"
+                    except:
+                        pass
+                    
+                    result.append({
+                        'name': account['name'],
+                        'exchange': account.get('exchange', 'backpack'),
+                        'symbols': [symbol],
+                        'spread': account.get('params', {}).get('spread', 0),
+                        'quantity': account.get('params', {}).get('quantity'),
+                        'status': status,
+                        'runtime': runtime,
+                        'volume': volume,
+                        'profit': profit
+                    })
+            
+            return jsonify({
+                'success': True,
+                'data': result,
+                'message': '获取做市账号列表成功'
+            })
+        except Exception as e:
+            logger.error(f"获取做市账号列表失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'message': f'获取做市账号列表失败: {str(e)}'
+            }), 500
+    
+    @app.route('/api/v1/market-maker/accounts', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def add_market_maker_account():
+        """添加做市账号"""
+        try:
+            # 获取当前用户ID
+            user_id = None
+            if AUTH_MODULE_AVAILABLE:
+                user_id = get_current_user_id()
+            
+            if not user_id:
+                user_id = session.get('user_id') if hasattr(session, 'get') else None
+            
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录或用户信息无效'
+                }), 401
+            
+            data = request.get_json()
+            if not data:
+                return jsonify({
+                    'success': False,
+                    'message': '请求数据为空'
+                }), 400
+            
+            # 优先使用数据库
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                
+                # 构建账号配置
+                account_config = {
+                    'name': data.get('name'),
+                    'exchange': data.get('exchange', 'backpack'),
+                    'market_type': data.get('market_type', 'spot'),
+                    'api_key': data.get('api_key', ''),
+                    'api_secret': data.get('api_secret', ''),
+                    'base_url': data.get('base_url', 'https://api.backpack.work'),
+                    'ws_proxy': data.get('ws_proxy'),
+                    'symbols': data.get('symbols', []),
+                    'params': data.get('params', {})
+                }
+                
+                success = db_manager.add_account(account_config, user_id)
+                
+                if success:
+                    # 同时保存到配置文件（兼容性）
+                    try:
+                        from core.market_maker.config_manager import MarketMakerConfigManager
+                        config_manager = MarketMakerConfigManager()
+                        file_config = {
+                            'name': account_config['name'],
+                            'exchange': account_config['exchange'],
+                            'market_type': account_config['market_type'],
+                            'symbols': account_config['symbols'],
+                            'env': {
+                                'BACKPACK_KEY': account_config['api_key'],
+                                'BACKPACK_SECRET': account_config['api_secret'],
+                                'BASE_URL': account_config['base_url'],
+                                'BACKPACK_PROXY_WEBSOCKET': account_config.get('ws_proxy', '')
+                            },
+                            'params': account_config['params']
+                        }
+                        config_manager.add_account(file_config)
+                    except:
+                        pass  # 配置文件保存失败不影响主流程
+                    
+                    return jsonify({
+                        'success': True,
+                        'message': '添加做市账号成功'
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': '添加做市账号失败（账号名称可能已存在）'
+                    }), 400
+            except Exception as db_error:
+                logger.warning(f"数据库操作失败，使用配置文件: {db_error}")
+                # 回退到配置文件方式
+                from core.market_maker.config_manager import MarketMakerConfigManager
+                config_manager = MarketMakerConfigManager()
+                
+                account_config = {
+                    'name': data.get('name'),
+                    'exchange': data.get('exchange', 'backpack'),
+                    'market_type': data.get('market_type', 'spot'),
+                    'symbols': data.get('symbols', []),
+                    'env': {
+                        'BACKPACK_KEY': data.get('api_key', ''),
+                        'BACKPACK_SECRET': data.get('api_secret', ''),
+                        'BASE_URL': data.get('base_url', 'https://api.backpack.work'),
+                        'BACKPACK_PROXY_WEBSOCKET': data.get('ws_proxy', '')
+                    },
+                    'params': data.get('params', {})
+                }
+                
+                success = config_manager.add_account(account_config)
+                
+                if success:
+                    return jsonify({
+                        'success': True,
+                        'message': '添加做市账号成功'
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': '添加做市账号失败'
+                    }), 500
+        except Exception as e:
+            logger.error(f"添加做市账号失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'message': f'添加做市账号失败: {str(e)}'
+            }), 500
+    
+    @app.route('/api/v1/market-maker/accounts/<account_name>/start', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def start_market_maker_account(account_name):
+        """启动做市账号"""
+        try:
+            # 获取当前用户ID
+            user_id = None
+            if AUTH_MODULE_AVAILABLE:
+                user_id = get_current_user_id()
+            if not user_id:
+                user_id = session.get('user_id') if hasattr(session, 'get') else None
+            
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录或用户信息无效'
+                }), 401
+            
+            # 验证账号所有权
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                target_account = db_manager.get_account(account_name, user_id)
+                
+                if not target_account:
+                    # 回退到配置文件方式
+                    from core.market_maker.process_manager import MarketMakerProcessManager
+                    manager = MarketMakerProcessManager()
+                    file_accounts = manager.config_manager.load_accounts()
+                    target_account = None
+                    for account in file_accounts:
+                        if account.get('name') == account_name:
+                            target_account = account
+                            break
+                    
+                    if not target_account:
+                        return jsonify({
+                            'success': False,
+                            'message': '账号不存在或无权访问'
+                        }), 404
+            except:
+                # 回退到配置文件方式
+                from core.market_maker.process_manager import MarketMakerProcessManager
+                manager = MarketMakerProcessManager()
+                file_accounts = manager.config_manager.load_accounts()
+                target_account = None
+                for account in file_accounts:
+                    if account.get('name') == account_name:
+                        target_account = account
+                        break
+                
+                if not target_account:
+                    return jsonify({
+                        'success': False,
+                        'message': '账号不存在'
+                    }), 404
+            
+            # 转换为进程管理器需要的格式
+            if 'api_key' in target_account:
+                # 数据库格式
+                account_for_process = {
+                    'name': target_account['name'],
+                    'exchange': target_account.get('exchange', 'backpack'),
+                    'market_type': target_account.get('market_type', 'spot'),
+                    'symbols': target_account.get('symbols', []),
+                    'env': {
+                        'BACKPACK_KEY': target_account.get('api_key', ''),
+                        'BACKPACK_SECRET': target_account.get('api_secret', ''),
+                        'BASE_URL': target_account.get('base_url', 'https://api.backpack.work'),
+                        'BACKPACK_PROXY_WEBSOCKET': target_account.get('ws_proxy', '')
+                    },
+                    'params': target_account.get('params', {})
+                }
+            else:
+                # 配置文件格式
+                account_for_process = target_account
+            
+            # 启动所有交易对
+            from core.market_maker.process_manager import MarketMakerProcessManager
+            manager = MarketMakerProcessManager()
+            symbols = account_for_process.get('symbols', [])
+            success_count = 0
+            
+            for symbol in symbols:
+                if manager.start_account(account_for_process, symbol, 1):
+                    success_count += 1
+                    # 更新状态到数据库
+                    try:
+                        from core.market_maker.db_manager import MarketMakerDBManager
+                        db_mgr = MarketMakerDBManager()
+                        account_key = manager.get_account_key(account_name, symbol)
+                        process_id = manager.processes.get(account_key).pid if account_key in manager.processes else None
+                        db_mgr.update_account_status(account_name, symbol, 'running', process_id)
+                    except:
+                        pass
+            
+            if success_count > 0:
+                return jsonify({
+                    'success': True,
+                    'message': f'启动做市账号成功 ({success_count}/{len(symbols)})'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '启动做市账号失败'
+                }), 500
+        except Exception as e:
+            logger.error(f"启动做市账号失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'message': f'启动做市账号失败: {str(e)}'
+            }), 500
+    
+    @app.route('/api/v1/market-maker/accounts/<account_name>/stop', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def stop_market_maker_account(account_name):
+        """停止做市账号"""
+        try:
+            # 获取当前用户ID
+            user_id = None
+            if AUTH_MODULE_AVAILABLE:
+                user_id = get_current_user_id()
+            if not user_id:
+                user_id = session.get('user_id') if hasattr(session, 'get') else None
+            
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录或用户信息无效'
+                }), 401
+            
+            # 验证账号所有权并获取交易对列表
+            symbols = []
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                target_account = db_manager.get_account(account_name, user_id)
+                
+                if target_account:
+                    symbols = target_account.get('symbols', [])
+                else:
+                    # 回退到配置文件方式
+                    from core.market_maker.process_manager import MarketMakerProcessManager
+                    manager = MarketMakerProcessManager()
+                    file_accounts = manager.config_manager.load_accounts()
+                    for account in file_accounts:
+                        if account.get('name') == account_name:
+                            symbols = account.get('symbols', [])
+                            break
+            except:
+                # 回退到配置文件方式
+                from core.market_maker.process_manager import MarketMakerProcessManager
+                manager = MarketMakerProcessManager()
+                file_accounts = manager.config_manager.load_accounts()
+                for account in file_accounts:
+                    if account.get('name') == account_name:
+                        symbols = account.get('symbols', [])
+                        break
+            
+            if not symbols:
+                return jsonify({
+                    'success': False,
+                    'message': '账号不存在或无权访问'
+                }), 404
+            
+            # 停止所有交易对
+            from core.market_maker.process_manager import MarketMakerProcessManager
+            manager = MarketMakerProcessManager()
+            success_count = 0
+            
+            for symbol in symbols:
+                account_key = manager.get_account_key(account_name, symbol)
+                if account_key in manager.processes:
+                    manager.stop_process(account_key)
+                    success_count += 1
+                    # 更新状态到数据库
+                    try:
+                        from core.market_maker.db_manager import MarketMakerDBManager
+                        db_mgr = MarketMakerDBManager()
+                        db_mgr.update_account_status(account_name, symbol, 'stopped')
+                    except:
+                        pass
+            
+            if success_count > 0:
+                return jsonify({
+                    'success': True,
+                    'message': f'停止做市账号成功 ({success_count}/{len(symbols)})'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '账号未运行'
+                }), 400
+        except Exception as e:
+            logger.error(f"停止做市账号失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': f'停止做市账号失败: {str(e)}'
+            }), 500
+    
+    @app.route('/api/v1/market-maker/accounts/<account_name>', methods=['DELETE'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def delete_market_maker_account(account_name):
+        """删除做市账号"""
+        try:
+            # 获取当前用户ID
+            user_id = None
+            if AUTH_MODULE_AVAILABLE:
+                user_id = get_current_user_id()
+            if not user_id:
+                user_id = session.get('user_id') if hasattr(session, 'get') else None
+            
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录或用户信息无效'
+                }), 401
+            
+            # 先停止账号
+            from core.market_maker.process_manager import MarketMakerProcessManager
+            manager = MarketMakerProcessManager()
+            
+            # 获取账号的交易对列表
+            symbols = []
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                target_account = db_manager.get_account(account_name, user_id)
+                
+                if target_account:
+                    symbols = target_account.get('symbols', [])
+                else:
+                    # 回退到配置文件方式
+                    file_accounts = manager.config_manager.load_accounts()
+                    for account in file_accounts:
+                        if account.get('name') == account_name:
+                            symbols = account.get('symbols', [])
+                            break
+            except:
+                # 回退到配置文件方式
+                file_accounts = manager.config_manager.load_accounts()
+                for account in file_accounts:
+                    if account.get('name') == account_name:
+                        symbols = account.get('symbols', [])
+                        break
+            
+            # 停止所有交易对
+            for symbol in symbols:
+                account_key = manager.get_account_key(account_name, symbol)
+                if account_key in manager.processes:
+                    manager.stop_process(account_key)
+            
+            # 删除配置（优先数据库）
+            success = False
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                success = db_manager.delete_account(account_name, user_id)
+            except:
+                pass
+            
+            # 如果数据库删除失败，尝试删除配置文件
+            if not success:
+                try:
+                    from core.market_maker.config_manager import MarketMakerConfigManager
+                    config_manager = MarketMakerConfigManager()
+                    success = config_manager.remove_account(account_name)
+                except:
+                    pass
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': '删除做市账号成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '删除做市账号失败（账号不存在或无权访问）'
+                }), 404
+        except Exception as e:
+            logger.error(f"删除做市账号失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': f'删除做市账号失败: {str(e)}'
+            }), 500
+    
+    @app.route('/api/v1/market-maker/stats', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @require_permission('market_maker', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_market_maker_stats():
+        """获取当前用户的做市统计"""
+        try:
+            # 获取当前用户ID
+            user_id = None
+            if AUTH_MODULE_AVAILABLE:
+                user_id = get_current_user_id()
+            if not user_id:
+                user_id = session.get('user_id') if hasattr(session, 'get') else None
+            
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录或用户信息无效'
+                }), 401
+            
+            # 从数据库获取统计数据
+            try:
+                from core.market_maker.db_manager import MarketMakerDBManager
+                db_manager = MarketMakerDBManager()
+                accounts = db_manager.get_user_accounts(user_id)
+                
+                total_volume = 0.0
+                total_profit = 0.0
+                total_fees = 0.0
+                details = []
+                
+                for account in accounts:
+                    symbols = account.get('symbols', [])
+                    for symbol in symbols:
+                        stats = db_manager.get_account_stats(account['name'], symbol)
+                        if stats:
+                            buy_vol = stats.get('buy_volume', 0)
+                            sell_vol = stats.get('sell_volume', 0)
+                            volume = buy_vol + sell_vol
+                            profit = stats.get('realized_profit', 0)
+                            fees = stats.get('total_fees', 0)
+                            net_profit = stats.get('net_profit', 0)
+                            
+                            total_volume += volume
+                            total_profit += profit
+                            total_fees += fees
+                            
+                            details.append({
+                                'account_name': account['name'],
+                                'symbol': symbol,
+                                'buy_volume': f"{buy_vol:.4f}",
+                                'sell_volume': f"{sell_vol:.4f}",
+                                'maker_buy_volume': f"{stats.get('maker_buy_volume', 0):.4f}",
+                                'maker_sell_volume': f"{stats.get('maker_sell_volume', 0):.4f}",
+                                'taker_buy_volume': f"{stats.get('taker_buy_volume', 0):.4f}",
+                                'taker_sell_volume': f"{stats.get('taker_sell_volume', 0):.4f}",
+                                'realized_profit': f"{profit:.4f}",
+                                'fees': f"{fees:.4f}",
+                                'net_profit': f"{net_profit:.4f}"
+                            })
+                
+                net_profit = total_profit - total_fees
+                
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'total_volume': f"{total_volume:.4f}",
+                        'total_profit': f"{total_profit:.4f}",
+                        'total_fees': f"{total_fees:.4f}",
+                        'net_profit': f"{net_profit:.4f}",
+                        'details': details
+                    },
+                    'message': '获取做市统计成功'
+                })
+            except Exception as db_error:
+                logger.warning(f"数据库查询失败: {db_error}")
+                # 返回空统计
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'total_volume': '0',
+                        'total_profit': '0.00',
+                        'total_fees': '0.00',
+                        'net_profit': '0.00',
+                        'details': []
+                    },
+                    'message': '获取做市统计成功（暂无数据）'
+                })
+        except Exception as e:
+            logger.error(f"获取做市统计失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': f'获取做市统计失败: {str(e)}'
             }), 500

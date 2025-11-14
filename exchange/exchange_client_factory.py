@@ -13,6 +13,8 @@ from .binance.binance_rest_client import BinanceRESTClient
 from .binance.binance_ws_client import BinanceWebSocketClient
 from .bybit.bybit_rest_client import BybitRESTClient
 from .bybit.bybit_ws_client import BybitWebSocketClient
+from .hyperliquid.hyperliquid_rest_client import HyperliquidRESTClient
+from .hyperliquid.hyperliquid_ws_client import HyperliquidWebSocketClient
 from utils.logger import logger
 
 
@@ -41,6 +43,8 @@ class ExchangeClientFactory:
             return BinanceRESTClient(api_key, api_secret, passphrase, is_demo)
         elif exchange == ExchangeType.BYBIT:
             return BybitRESTClient(api_key, api_secret, passphrase, is_demo)
+        elif exchange == ExchangeType.HYPERLIQUID:
+            return HyperliquidRESTClient(api_key, api_secret, passphrase, is_demo)
         else:
             raise ValueError(f"不支持的交易所类型: {exchange}")
     
@@ -66,6 +70,8 @@ class ExchangeClientFactory:
             return BinanceWebSocketClient(api_key, api_secret, passphrase, is_demo)
         elif exchange == ExchangeType.BYBIT:
             return BybitWebSocketClient(api_key, api_secret, passphrase, is_demo)
+        elif exchange == ExchangeType.HYPERLIQUID:
+            return HyperliquidWebSocketClient(api_key, api_secret, passphrase, is_demo)
         else:
             raise ValueError(f"不支持的交易所类型: {exchange}")
     

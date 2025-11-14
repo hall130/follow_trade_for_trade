@@ -1,6 +1,14 @@
 """
-策略自动扫描器
-自动发现和注册 strategies 目录下的所有策略类
+策略自动扫描器（已弃用）
+
+⚠️ 注意：此模块已弃用，功能已被 strategy_loader.StrategyLoader 替代
+此文件保留仅用于向后兼容，新的代码应该使用：
+- strategy_loader.get_strategy_loader() - 统一加载系统策略和用户策略
+- user_strategy_manager.get_user_strategy_manager() - 管理用户策略
+
+建议迁移：
+- 使用 strategy_loader 替代此模块的所有功能
+- 所有API端点已迁移到新架构
 """
 
 import os
@@ -11,8 +19,10 @@ from pathlib import Path
 from typing import Dict, List, Type, Optional, Any
 from dataclasses import dataclass
 
-from .core.strategy import IStrategy, BaseStrategy
-from .strategies.base import StrategyBase
+from .base_strategy import BaseStrategy, MarketData, Signal
+
+# IStrategy 接口已统一到 BaseStrategy（向后兼容）
+IStrategy = BaseStrategy
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -241,8 +251,8 @@ class StrategyScanner:
 from typing import Dict, Any
 from datetime import datetime
 
-from ..base import StrategyBase
-from core.strategy_trade.core.strategy import Signal, MarketData
+from ..strategies.base import StrategyBase
+from ..base_strategy import Signal, MarketData
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
