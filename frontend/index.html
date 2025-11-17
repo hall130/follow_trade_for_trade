@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>千里金量化交易系统</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
@@ -59,29 +62,25 @@
                 
                 <!-- 账户管理 -->
                 <li class="nav-item">
-                    <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#accountMenu" aria-expanded="false" data-permission="customers" onclick="event.preventDefault();">
+                    <a class="nav-link" href="#" data-page="customers" data-permission="customers">
                         <i class="bi bi-people"></i>
                         <span>账户管理</span>
-                        <i class="bi bi-chevron-down ms-auto"></i>
                     </a>
-                    <ul class="collapse" id="accountMenu">
-                        <li><a class="nav-link sub-item" href="#" data-page="customers" data-permission="customers">
-                            <i class="bi bi-person-lines-fill"></i> 客户管理
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="positions" data-permission="customers">
-                            <i class="bi bi-bag-check"></i> 当前持仓
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="trades" data-permission="customers">
-                            <i class="bi bi-graph-up"></i> 交易记录
-                        </a></li>
-                    </ul>
                 </li>
                 
-                <!-- 跟单交易 -->
+                <!-- 跟单交易（限价跟单） -->
+                <li class="nav-item">
+                    <a class="nav-link" href="#" data-page="limit-follow" data-permission="limit_follow">
+                        <i class="bi bi-arrow-repeat"></i>
+                        <span>跟单交易</span>
+                    </a>
+                </li>
+                
+                <!-- 信号交易 -->
                 <li class="nav-item">
                     <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#signalMenu" aria-expanded="false" data-permission="signal_sources" onclick="event.preventDefault();">
                         <i class="bi bi-broadcast"></i>
-                        <span>跟单交易</span>
+                        <span>信号交易</span>
                         <i class="bi bi-chevron-down ms-auto"></i>
                     </a>
                     <ul class="collapse" id="signalMenu">
@@ -89,11 +88,14 @@
                             <i class="bi bi-broadcast"></i> 信号源管理
                         </a></li>
                         <li><a class="nav-link sub-item" href="#" data-page="signal-trades" data-permission="signal_sources">
-                            <i class="bi bi-broadcast-pin"></i> 信号交易
+                            <i class="bi bi-broadcast-pin"></i> 信号源交易
                         </a></li>
                         <li><hr class="dropdown-divider"></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="limit-follow" data-permission="limit_follow">
-                            <i class="bi bi-arrow-repeat"></i> 限价跟单
+                        <li><a class="nav-link sub-item" href="#" data-page="positions" data-permission="customers">
+                            <i class="bi bi-bag-check"></i> 当前持仓
+                        </a></li>
+                        <li><a class="nav-link sub-item" href="#" data-page="trades" data-permission="customers">
+                            <i class="bi bi-graph-up"></i> 交易记录
                         </a></li>
                     </ul>
                 </li>
@@ -4646,6 +4648,7 @@
                                 <option value="telegram">Telegram</option>
                                 <option value="dingtalk">钉钉</option>
                                 <option value="wechat">微信</option>
+                                <option value="wechat_official">微信公众号</option>
                                 <option value="bicoin">币coin</option>
                                 <option value="coinglass">CoinGlass (巨鲸提醒)</option>
                                 <option value="tradingview">TradingView (信号提醒)</option>
@@ -4819,6 +4822,40 @@
                                 <label class="form-check-label" for="wechatHotReload">
                                     启用热登录（保存登录状态）
                                 </label>
+                            </div>
+                        </div>
+
+                        <!-- 微信公众号配置 -->
+                        <div id="wechat_officialConfig" class="platform-config" style="display: none;">
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i> <strong>微信公众号配置</strong><br>
+                                <small>配置微信公众号用于接收和发送消息。需要先在微信公众平台配置服务器URL。</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="wechat_officialAppId" class="form-label">AppID <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" id="wechat_officialAppId" placeholder="wxca0a7ba829d1bd7b" required>
+                                <small class="text-muted">从微信公众平台"开发" -> "基本配置"获取</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="wechat_officialAppSecret" class="form-label">AppSecret <span class="text-danger">*</span></label>
+                                <input type="password" class="form-control" id="wechat_officialAppSecret" placeholder="输入AppSecret" required>
+                                <small class="text-muted">从微信公众平台"开发" -> "基本配置"获取，需要妥善保管</small>
+                            </div>
+                            <div class="mb-3">
+                                <label for="wechat_officialToken" class="form-label">Token（服务器验证）</label>
+                                <input type="text" class="form-control" id="wechat_officialToken" placeholder="设置一个随机字符串用于验证">
+                                <small class="text-muted">用于微信服务器验证，建议使用随机字符串。需要在微信公众平台"服务器配置"中填写相同的Token</small>
+                            </div>
+                            <div class="alert alert-warning">
+                                <i class="bi bi-exclamation-triangle"></i> <strong>服务器配置步骤：</strong><br>
+                                <small>
+                                    1. 保存配置后，在微信公众平台"开发" -> "基本配置" -> "服务器配置"中配置：<br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;URL: <code>https://your-domain.com/webhook/wechat_official</code><br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;Token: 与上面填写的Token一致<br>
+                                    &nbsp;&nbsp;&nbsp;&nbsp;消息加解密方式: 选择"明文模式"<br>
+                                    2. 点击"提交"进行验证<br>
+                                    3. 验证成功后，用户关注或发送消息时，系统会自动记录用户的openid
+                                </small>
                             </div>
                         </div>
 

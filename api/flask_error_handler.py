@@ -96,15 +96,20 @@ def safe_async_call(func):
             
             # 运行异步函数
             if loop.is_running():
-                # 如果循环正在运行，使用 run_coroutine_threadsafe
+                # 如果循环正在运行，在专用线程中运行
                 import concurrent.futures
                 future = concurrent.futures.Future()
                 def run_in_thread():
+                    # 在新线程中创建新的事件循环
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
                     try:
-                        result = loop.run_until_complete(func(*args, **kwargs))
+                        result = new_loop.run_until_complete(func(*args, **kwargs))
                         future.set_result(result)
                     except Exception as e:
                         future.set_exception(e)
+                    finally:
+                        new_loop.close()
                 
                 thread = threading.Thread(target=run_in_thread, daemon=True)
                 thread.start()
@@ -115,7 +120,26 @@ def safe_async_call(func):
                 
                 return future.result()
             else:
-                return loop.run_until_complete(func(*args, **kwargs))
+                # 事件循环存在但未运行
+                # 为了安全，也在专用线程中运行（避免 gevent 相关问题）
+                import concurrent.futures
+                future = concurrent.futures.Future()
+                def run_in_thread():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(func(*args, **kwargs))
+                        future.set_result(result)
+                    except Exception as e:
+                        future.set_exception(e)
+                    finally:
+                        new_loop.close()
+                thread = threading.Thread(target=run_in_thread, daemon=True)
+                thread.start()
+                thread.join(timeout=30)
+                if thread.is_alive():
+                    raise TimeoutError("异步调用超时")
+                return future.result()
                 
         except Exception as e:
             logger.error(f"[安全异步调用] 执行失败: {e}")

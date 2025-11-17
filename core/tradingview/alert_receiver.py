@@ -144,34 +144,100 @@ class TradingViewAlertReceiver:
             self.trade_stats['failed_trades'] += 1
     
     def _parse_alert_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """解析Alert数据"""
+        """解析Alert数据（支持多种格式）"""
         try:
-            # 提取基本信息
-            symbol = data.get('symbol', '').upper()
+            # 方法1：尝试从标准字段提取
+            symbol = data.get('symbol') or data.get('ticker', '').upper()
             action = data.get('action', '').upper()
-            price = data.get('price', 0)
-            quantity = data.get('quantity', 0)
+            direct = data.get('direct', '').upper()  # 方向：LONG/SHORT
+            price = data.get('price') or data.get('close', 0)
+            quantity = data.get('quantity') or data.get('size') or data.get('amount', 0)
             message = data.get('message', '')
             
-            # 验证必要字段
+            # 方法2：如果标准字段为空，尝试从 Pine Script 变量提取
+            if not symbol and 'ticker' in data:
+                symbol = str(data['ticker']).upper()
+            if not price and 'close' in data:
+                try:
+                    price = float(data['close'])
+                except (ValueError, TypeError):
+                    price = 0
+            if not action:
+                # 尝试从 strategy.order.action 提取
+                action = data.get('strategy.order.action', '').upper()
+                if not action:
+                    # 尝试从消息中提取
+                    action = self._extract_action_from_message(message)
+            
+            # 方法3：如果仍然没有，尝试从消息中解析（支持分隔符格式）
             if not symbol or not action or not price:
-                logger.warning(f"Alert缺少必要字段: symbol={symbol}, action={action}, price={price}")
+                parsed = self._parse_message_format(message)
+                if parsed:
+                    symbol = parsed.get('symbol') or symbol
+                    action = parsed.get('action') or action
+                    price = parsed.get('price') or price
+                    quantity = parsed.get('quantity') or quantity
+            
+            # 验证必要字段
+            if not symbol:
+                logger.warning(f"Alert缺少交易对: data={data}")
+                return None
+            if not action:
+                logger.warning(f"Alert缺少交易动作: data={data}")
+                return None
+            if not price or price <= 0:
+                logger.warning(f"Alert价格无效: price={price}, data={data}")
                 return None
             
             # 标准化交易对格式
             if not symbol.endswith('USDT') and not symbol.endswith('BTC') and not symbol.endswith('ETH'):
                 symbol = f"{symbol}USDT"
             
-            # 解析交易动作
-            if action in ['BUY', 'LONG', '开多', '做多', '买入']:
-                trade_action = 'buy'
-            elif action in ['SELL', 'SHORT', '开空', '做空', '卖出']:
-                trade_action = 'sell'
-            elif action in ['CLOSE', '平仓', '关闭']:
-                trade_action = 'close'
+            # 解析交易动作（考虑 direct 字段）
+            # 如果提供了 direct 字段，结合 action 和 direct 来判断实际交易动作
+            # 例如：action=SELL + direct=LONG = 平多仓（close long）
+            #      action=BUY + direct=LONG = 开多仓（buy/long）
+            #      action=SELL + direct=SHORT = 开空仓（sell/short）
+            #      action=BUY + direct=SHORT = 平空仓（close short）
+            
+            if direct:
+                # 有 direct 字段，需要结合 action 和 direct 判断
+                if direct in ['LONG', '多', '做多']:
+                    if action in ['BUY', '买入']:
+                        trade_action = 'buy'  # 开多
+                    elif action in ['SELL', '卖出']:
+                        trade_action = 'close'  # 平多
+                    else:
+                        trade_action = 'buy'  # 默认开多
+                elif direct in ['SHORT', '空', '做空']:
+                    if action in ['SELL', '卖出']:
+                        trade_action = 'sell'  # 开空
+                    elif action in ['BUY', '买入']:
+                        trade_action = 'close'  # 平空
+                    else:
+                        trade_action = 'sell'  # 默认开空
+                else:
+                    # direct 字段值未知，回退到只根据 action 判断
+                    if action in ['BUY', 'LONG', '开多', '做多', '买入']:
+                        trade_action = 'buy'
+                    elif action in ['SELL', 'SHORT', '开空', '做空', '卖出']:
+                        trade_action = 'sell'
+                    elif action in ['CLOSE', '平仓', '关闭']:
+                        trade_action = 'close'
+                    else:
+                        logger.warning(f"未知的交易动作: action={action}, direct={direct}")
+                        return None
             else:
-                logger.warning(f"未知的交易动作: {action}")
-                return None
+                # 没有 direct 字段，只根据 action 判断
+                if action in ['BUY', 'LONG', '开多', '做多', '买入']:
+                    trade_action = 'buy'
+                elif action in ['SELL', 'SHORT', '开空', '做空', '卖出']:
+                    trade_action = 'sell'
+                elif action in ['CLOSE', '平仓', '关闭']:
+                    trade_action = 'close'
+                else:
+                    logger.warning(f"未知的交易动作: {action}")
+                    return None
             
             # 解析数量
             if not quantity or quantity <= 0:
@@ -189,7 +255,8 @@ class TradingViewAlertReceiver:
                 'alert_name': data.get('alert_name', ''),
                 'strategy': data.get('strategy', 'TradingView'),
                 'timestamp': datetime.now(),
-                'original_data': data
+                'original_data': data,
+                'direct': direct if direct else None  # 保存原始方向信息
             }
             
             logger.info(f"Alert解析成功: {trade_info}")
@@ -197,6 +264,72 @@ class TradingViewAlertReceiver:
             
         except Exception as e:
             logger.error(f"解析Alert数据失败: {e}")
+            return None
+    
+    def _extract_action_from_message(self, message: str) -> str:
+        """从消息中提取交易动作"""
+        try:
+            import re
+            message_upper = message.upper()
+            
+            # 买入动作
+            if any(keyword in message_upper for keyword in ['BUY', 'LONG', '开多', '做多', '买入', '买']):
+                return 'BUY'
+            # 卖出动作
+            elif any(keyword in message_upper for keyword in ['SELL', 'SHORT', '开空', '做空', '卖出', '卖']):
+                return 'SELL'
+            # 平仓动作
+            elif any(keyword in message_upper for keyword in ['CLOSE', '平仓', '关闭', '平']):
+                return 'CLOSE'
+            
+            return ''
+            
+        except Exception as e:
+            logger.error(f"提取交易动作失败: {e}")
+            return ''
+    
+    def _parse_message_format(self, message: str) -> Optional[Dict[str, Any]]:
+        """解析分隔符格式的消息（如：BTCUSDT|50000|BUY|0.1|ASR信号）"""
+        try:
+            import re
+            
+            if not message:
+                return None
+            
+            # 尝试分隔符格式：symbol|price|action|quantity|message
+            parts = message.split('|')
+            if len(parts) >= 3:
+                parsed = {}
+                if len(parts) > 0:
+                    parsed['symbol'] = parts[0].strip().upper()
+                if len(parts) > 1:
+                    try:
+                        parsed['price'] = float(parts[1].strip())
+                    except (ValueError, TypeError):
+                        pass
+                if len(parts) > 2:
+                    parsed['action'] = parts[2].strip().upper()
+                if len(parts) > 3:
+                    try:
+                        parsed['quantity'] = float(parts[3].strip())
+                    except (ValueError, TypeError):
+                        pass
+                return parsed
+            
+            # 尝试其他格式：symbol price action quantity
+            pattern = r'([A-Z0-9]+(?:USDT|BTC|ETH)?)\s+([\d.]+)\s+(BUY|SELL|LONG|SHORT|CLOSE|买|卖|开多|开空|平仓)'
+            match = re.search(pattern, message.upper())
+            if match:
+                return {
+                    'symbol': match.group(1),
+                    'price': float(match.group(2)),
+                    'action': match.group(3)
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"解析消息格式失败: {e}")
             return None
     
     def _extract_quantity_from_message(self, message: str) -> Optional[float]:
@@ -228,68 +361,73 @@ class TradingViewAlertReceiver:
     async def _execute_trade(self, trade_info: Dict[str, Any]) -> bool:
         """执行交易"""
         try:
-            if not self.trade_service:
-                logger.error("交易服务未初始化")
-                return False
-            
             symbol = trade_info['symbol']
             action = trade_info['action']
             price = trade_info['price']
             quantity = trade_info['quantity']
             
-            logger.info(f"执行交易: {symbol} {action} @ {price} 数量: {quantity}")
+            logger.info(f"收到 TradingView 交易信号: {symbol} {action} @ {price} 数量: {quantity}")
             
-            # 构建订单参数
-            order_params = {
-                'symbol': symbol,
-                'side': action,
-                'order_type': 'market',  # 市价单
-                'quantity': quantity,
-                'price': price,
-                'metadata': {
-                    'source': 'TradingView',
-                    'alert_name': trade_info['alert_name'],
-                    'strategy': trade_info['strategy'],
-                    'message': trade_info['message']
-                }
-            }
+            # 注意：TradingView webhook 目前只记录警报，不直接执行交易
+            # 如果需要执行交易，需要：
+            # 1. 配置默认交易账户（API 密钥等）
+            # 2. 或者通过消息转发系统触发跟单交易
             
-            # 执行订单
-            order_result = await self.trade_service.place_order(**order_params)
+            # 记录交易信号到日志
+            logger.info(f"📊 TradingView 交易信号详情:")
+            logger.info(f"   - 交易对: {symbol}")
+            logger.info(f"   - 动作: {action}")
+            logger.info(f"   - 价格: {price}")
+            logger.info(f"   - 数量: {quantity}")
+            logger.info(f"   - 策略: {trade_info.get('strategy', 'TradingView')}")
+            logger.info(f"   - 警报名称: {trade_info.get('alert_name', '')}")
+            logger.info(f"   - 消息: {trade_info.get('message', '')}")
             
-            if order_result and order_result.get('success'):
-                logger.info(f"✅ 交易执行成功: {order_result}")
-                return True
-            else:
-                logger.error(f"❌ 交易执行失败: {order_result}")
-                return False
+            # TODO: 如果需要直接执行交易，可以在这里添加逻辑
+            # 例如：使用配置的默认账户通过交易所客户端下单
+            
+            # 目前返回 True 表示信号已接收（但不执行实际交易）
+            logger.warning("⚠️ TradingView webhook 目前只记录信号，不执行实际交易。如需执行交易，请配置交易账户或使用消息转发系统。")
+            return True
                 
         except Exception as e:
-            logger.error(f"执行交易异常: {e}")
+            logger.error(f"处理 TradingView 交易信号异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     async def _send_trade_notification(self, trade_info: Dict[str, Any], success: bool):
-        """发送交易通知"""
+        """发送交易信号通知（消息转发）"""
         try:
             if not self.message_manager:
+                logger.debug("消息管理器未初始化，跳过消息转发")
                 return
             
-            # 构建通知消息
-            status_emoji = "✅" if success else "❌"
-            status_text = "成功" if success else "失败"
+            # 构建通知消息（当前只转发信号，不执行交易）
+            # 格式化动作显示（包含方向信息）
+            action_display = trade_info['action'].upper()
+            if trade_info.get('direct'):
+                direct_display = trade_info['direct']
+                if trade_info['action'] == 'close':
+                    action_display = f"平仓 ({direct_display})"
+                elif trade_info['action'] == 'buy' and direct_display == 'LONG':
+                    action_display = f"开多 ({direct_display})"
+                elif trade_info['action'] == 'sell' and direct_display == 'SHORT':
+                    action_display = f"开空 ({direct_display})"
+                else:
+                    action_display = f"{action_display} ({direct_display})"
             
             message_content = f"""
-{status_emoji} TradingView交易{status_text}
+📊 TradingView 交易信号
 
-📊 交易信息:
 • 交易对: {trade_info['symbol']}
-• 动作: {trade_info['action']}
+• 动作: {action_display}
 • 价格: {trade_info['price']}
 • 数量: {trade_info['quantity']}
-• 策略: {trade_info['strategy']}
-• Alert: {trade_info['alert_name']}
+• 策略: {trade_info.get('strategy', 'TradingView')}
+• 警报名称: {trade_info.get('alert_name', '未命名')}
 
-💬 消息: {trade_info['message']}
+💬 消息: {trade_info.get('message', '无')}
 ⏰ 时间: {trade_info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}
             """
             
@@ -297,22 +435,26 @@ class TradingViewAlertReceiver:
             message = Message(
                 content=message_content.strip(),
                 message_type=MessageType.TEXT,
-                source_platform=PlatformType.SYSTEM,
-                source_chat_id="tradingview_alert",
-                source_user_id="system",
-                source_username="TradingView Alert",
+                source_platform=PlatformType.TRADINGVIEW,  # 使用 TradingView 平台类型
+                source_chat_id="tradingview_webhook",
+                source_user_id="tradingview",
+                source_username="TradingView",
                 extra_data={
                     'trade_info': trade_info,
-                    'success': success,
-                    'source': 'TradingView'
+                    'source': 'TradingView',
+                    'signal_received': True
                 }
             )
             
-            # 发送通知
-            await self.message_manager.forward_message(message)
+            # 发送通知（转发消息）
+            # 使用 _on_message_received 方法，它会自动应用转发规则
+            await self.message_manager._on_message_received(message)
+            logger.info("✅ TradingView 信号已转发到消息转发系统")
             
         except Exception as e:
-            logger.error(f"发送交易通知失败: {e}")
+            logger.error(f"发送 TradingView 信号通知失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def update_config(self, key: str, value: Any) -> bool:
         """更新配置"""

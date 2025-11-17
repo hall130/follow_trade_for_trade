@@ -544,18 +544,26 @@ def start_market_maker():
     
     # 启动所有账号
     if not manager.start_all():
-        logger.error("启动刷单模块失败：没有找到账号配置")
-        logger.info("请创建配置文件: market_maker_accounts.json")
-        return
-    
-    logger.info("[刷单模块] 所有账号已启动，按 Ctrl+C 停止")
-    
-    try:
-        # 监控进程状态
-        manager.monitor()
-    except KeyboardInterrupt:
-        logger.info("\n[刷单模块] 收到键盘中断，正在关闭...")
-        manager.stop_all()
+        logger.warning("⚠️ 启动刷单模块失败：没有找到账号配置")
+        logger.info("💡 请创建配置文件: market_maker_accounts.json")
+        logger.info("💡 做市商服务将保持运行，等待配置文件...")
+        # 即使没有配置文件，也保持进程运行（用于 all 模式）
+        try:
+            while True:
+                time.sleep(60)  # 每分钟检查一次
+                # 可以在这里添加定期检查配置文件的逻辑
+        except KeyboardInterrupt:
+            logger.info("\n[刷单模块] 收到键盘中断，正在关闭...")
+            return
+    else:
+        logger.info("[刷单模块] 所有账号已启动，按 Ctrl+C 停止")
+        
+        try:
+            # 监控进程状态
+            manager.monitor()
+        except KeyboardInterrupt:
+            logger.info("\n[刷单模块] 收到键盘中断，正在关闭...")
+            manager.stop_all()
 
 def start_limit_follow():
     """启动限价跟单服务（仅监控，不启动API）"""
@@ -738,28 +746,31 @@ def main():
             logger.info("启动前端界面...")
             start_frontend()
         
-        # 启动三个后端进程（恢复多进程架构）
+        # 启动四个后端进程（恢复多进程架构）
         p1 = Process(target=start_flask)  # API服务器（包含消息转发服务）
         p2 = Process(target=start_trade)  # 交易模块（包含限价跟单监控）
         p3 = Process(target=start_strategy_trade)  # 策略交易模块
+        p4 = Process(target=start_market_maker)  # 做市商服务
         
         p1.start()
         p2.start()
         p3.start()
+        p4.start()
         
         try:
             # 等待所有子进程
             p1.join()
             p2.join()
             p3.join()
+            p4.join()
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
-            for p in (p1, p2, p3):
+            for p in (p1, p2, p3, p4):
                 try:
                     p.terminate()
                 except Exception:
                     pass
-            for p in (p1, p2, p3):
+            for p in (p1, p2, p3, p4):
                 try:
                     p.join(timeout=5)
                 except Exception:

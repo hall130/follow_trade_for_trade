@@ -30,7 +30,7 @@ class PopularTradersService:
         self.binance_collector = BinancePopularTraderCollector(
             self.config.get('binance', {})
         )
-        self.cache = get_cache(ttl=self.config.get('cache_ttl', 300))  # 默认5分钟缓存
+        self.cache = get_cache(ttl=self.config.get('cache_ttl', 1800))  # 默认30分钟缓存
         self.max_pages = self.config.get('max_pages', 4)  # 默认最多获取4页
     
     async def get_popular_traders(

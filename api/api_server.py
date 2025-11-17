@@ -482,6 +482,15 @@ def cache_query(ttl=CACHE_TTL):
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
 
+# 尝试应用 nest_asyncio 以支持嵌套事件循环（用于 gevent 环境）
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+    logger.info("✅ nest_asyncio 已应用，支持嵌套事件循环")
+except ImportError:
+    logger.warning("⚠️ nest_asyncio 未安装，某些异步功能可能无法在 gevent 环境中正常工作")
+    logger.warning("💡 建议安装: pip install nest-asyncio")
+
 # 设置全局错误处理
 setup_flask_error_handlers(app)
 
@@ -3582,19 +3591,16 @@ def force_update_customer_assets():
         trade_service = get_trade_service()
         
         # 异步调用强制更新
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            loop.run_until_complete(trade_service.force_update_customer_assets(customer_uid, is_demo))
-            return jsonify({
-                'success': 200,
-                'data': {'customer_uid': customer_uid or 'all'},
-                'message': f'Customer assets force updated successfully'
-            })
-        finally:
-            loop.close()
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        run_async_safe(
+            trade_service.force_update_customer_assets(customer_uid, is_demo),
+            timeout=60
+        )
+        return jsonify({
+            'success': 200,
+            'data': {'customer_uid': customer_uid or 'all'},
+            'message': f'Customer assets force updated successfully'
+        })
             
     except Exception as e:
         logger.error(f"Error force updating customer assets: {e}")
@@ -6062,16 +6068,10 @@ def get_popular_traders():
             'order': binance_order
         }
         
-        # 运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
+        # 运行异步函数（使用安全的方法，兼容 gevent）
         if limit:
             # 获取合并后的列表
-            traders = loop.run_until_complete(
+            traders = run_async_safe(
                 service.get_merged_popular_traders(
                     exchange=exchange,
                     limit=limit,
@@ -6079,7 +6079,8 @@ def get_popular_traders():
                     fetch_all=fetch_all,
                     use_cache=use_cache,
                     **kwargs
-                )
+                ),
+                timeout=120  # 热门带单员查询可能需要较长时间
             )
             
             return jsonify({
@@ -6091,13 +6092,14 @@ def get_popular_traders():
             })
         else:
             # 获取分交易所的列表
-            traders_dict = loop.run_until_complete(
+            traders_dict = run_async_safe(
                 service.get_popular_traders(
                     exchange=exchange,
                     fetch_all=fetch_all,
                     use_cache=use_cache,
                     **kwargs
-                )
+                ),
+                timeout=120
             )
             
             total = sum(len(traders) for traders in traders_dict.values())
@@ -6143,20 +6145,15 @@ def get_whale_traders():
         
         service = EchosyncService()
         
-        # 运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
             service.get_leaderboard(
                 sort_by=sort_by,
                 period_days=1,  # 使用1天数据
                 page_size=100,
                 use_cache=use_cache
-            )
+            ),
+            timeout=60
         )
         
         return jsonify(result)
@@ -6194,21 +6191,15 @@ def get_echosync_leaderboard():
         # 创建服务实例
         service = EchosyncService()
         
-        # 使用 asyncio 运行异步方法（在 Flask 线程中需要创建新的事件循环）
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
             service.get_leaderboard(
                 sort_by=sort_by,
                 period_days=period_days,
                 page_size=page_size,
                 use_cache=use_cache
-            )
+            ),
+            timeout=60
         )
         
         return jsonify(result)
@@ -6253,15 +6244,8 @@ def get_echosync_whale_orders():
         # 创建服务实例
         service = EchosyncService()
         
-        # 使用 asyncio 运行异步方法
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
             service.get_whale_orders(
                 min_trade_amount=min_trade_amount,
                 start_date=start_date,
@@ -6269,7 +6253,8 @@ def get_echosync_whale_orders():
                 page_size=page_size,
                 trade_type=trade_type,
                 use_cache=False  # 实时数据，不缓存
-            )
+            ),
+            timeout=60
         )
         
         return jsonify(result)
@@ -6318,15 +6303,8 @@ def get_echosync_whale_moves():
         # 创建服务实例
         service = EchosyncService()
         
-        # 使用 asyncio 运行异步方法
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
             service.get_whale_moves(
                 min_amount=min_amount,
                 max_amount=max_amount,
@@ -6334,7 +6312,8 @@ def get_echosync_whale_moves():
                 end_date=end_date,
                 page_size=page_size,
                 use_cache=False  # 实时数据，不缓存
-            )
+            ),
+            timeout=60
         )
         
         return jsonify(result)
@@ -6365,19 +6344,13 @@ def get_echosync_user_portfolio(address):
         # 创建服务实例
         service = EchosyncService()
         
-        # 使用 asyncio 运行异步方法
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
             service.get_user_portfolio(
                 user_address=address,
                 use_cache=True  # 用户详情可以缓存
-            )
+            ),
+            timeout=60
         )
         
         logger.info(f"[用户详情API] 获取成功，结果: success={result.get('success')}, data类型={type(result.get('data'))}")
@@ -9662,15 +9635,77 @@ def start_follow_monitor_in_background():
         # 创建跟单执行器
         executor = LimitFollowExecutor(db_pool)
         
-        # 在后台线程中启动监控
+        # 在后台线程中启动监控（在新线程中创建独立的事件循环）
         import threading
         import asyncio
         
         def run_monitoring_sync():
-            """同步运行异步监控"""
-            asyncio.run(executor.run_monitoring_async())
+            """在新线程中运行异步监控（无限循环）"""
+            new_loop = None
+            task = None
+            try:
+                # 在新线程中创建全新的事件循环
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                
+                # 创建监控任务（无限循环）
+                task = new_loop.create_task(executor.run_monitoring_async())
+                
+                # 直接运行任务（无限循环会一直运行）
+                # 如果任务内部发生异常导致事件循环关闭，run_until_complete 会抛出异常
+                try:
+                    new_loop.run_until_complete(task)
+                except (RuntimeError, asyncio.CancelledError) as e:
+                    # 事件循环关闭或任务被取消
+                    if "closed" in str(e).lower() or isinstance(e, asyncio.CancelledError):
+                        logger.info("跟单监控器已停止")
+                    else:
+                        raise
+                            
+            except KeyboardInterrupt:
+                logger.info("跟单监控器收到停止信号")
+            except Exception as e:
+                logger.error(f"跟单监控器线程异常: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            finally:
+                # 清理事件循环
+                if new_loop:
+                    try:
+                        # 取消任务（如果还在运行）
+                        if task and not task.done():
+                            task.cancel()
+                        
+                        # 取消所有待处理的任务
+                        if not new_loop.is_closed():
+                            try:
+                                pending = asyncio.all_tasks(new_loop)
+                                if pending:
+                                    for t in pending:
+                                        if not t.done():
+                                            t.cancel()
+                                    # 等待所有任务完成（忽略异常）
+                                    try:
+                                        new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                                    except (RuntimeError, asyncio.CancelledError):
+                                        pass
+                            except RuntimeError:
+                                pass  # 事件循环已关闭，忽略
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            if not new_loop.is_closed():
+                                new_loop.close()
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                asyncio.set_event_loop(None)
+                            except Exception:
+                                pass
         
-        monitor_thread = threading.Thread(target=run_monitoring_sync, daemon=True)
+        monitor_thread = threading.Thread(target=run_monitoring_sync, daemon=True, name="LimitFollowMonitor")
         monitor_thread.start()
         logger.info("跟单监控器已在后台启动")
         
@@ -9684,8 +9719,13 @@ strategy_manager = None
 strategy_loop = None
 strategy_thread = None
 
+# 全局异步执行器（用于在同步上下文中运行异步代码）
+_async_executor_loop = None
+_async_executor_thread = None
+_async_executor_lock = threading.Lock()
+
 def run_async_in_thread(coro):
-    """在专用线程中运行异步协程"""
+    """在专用线程中运行异步协程（用于策略交易）"""
     global strategy_loop, strategy_thread
     
     if strategy_loop is None or strategy_thread is None or not strategy_thread.is_alive():
@@ -9706,6 +9746,85 @@ def run_async_in_thread(coro):
     # 在事件循环中运行协程
     future = asyncio.run_coroutine_threadsafe(coro, strategy_loop)
     return future.result(timeout=30)  # 30秒超时
+
+def run_async_safe(coro, timeout=60):
+    """
+    在同步上下文中安全运行异步协程
+    
+    适用于 Gunicorn + gevent 环境，因为 gevent 已经创建了事件循环。
+    在 gevent 环境中，必须在新线程中创建完全独立的事件循环。
+    """
+    import concurrent.futures
+    import threading
+    
+    # 检测是否在 gevent 环境中（gevent 会创建一个正在运行的事件循环）
+    is_gevent = False
+    try:
+        # 尝试获取当前事件循环
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            is_gevent = True
+    except RuntimeError:
+        # 没有事件循环，不是 gevent 环境
+        pass
+    
+    # 在 gevent 环境中，必须在完全独立的线程中运行
+    # 使用 concurrent.futures.ThreadPoolExecutor 更可靠
+    future = concurrent.futures.Future()
+    
+    def run_in_thread():
+        """在新线程中运行，创建完全独立的事件循环"""
+        new_loop = None
+        try:
+            # 在新线程中创建全新的事件循环
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            
+            # 运行协程
+            result = new_loop.run_until_complete(coro)
+            future.set_result(result)
+            
+        except Exception as e:
+            # 记录错误
+            logger.error(f"[run_async_safe] 在新线程中运行异步协程失败: {e}")
+            import traceback
+            logger.error(f"[run_async_safe] 错误堆栈:\n{traceback.format_exc()}")
+            if not future.done():
+                future.set_exception(e)
+        finally:
+            # 清理事件循环
+            if new_loop:
+                try:
+                    # 取消所有待处理的任务
+                    try:
+                        pending = asyncio.all_tasks(new_loop)
+                        if pending:
+                            for task in pending:
+                                task.cancel()
+                            # 等待任务取消完成
+                            new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        new_loop.close()
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            asyncio.set_event_loop(None)
+                        except Exception:
+                            pass
+    
+    # 在新线程中运行
+    thread = threading.Thread(target=run_in_thread, daemon=True, name="AsyncSafeRunner")
+    thread.start()
+    thread.join(timeout=timeout)
+    
+    if thread.is_alive():
+        raise TimeoutError(f"异步调用超时（{timeout}秒）")
+    
+    return future.result()
 
 def get_strategy_manager(force_reload=False):
     """获取策略管理器实例"""
@@ -9868,14 +9987,11 @@ def get_strategy_instance(strategy_name):
         # 优先从数据库读取（包含完整配置）
         integration = get_strategy_trade_integration()
         if integration:
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            result = loop.run_until_complete(integration.api_get_strategy_config(strategy_name))
+            # 运行异步函数（使用安全的方法，兼容 gevent）
+            result = run_async_safe(
+                integration.api_get_strategy_config(strategy_name),
+                timeout=30
+            )
             if result.get('success'):
                 return jsonify(result)
         
@@ -11791,19 +11907,15 @@ def create_live_strategy():
         
         data = request.get_json()
         
-        # 使用 asyncio 运行异步函数
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(integration.api_create_strategy(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            integration.api_create_strategy(
             strategy_type=data.get('strategy_type'),
             name=data.get('name'),
             config=data.get('config', {})
-        ))
+            ),
+            timeout=30
+        )
         
         if result.get('success'):
             return jsonify(result), 201
@@ -11839,18 +11951,14 @@ def start_live_strategy(strategy_id):
         
         data = request.get_json() or {}
         
-        # 使用 asyncio 运行异步函数
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(integration.api_start_strategy(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            integration.api_start_strategy(
             strategy_id=strategy_id,
             config=data
-        ))
+            ),
+            timeout=30
+        )
         
         return jsonify(result)
         
@@ -11877,18 +11985,14 @@ def stop_live_strategy(strategy_id):
         data = request.get_json() if request.data else {}
         close_positions = data.get('close_positions', True)
         
-        # 使用 asyncio 运行异步函数
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(integration.api_stop_strategy(
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            integration.api_stop_strategy(
             strategy_id=strategy_id,
             close_positions=close_positions
-        ))
+            ),
+            timeout=30
+        )
         
         return jsonify(result)
         
@@ -11912,15 +12016,11 @@ def get_live_strategy_status(strategy_id):
                 'message': '策略交易服务未初始化'
             }), 503
         
-        # 使用 asyncio 运行异步函数
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(integration.api_get_strategy_status(strategy_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            integration.api_get_strategy_status(strategy_id),
+            timeout=30
+        )
         return jsonify(result)
         
     except Exception as e:
@@ -11943,15 +12043,11 @@ def list_live_strategies():
                 'message': '策略交易服务未初始化'
             }), 503
         
-        # 使用 asyncio 运行异步函数
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(integration.api_list_strategies())
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            integration.api_list_strategies(),
+            timeout=30
+        )
         return jsonify(result)
         
     except Exception as e:
@@ -11991,12 +12087,53 @@ except Exception as e:
 def get_message_forward_service():
     """
     获取消息转发服务实例
-    注意：此函数返回由 main.py 创建和管理的服务实例
-    不再每次创建新实例，确保服务的单例性
+    如果服务未初始化，尝试自动初始化（适用于 Gunicorn 环境）
     """
-    global _message_forward_service
+    global _message_forward_service, _message_forward_loop
+    
     if _message_forward_service is None:
-        raise RuntimeError("消息转发服务未初始化，请检查 main.py 的启动逻辑")
+        # 尝试自动初始化（适用于 Gunicorn 环境，不通过 main.py 启动）
+        if not MESSAGE_FORWARD_AVAILABLE:
+            raise RuntimeError("消息转发模块不可用")
+        
+        try:
+            logger.info("消息转发服务未初始化，尝试自动初始化...")
+            from database.db import get_db_pool
+            import threading
+            
+            db_pool = get_db_pool()
+            if not db_pool:
+                raise RuntimeError("数据库连接池不可用，无法初始化消息转发服务")
+            
+            # 创建服务实例
+            service = MessageForwardAPIService(db_pool)
+            
+            # 创建后台事件循环（在 gevent 环境中，不能使用 run_forever）
+            # 使用 run_async_safe 来启动服务
+            logger.info("正在启动消息转发服务...")
+            try:
+                result = run_async_safe(service.start_service(), timeout=60)
+                if result.get('success'):
+                    logger.info("✓ 消息转发服务启动成功")
+                    _message_forward_service = service
+                    return service
+                else:
+                    logger.warning(f"消息转发服务启动失败: {result.get('message')}")
+                    # 即使启动失败，也保存实例，允许后续手动启动
+                    _message_forward_service = service
+                    return service
+            except Exception as e:
+                logger.error(f"启动消息转发服务异常: {e}")
+                # 即使启动失败，也保存实例，允许后续手动启动
+                _message_forward_service = service
+                return service
+                
+        except Exception as e:
+            logger.error(f"自动初始化消息转发服务失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise RuntimeError(f"消息转发服务初始化失败: {str(e)}")
+    
     return _message_forward_service
 
 # ==================== Telegram监听服务 API ====================
@@ -12039,15 +12176,12 @@ def start_message_forward_service():
         }), 503
     
     try:
-        import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.start_service())
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.start_service(),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"启动服务失败: {e}")
@@ -12067,15 +12201,12 @@ def stop_message_forward_service():
         }), 503
     
     try:
-        import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.stop_service())
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.stop_service(),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"停止服务失败: {e}")
@@ -12129,13 +12260,11 @@ def add_message_platform():
             }), 400
         
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.add_platform(data))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.add_platform(data),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"添加平台失败: {e}")
@@ -12182,13 +12311,11 @@ def update_message_platform(platform_id):
         data = request.get_json()
         
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.update_platform(platform_id, data))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.update_platform(platform_id, data),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"更新平台失败: {e}")
@@ -12212,13 +12339,11 @@ def delete_message_platform(platform_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.delete_platform(platform_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.delete_platform(platform_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 404
     except Exception as e:
         logger.error(f"删除平台失败: {e}")
@@ -12242,13 +12367,11 @@ def enable_message_platform(platform_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.enable_platform(platform_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.enable_platform(platform_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"启用平台失败: {e}")
@@ -12270,19 +12393,25 @@ def test_message_platform(platform_id):
         }), 503
     
     try:
-        import asyncio
         data = request.get_json() or {}
         duration = data.get('duration', 30)  # 默认测试30秒
         
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        # 超时时间：测试时间 + 20秒缓冲（确保有足够时间完成）
+        timeout = duration + 20
         try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.test_platform(platform_id, duration))
-        return jsonify(result), 200 if result['success'] else 500
+            result = run_async_safe(
+                service.test_platform(platform_id, duration),
+                timeout=timeout
+            )
+            return jsonify(result), 200 if result.get('success', False) else 500
+        except TimeoutError as e:
+            logger.error(f"测试平台超时: {e}")
+            return jsonify({
+                'success': False,
+                'message': f'测试超时（{timeout}秒），请稍后重试或减少测试时长'
+            }), 504
     except Exception as e:
         logger.error(f"测试平台失败: {e}")
         import traceback
@@ -12305,12 +12434,11 @@ def send_platform_login_code(platform_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.send_login_code(platform_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.send_login_code(platform_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"发送登录验证码失败: {e}")
@@ -12344,12 +12472,11 @@ def verify_platform_login_code(platform_id):
             }), 400
         
         service = get_message_forward_service()
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.verify_login_code(platform_id, phone_code, password))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.verify_login_code(platform_id, phone_code, password),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"验证登录验证码失败: {e}")
@@ -12371,14 +12498,12 @@ def get_platform_chats(platform_id):
         }), 503
     
     try:
-        import asyncio
         service = get_message_forward_service()
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.get_platform_chats(platform_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.get_platform_chats(platform_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"获取平台群组列表失败: {e}")
@@ -12409,12 +12534,11 @@ def add_monitored_chat(platform_id):
             }), 400
         
         service = get_message_forward_service()
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.add_monitored_chat(platform_id, data))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.add_monitored_chat(platform_id, data),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"添加监听群组失败: {e}")
@@ -12438,12 +12562,11 @@ def remove_monitored_chat(platform_id, chat_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.remove_monitored_chat(platform_id, chat_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.remove_monitored_chat(platform_id, chat_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"移除监听群组失败: {e}")
@@ -12465,15 +12588,12 @@ def disable_message_platform(platform_id):
         }), 503
     
     try:
-        import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.disable_platform(platform_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.disable_platform(platform_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"禁用平台失败: {e}")
@@ -12536,13 +12656,11 @@ def add_message_forward_rule():
             }), 400
         
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.add_rule(data))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.add_rule(data),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"添加规则失败: {e}")
@@ -12585,17 +12703,14 @@ def update_message_forward_rule(rule_id):
         }), 503
     
     try:
-        import asyncio
         data = request.get_json()
         
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.update_rule(rule_id, data))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.update_rule(rule_id, data),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"更新规则失败: {e}")
@@ -12619,13 +12734,11 @@ def delete_message_forward_rule(rule_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.delete_rule(rule_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.delete_rule(rule_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 404
     except Exception as e:
         logger.error(f"删除规则失败: {e}")
@@ -12649,13 +12762,11 @@ def enable_message_forward_rule(rule_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.enable_rule(rule_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.enable_rule(rule_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"启用规则失败: {e}")
@@ -12679,13 +12790,11 @@ def disable_message_forward_rule(rule_id):
     try:
         import asyncio
         service = get_message_forward_service()
-        # 在同步函数中运行异步函数
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(service.disable_rule(rule_id))
+        # 运行异步函数（使用安全的方法，兼容 gevent）
+        result = run_async_safe(
+            service.disable_rule(rule_id),
+            timeout=30
+        )
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"禁用规则失败: {e}")
@@ -12757,19 +12866,6 @@ def start_auto_cleanup_task():
     cleanup_thread.start()
     logger.info("[定时清理] 自动清理任务已启动")
 
-if __name__ == '__main__':
-    # 初始化数据库
-    init_db()
-    
-    # 启动跟单监控器
-    start_follow_monitor_in_background()
-    
-    # 启动自动清理任务
-    start_auto_cleanup_task()
-    
-    # 启动Flask应用
-    app.run(host='0.0.0.0', port=5001, debug=False)
-
 # ==================== TradingView Webhook ====================
 
 @app.route('/webhook/tradingview', methods=['POST'])
@@ -12782,23 +12878,148 @@ def receive_tradingview_webhook():
         from core.tradingview.alert_receiver import get_alert_receiver
         from core.tradingview.alert_parser import TradingViewAlertParser
         
-        # 获取原始数据
+        # 获取原始数据（用于签名验证）
         payload = request.get_data(as_text=True)
         signature = request.headers.get('X-Signature', '')
         
-        # 解析 JSON
+        # 调试：记录原始 payload 和 Content-Type
+        content_type = request.headers.get('Content-Type', '')
+        logger.debug(f"收到请求 - Content-Type: {content_type}, payload 长度: {len(payload)}, payload 前100字符: {repr(payload[:100])}")
+        
+        # 解析 JSON（支持多种格式）
+        data = None
+        
+        # 方法1: 优先使用 Flask 的 get_json()（自动处理 Content-Type）
+        # 注意：如果 Content-Type 是 application/json，Flask 会自动解析
+        # 如果 Content-Type 不正确，使用 force=True 强制解析
         try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            logger.error(f"无效的 JSON 数据: {payload}")
-            return jsonify({'error': 'Invalid JSON'}), 400
+            # 先尝试不使用 force（如果 Content-Type 正确）
+            if 'application/json' in content_type:
+                data = request.get_json(silent=True)
+                if data:
+                    logger.info(f"使用 Flask get_json() 解析成功（标准 Content-Type）: {data}")
+            else:
+                # Content-Type 不正确，使用 force=True 强制解析
+                data = request.get_json(force=True, silent=True)
+                if data:
+                    logger.info(f"使用 Flask get_json() 解析成功（强制模式）: {data}")
+        except Exception as e:
+            logger.warning(f"Flask get_json() 解析失败: {e}")
+        
+        # 方法2: 如果 Flask get_json() 失败，尝试手动解析原始 payload
+        if data is None:
+            logger.debug(f"Flask get_json() 返回 None，尝试手动解析。原始 payload: {repr(payload[:200])}")
+            try:
+                import re
+                
+                # 清理 payload（移除可能的 BOM、换行符、外层引号等）
+                cleaned_payload = payload.strip()
+                
+                # 移除 BOM
+                if cleaned_payload.startswith('\ufeff'):
+                    cleaned_payload = cleaned_payload[1:]
+                
+                # 移除首尾的单引号或双引号（如果整个 payload 被引号包裹）
+                # 例如: '{"symbol":"BTCUSDT"}' -> {"symbol":"BTCUSDT"}
+                if len(cleaned_payload) >= 2:
+                    if (cleaned_payload.startswith("'") and cleaned_payload.endswith("'")) or \
+                       (cleaned_payload.startswith('"') and cleaned_payload.endswith('"')):
+                        cleaned_payload = cleaned_payload[1:-1].strip()
+                
+                # 优先尝试标准 JSON 解析
+                try:
+                    data = json.loads(cleaned_payload)
+                    logger.info(f"手动标准 JSON 解析成功: {data}")
+                except json.JSONDecodeError as json_error:
+                    # 标准 JSON 解析失败，检查是否是非标准格式
+                    logger.debug(f"标准 JSON 解析失败: {json_error}, payload: {repr(cleaned_payload[:100])}")
+                    
+                    # 检查是否是类似 {symbol:BTCUSDT,action:BUY} 的格式（无引号）
+                    working_payload = cleaned_payload
+                    if len(working_payload) >= 2:
+                        if (working_payload.startswith("'") and working_payload.endswith("'")) or \
+                           (working_payload.startswith('"') and working_payload.endswith('"')):
+                            working_payload = working_payload[1:-1].strip()
+                    
+                    # 检查是否是花括号格式且无引号（非标准 JSON）
+                    is_non_standard_json = False
+                    if working_payload.startswith('{') and working_payload.endswith('}'):
+                        inner = working_payload[1:-1].strip()
+                        # 检查是否包含引号（标准 JSON 应该有引号）
+                        has_quotes = '"' in inner or ("'" in inner and inner.count("'") > 2)
+                        if not has_quotes:
+                            is_non_standard_json = True
+                    
+                    if is_non_standard_json:
+                        # 使用正则表达式解析非标准 JSON
+                        inner = working_payload[1:-1].strip()
+                        data = {}
+                        # 使用正则表达式匹配 key:value（值可能包含空格）
+                        pattern = r'(\w+)\s*:\s*([^,}]+)'
+                        matches = re.findall(pattern, inner)
+                        
+                        for key, value in matches:
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # 移除值两端的引号（如果有）
+                            if (value.startswith('"') and value.endswith('"')) or \
+                               (value.startswith("'") and value.endswith("'")):
+                                value = value[1:-1]
+                            
+                            # 尝试转换为数字
+                            try:
+                                if '.' in value:
+                                    data[key] = float(value)
+                                else:
+                                    data[key] = int(value)
+                            except ValueError:
+                                data[key] = value
+                        
+                        if data:
+                            logger.info(f"使用正则表达式解析非标准 JSON（无引号格式）: {data}")
+                        else:
+                            raise ValueError("正则表达式解析失败，未提取到任何数据")
+                    else:
+                        # 有引号但解析失败，可能是格式问题
+                        raise json_error
+            except (json.JSONDecodeError, ValueError) as e:
+                # 所有解析方法都失败
+                logger.warning(f"所有 JSON 解析方法都失败: {e}")
+                logger.debug(f"原始 payload: {repr(payload[:200])}")
+                logger.debug(f"清理后 payload: {repr(cleaned_payload[:200])}")
+                
+                # 尝试作为文本消息处理，让后续解析逻辑处理
+                data = {'message': cleaned_payload}
+            except Exception as e2:
+                logger.error(f"解析数据失败: {e2}, payload: {repr(payload[:200])}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return jsonify({
+                    'error': 'Invalid data format',
+                    'message': f'无法解析数据: {str(e2)}',
+                    'received': payload[:200]  # 只返回前200个字符
+                }), 400
         
         logger.info(f"收到 TradingView Alert: {data}")
+        
+        # 获取消息转发管理器（用于转发 TradingView 信号）
+        message_manager = None
+        try:
+            if MESSAGE_FORWARD_AVAILABLE:
+                message_forward_service = get_message_forward_service()
+                if message_forward_service and message_forward_service.manager:
+                    message_manager = message_forward_service.manager
+                    logger.debug("✅ 已获取消息转发管理器，TradingView 信号将自动转发")
+                else:
+                    logger.warning("⚠️ 消息转发管理器未初始化，TradingView 信号将不会转发")
+        except Exception as e:
+            logger.warning(f"⚠️ 获取消息转发管理器失败: {e}，TradingView 信号将不会转发")
         
         # 获取警报接收器
         receiver = get_alert_receiver(
             trade_service=get_trade_service(),
-            message_manager=None
+            message_manager=message_manager
         )
         
         # 验证签名（如果配置了）
@@ -12811,9 +13032,40 @@ def receive_tradingview_webhook():
         receiver.trade_stats['total_alerts'] += 1
         receiver.trade_stats['last_alert_time'] = datetime.now().isoformat()
         
-        # 异步处理警报（使用现有的处理方法）
+        # 异步处理警报（在后台线程中运行，不阻塞响应）
+        import threading
         import asyncio
-        asyncio.create_task(receiver._process_tradingview_alert(data))
+        
+        def run_async_in_thread():
+            """在新线程中运行异步函数"""
+            try:
+                # 在新线程中创建新的事件循环
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    # 运行异步函数
+                    new_loop.run_until_complete(receiver._process_tradingview_alert(data))
+                finally:
+                    # 清理事件循环
+                    try:
+                        pending = asyncio.all_tasks(new_loop)
+                        if pending:
+                            for task in pending:
+                                task.cancel()
+                            new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    except Exception:
+                        pass
+                    finally:
+                        new_loop.close()
+                        asyncio.set_event_loop(None)
+            except Exception as e:
+                logger.error(f"后台处理 TradingView Alert 失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # 启动后台线程处理
+        thread = threading.Thread(target=run_async_in_thread, daemon=True, name="TradingViewAlertProcessor")
+        thread.start()
         
         return jsonify({
             'status': 'received',
@@ -12850,6 +13102,590 @@ def get_webhook_status():
         return jsonify({
             'success': False,
             'error': str(e)
+        }), 500
+
+# ==================== 微信公众号消息接收 ====================
+
+@app.route('/webhook/wechat_official', methods=['GET', 'POST'])
+def receive_wechat_official_message():
+    """接收微信公众号消息和验证服务器
+    
+    微信公众号服务器配置说明：
+    1. 登录微信公众平台：https://mp.weixin.qq.com
+    2. 进入"开发" -> "基本配置" -> "服务器配置"
+    3. 填写以下信息：
+       - URL: https://your-domain.com/webhook/wechat_official
+       - Token: 在 config/wechat_official_config.py 中配置的 token
+       - EncodingAESKey: 可选，如果启用消息加密则需要
+       - 消息加解密方式: 选择"明文模式"或"兼容模式"（推荐兼容模式）
+    4. 点击"提交"进行验证
+    
+    GET 请求：用于验证服务器（微信会发送 signature, timestamp, nonce, echostr）
+    POST 请求：用于接收用户消息
+    """
+    try:
+        from config.wechat_official_config import get_wechat_official_config
+        import hashlib
+        import xml.etree.ElementTree as ET
+        from core.message_forward.models import Message, MessageType
+        from core.message_forward.message_forward_manager import get_message_forward_manager
+        
+        # 获取配置
+        config = get_wechat_official_config()
+        if not config:
+            logger.warning("微信公众号配置未启用或未配置")
+            return '', 403
+        
+        token = config.get('token', '')
+        if not token:
+            logger.warning("微信公众号 token 未配置，无法验证消息")
+            return '', 403
+        
+        if request.method == 'GET':
+            # 验证服务器（微信会发送 GET 请求进行验证）
+            signature = request.args.get('signature', '')
+            timestamp = request.args.get('timestamp', '')
+            nonce = request.args.get('nonce', '')
+            echostr = request.args.get('echostr', '')
+            
+            logger.debug(f"微信公众号服务器验证请求: signature={signature}, timestamp={timestamp}, nonce={nonce}")
+            
+            # 验证签名
+            # 微信验证算法：将 token、timestamp、nonce 按字典序排序后拼接，然后进行 SHA1 加密
+            tmp_arr = [token, timestamp, nonce]
+            tmp_arr.sort()
+            tmp_str = ''.join(tmp_arr)
+            tmp_str = hashlib.sha1(tmp_str.encode('utf-8')).hexdigest()
+            
+            if tmp_str == signature:
+                logger.info("✅ 微信公众号服务器验证成功")
+                return echostr, 200
+            else:
+                logger.warning(f"⚠️ 微信公众号服务器验证失败: 期望签名={tmp_str}, 收到签名={signature}")
+                return '', 403
+        
+        elif request.method == 'POST':
+            # 接收用户消息
+            try:
+                # 获取请求参数
+                signature = request.args.get('signature', '')
+                timestamp = request.args.get('timestamp', '')
+                nonce = request.args.get('nonce', '')
+                msg_signature = request.args.get('msg_signature', '')  # 加密消息的签名（如果启用加密）
+                
+                # 验证签名
+                tmp_arr = [token, timestamp, nonce]
+                tmp_arr.sort()
+                tmp_str = ''.join(tmp_arr)
+                tmp_str = hashlib.sha1(tmp_str.encode('utf-8')).hexdigest()
+                
+                if tmp_str != signature:
+                    logger.warning(f"⚠️ 微信公众号消息签名验证失败")
+                    return '', 403
+                
+                # 获取 XML 数据
+                xml_data = request.get_data(as_text=True)
+                logger.debug(f"收到微信公众号消息: {xml_data[:200]}")
+                
+                # 解析 XML
+                root = ET.fromstring(xml_data)
+                msg_type = root.find('MsgType').text if root.find('MsgType') is not None else ''
+                from_user = root.find('FromUserName').text if root.find('FromUserName') is not None else ''
+                to_user = root.find('ToUserName').text if root.find('ToUserName') is not None else ''
+                create_time = root.find('CreateTime').text if root.find('CreateTime') is not None else ''
+                
+                # 保存/更新用户信息到数据库
+                try:
+                    from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+                    user_manager = get_wechat_official_user_manager()
+                    
+                    # 处理关注/取消关注事件
+                    if msg_type == 'event':
+                        event = root.find('Event').text if root.find('Event') is not None else ''
+                        if event == 'subscribe':
+                            # 用户关注
+                            user_manager.get_or_create_user(from_user)
+                            user_manager.update_user_subscribe_status(from_user, True)
+                            logger.info(f"📝 用户关注: openid={from_user}")
+                        elif event == 'unsubscribe':
+                            # 用户取消关注
+                            user_manager.update_user_subscribe_status(from_user, False)
+                            logger.info(f"📝 用户取消关注: openid={from_user}")
+                    else:
+                        # 其他消息，更新用户信息
+                        user_manager.get_or_create_user(from_user)
+                except Exception as e:
+                    logger.error(f"保存用户信息失败: {e}")
+                
+                # 根据消息类型处理
+                content = ''
+                if msg_type == 'text':
+                    content = root.find('Content').text if root.find('Content') is not None else ''
+                    logger.info(f"收到文本消息: 用户={from_user}, 内容={content}")
+                elif msg_type == 'image':
+                    pic_url = root.find('PicUrl').text if root.find('PicUrl') is not None else ''
+                    media_id = root.find('MediaId').text if root.find('MediaId') is not None else ''
+                    logger.info(f"收到图片消息: 用户={from_user}, media_id={media_id}")
+                    content = f"[图片] {pic_url}"
+                elif msg_type == 'event':
+                    event = root.find('Event').text if root.find('Event') is not None else ''
+                    event_key = root.find('EventKey').text if root.find('EventKey') is not None else ''
+                    logger.info(f"收到事件消息: 用户={from_user}, 事件={event}, key={event_key}")
+                    
+                    if event == 'subscribe':
+                        content = f"用户关注: {from_user}"
+                    elif event == 'unsubscribe':
+                        content = f"用户取消关注: {from_user}"
+                    else:
+                        content = f"事件: {event}"
+                else:
+                    logger.info(f"收到其他类型消息: 类型={msg_type}, 用户={from_user}")
+                    content = f"[{msg_type}消息]"
+                
+                # 创建消息对象并转发
+                try:
+                    message_manager = get_message_forward_manager()
+                    if message_manager:
+                        # 创建消息对象
+                        message = Message(
+                            message_id=f"wechat_official_{from_user}_{create_time}",
+                            source_platform='wechat_official',
+                            source_chat_id=from_user,
+                            source_username='',  # 微信公众号无法直接获取用户名
+                            content=content,
+                            message_type=MessageType.TEXT if msg_type == 'text' else MessageType.OTHER,
+                            timestamp=datetime.now()
+                        )
+                        
+                        # 触发消息处理器（异步处理，不阻塞响应）
+                        import threading
+                        def handle_message():
+                            try:
+                                import asyncio
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                loop.run_until_complete(message_manager._handle_message(message))
+                                loop.close()
+                            except Exception as e:
+                                logger.error(f"处理微信公众号消息失败: {e}")
+                        
+                        thread = threading.Thread(target=handle_message, daemon=True)
+                        thread.start()
+                except Exception as e:
+                    logger.error(f"转发微信公众号消息失败: {e}")
+                
+                # 返回响应（微信要求返回 XML 格式）
+                # 简单回复：自动回复用户消息
+                reply_content = "收到您的消息，感谢关注！"
+                if msg_type == 'text' and content:
+                    # 可以在这里添加自动回复逻辑
+                    reply_content = f"您说：{content}"
+                
+                reply_xml = f"""<xml>
+<ToUserName><![CDATA[{from_user}]]></ToUserName>
+<FromUserName><![CDATA[{to_user}]]></FromUserName>
+<CreateTime>{int(time.time())}</CreateTime>
+<MsgType><![CDATA[text]]></MsgType>
+<Content><![CDATA[{reply_content}]]></Content>
+</xml>"""
+                
+                return reply_xml, 200, {'Content-Type': 'application/xml; charset=utf-8'}
+                
+            except ET.ParseError as e:
+                logger.error(f"解析微信公众号 XML 消息失败: {e}")
+                return '', 400
+            except Exception as e:
+                logger.error(f"处理微信公众号消息失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return '', 500
+        
+    except Exception as e:
+        logger.error(f"处理微信公众号请求失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return '', 500
+
+# ==================== 微信公众号用户和订阅管理 ====================
+
+@app.route('/api/v1/wechat-official/users', methods=['GET'])
+def get_wechat_official_users():
+    """获取微信公众号用户列表"""
+    try:
+        from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+        
+        user_manager = get_wechat_official_user_manager()
+        subscription_type = request.args.get('subscription_type')  # 可选：筛选订阅类型
+        
+        users = user_manager.get_all_subscribed_users(subscription_type)
+        
+        return jsonify({
+            'success': True,
+            'data': users,
+            'total': len(users)
+        })
+    except Exception as e:
+        logger.error(f"获取微信公众号用户列表失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/v1/wechat-official/users/<openid>', methods=['GET'])
+def get_wechat_official_user(openid):
+    """获取单个用户信息"""
+    try:
+        from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+        
+        user_manager = get_wechat_official_user_manager()
+        user = user_manager.get_user(openid)
+        
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': '用户不存在'
+            }), 404
+        
+        # 获取用户的订阅信息
+        subscriptions = user_manager.get_user_subscriptions(openid)
+        user['subscriptions'] = subscriptions
+        
+        return jsonify({
+            'success': True,
+            'data': user
+        })
+    except Exception as e:
+        logger.error(f"获取用户信息失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/v1/wechat-official/users/<openid>/subscriptions', methods=['GET'])
+def get_user_subscriptions(openid):
+    """获取用户的订阅列表"""
+    try:
+        from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+        
+        user_manager = get_wechat_official_user_manager()
+        subscriptions = user_manager.get_user_subscriptions(openid)
+        
+        return jsonify({
+            'success': True,
+            'data': subscriptions
+        })
+    except Exception as e:
+        logger.error(f"获取用户订阅列表失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/v1/wechat-official/users/<openid>/subscriptions', methods=['POST'])
+def add_user_subscription(openid):
+    """添加用户订阅"""
+    try:
+        from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+        
+        data = request.get_json()
+        subscription_type = data.get('subscription_type')
+        config = data.get('config')
+        
+        if not subscription_type:
+            return jsonify({
+                'success': False,
+                'error': '缺少 subscription_type 参数'
+            }), 400
+        
+        user_manager = get_wechat_official_user_manager()
+        success = user_manager.add_subscription(openid, subscription_type, config)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '订阅添加成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': '订阅添加失败'
+            }), 500
+    except Exception as e:
+        logger.error(f"添加用户订阅失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/v1/wechat-official/users/<openid>/subscriptions/<subscription_type>', methods=['DELETE'])
+def remove_user_subscription(openid, subscription_type):
+    """移除用户订阅"""
+    try:
+        from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+        
+        user_manager = get_wechat_official_user_manager()
+        success = user_manager.remove_subscription(openid, subscription_type)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '订阅移除成功'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': '订阅移除失败'
+            }), 500
+    except Exception as e:
+        logger.error(f"移除用户订阅失败: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ==================== OKX 市场数据代理 ====================
+
+@app.route('/api/v1/market/candles', methods=['GET'])
+def proxy_okx_candles():
+    """
+    代理 OKX K线数据请求（解决前端 CORS 问题）
+    
+    查询参数:
+        instId: 交易对（如 BTC-USDT-SWAP）
+        bar: 时间周期（1m, 5m, 15m, 1H, 4H, 1D 等）
+        limit: 数据条数（默认 100）
+    """
+    try:
+        import requests
+        
+        instId = request.args.get('instId')
+        bar = request.args.get('bar', '15m')
+        limit = request.args.get('limit', '100')
+        
+        if not instId:
+            return jsonify({
+                'code': '1',
+                'msg': '缺少参数 instId',
+                'data': []
+            }), 400
+        
+        # 构建 OKX API URL
+        url = f'https://www.okx.com/api/v5/market/candles'
+        params = {
+            'instId': instId,
+            'bar': bar,
+            'limit': limit
+        }
+        
+        # 请求 OKX API
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        # 返回 OKX 的响应
+        return jsonify(response.json()), response.status_code
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"代理 OKX K线数据请求失败: {e}")
+        return jsonify({
+            'code': '1',
+            'msg': f'请求失败: {str(e)}',
+            'data': []
+        }), 500
+    except Exception as e:
+        logger.error(f"代理 OKX K线数据请求异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'code': '1',
+            'msg': f'服务器错误: {str(e)}',
+            'data': []
+        }), 500
+
+@app.route('/api/v1/market/ticker', methods=['GET'])
+def proxy_okx_ticker():
+    """
+    代理 OKX 行情数据请求（解决前端 CORS 问题）
+    
+    查询参数:
+        instId: 交易对（如 BTC-USDT-SWAP）
+    """
+    try:
+        import requests
+        
+        instId = request.args.get('instId')
+        
+        if not instId:
+            return jsonify({
+                'code': '1',
+                'msg': '缺少参数 instId',
+                'data': []
+            }), 400
+        
+        # 构建 OKX API URL
+        url = f'https://www.okx.com/api/v5/market/ticker'
+        params = {
+            'instId': instId
+        }
+        
+        # 请求 OKX API
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        # 返回 OKX 的响应
+        return jsonify(response.json()), response.status_code
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"代理 OKX 行情数据请求失败: {e}")
+        return jsonify({
+            'code': '1',
+            'msg': f'请求失败: {str(e)}',
+            'data': []
+        }), 500
+    except Exception as e:
+        logger.error(f"代理 OKX 行情数据请求异常: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'code': '1',
+            'msg': f'服务器错误: {str(e)}',
+            'data': []
+        }), 500
+
+# ==================== 图片代理接口 ====================
+
+@app.route('/api/v1/proxy/image', methods=['GET'])
+def proxy_image():
+    """
+    图片代理接口，用于安全加载外部图片资源
+    
+    查询参数:
+        url: 图片的完整 URL（需要 URL 编码）
+    
+    示例:
+        /api/v1/proxy/image?url=https://public.bnbstatic.com/image/avatar/202508/xxx.jpg
+    """
+    from flask import Response
+    from urllib.parse import urlparse, unquote
+    import requests
+    
+    try:
+        # 获取图片 URL
+        url = request.args.get('url')
+        if not url:
+            return jsonify({
+                'success': False,
+                'message': '缺少 url 参数'
+            }), 400
+        
+        # URL 解码
+        url = unquote(url)
+        
+        # 验证 URL 格式
+        try:
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                return jsonify({
+                    'success': False,
+                    'message': '无效的 URL 格式'
+                }), 400
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'message': f'URL 解析失败: {str(e)}'
+            }), 400
+        
+        # 白名单：只允许特定域名的图片
+        allowed_domains = [
+            'public.bnbstatic.com',
+            'cdn.jsdelivr.net',
+            'unpkg.com',
+            'cdnjs.cloudflare.com',
+            'fonts.gstatic.com',
+            'www.gravatar.com',
+            'secure.gravatar.com'
+        ]
+        
+        if parsed.netloc not in allowed_domains:
+            logger.warning(f"[图片代理] 拒绝访问未授权域名: {parsed.netloc}")
+            return jsonify({
+                'success': False,
+                'message': f'不允许的域名: {parsed.netloc}'
+            }), 403
+        
+        # 只允许图片格式
+        allowed_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.ico']
+        path_lower = parsed.path.lower()
+        if not any(path_lower.endswith(ext) for ext in allowed_extensions):
+            # 如果没有扩展名，检查 Content-Type（某些 CDN 可能不包含扩展名）
+            # 这里先允许，后续通过 Content-Type 验证
+            pass
+        
+        # 设置请求头，模拟浏览器请求
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': request.headers.get('Referer', ''),
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        }
+        
+        # 请求图片（使用流式传输，避免内存问题）
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10,
+            stream=True,
+            allow_redirects=True
+        )
+        response.raise_for_status()
+        
+        # 验证 Content-Type 是否为图片
+        content_type = response.headers.get('Content-Type', '').lower()
+        if not content_type.startswith('image/'):
+            logger.warning(f"[图片代理] 非图片内容类型: {content_type}, URL: {url}")
+            return jsonify({
+                'success': False,
+                'message': f'非图片内容类型: {content_type}'
+            }), 400
+        
+        # 检查文件大小（限制为 10MB）
+        content_length = response.headers.get('Content-Length')
+        if content_length and int(content_length) > 10 * 1024 * 1024:
+            return jsonify({
+                'success': False,
+                'message': '图片文件过大（超过 10MB）'
+            }), 400
+        
+        # 返回图片（流式传输）
+        return Response(
+            response.iter_content(chunk_size=8192),
+            mimetype=content_type,
+            headers={
+                'Cache-Control': 'public, max-age=86400',  # 缓存1天
+                'Content-Type': content_type,
+                'Access-Control-Allow-Origin': '*',  # 允许跨域
+                'X-Proxy-Source': parsed.netloc  # 标识代理来源
+            }
+        )
+        
+    except requests.exceptions.Timeout:
+        logger.error(f"[图片代理] 请求超时: {url}")
+        return jsonify({
+            'success': False,
+            'message': '请求超时'
+        }), 504
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[图片代理] 请求失败: {e}, URL: {url}")
+        return jsonify({
+            'success': False,
+            'message': f'请求失败: {str(e)}'
+        }), 502
+    except Exception as e:
+        logger.error(f"[图片代理] 服务器错误: {e}, URL: {url}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'服务器错误: {str(e)}'
         }), 500
 
 @app.route('/api/v1/symbols', methods=['GET'])
@@ -12922,7 +13758,7 @@ if __name__ == '__main__':
     # 启动Flask应用
     app.run(host='0.0.0.0', port=5001, debug=False)
 else:
-    # 当作为模块导入时，先初始化数据库，然后启动跟单监控器
+    # 当作为模块导入时（Gunicorn 环境），先初始化数据库，然后启动跟单监控器
     import threading
     import time
     
@@ -12942,6 +13778,28 @@ else:
     # 在后台线程中延迟启动监控器
     monitor_thread = threading.Thread(target=delayed_start_monitor, daemon=True)
     monitor_thread.start()
+    
+    # 在 Gunicorn 环境中，延迟初始化消息转发服务（如果需要）
+    def delayed_init_message_forward():
+        """延迟初始化消息转发服务（适用于 Gunicorn 环境）"""
+        try:
+            time.sleep(5)  # 等待更长时间，确保所有模块都已加载
+            
+            if MESSAGE_FORWARD_AVAILABLE:
+                logger.info("🔧 [Gunicorn环境] 开始初始化消息转发服务...")
+                try:
+                    # 尝试获取服务实例（会自动初始化）
+                    service = get_message_forward_service()
+                    logger.info("✅ [Gunicorn环境] 消息转发服务初始化成功")
+                except Exception as e:
+                    logger.warning(f"⚠️ [Gunicorn环境] 消息转发服务初始化失败: {e}")
+                    logger.warning("⚠️ 可以通过 API 接口手动启动服务")
+        except Exception as e:
+            logger.error(f"❌ [Gunicorn环境] 延迟初始化消息转发服务异常: {e}")
+    
+    # 在后台线程中延迟初始化消息转发服务
+    message_forward_thread = threading.Thread(target=delayed_init_message_forward, daemon=True)
+    message_forward_thread.start()
 
     # 用户管理API
     @app.route('/api/v1/auth/users', methods=['GET'])

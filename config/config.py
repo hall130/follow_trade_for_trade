@@ -10,6 +10,16 @@ MYSQL_CONFIG = {
     'maxcached': 10
 }
 
+REDIS_CONFIG = {
+    'host': 'localhost',
+    'port': 6379,
+    'db': 0,
+    'password': 'your_strong_password_here',  # 与 Redis 配置的密码一致
+    'decode_responses': True,
+    'enabled': True  # 启用 Redis
+}
+
+
 def get_mysql_config():
     return MYSQL_CONFIG 
 

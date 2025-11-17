@@ -1905,9 +1905,35 @@ class LimitFollowExecutor:
                 except KeyboardInterrupt:
                     logger.info("监控已停止")
                     break
+                except RuntimeError as e:
+                    # 检查是否是事件循环关闭错误
+                    if "closed" in str(e).lower() or "no running event loop" in str(e).lower():
+                        logger.error(f"事件循环已关闭，监控将停止: {e}")
+                        break
+                    else:
+                        # 其他 RuntimeError，记录并继续
+                        logger.error(f"监控异常: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        try:
+                            await asyncio.sleep(10)  # 异常后等待10秒再继续
+                        except RuntimeError:
+                            logger.error("无法继续等待，监控将停止")
+                            break
                 except Exception as e:
                     logger.error(f"监控异常: {e}")
-                    await asyncio.sleep(10)  # 异常后等待10秒再继续
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 异常后等待，但需要检查事件循环是否仍然有效
+                    try:
+                        loop = asyncio.get_running_loop()
+                        if loop.is_closed():
+                            logger.error("事件循环已关闭，无法继续监控")
+                            break
+                        await asyncio.sleep(10)  # 异常后等待10秒再继续
+                    except RuntimeError:
+                        logger.error("无法获取事件循环，监控将停止")
+                        break
 
 
 async def main():

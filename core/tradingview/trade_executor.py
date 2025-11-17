@@ -585,7 +585,7 @@ class TradingViewTradeExecutor:
             message = Message(
                 content=message_content.strip(),
                 message_type=MessageType.TEXT,
-                source_platform=PlatformType.SYSTEM,
+                source_platform=PlatformType.TRADINGVIEW,  # 使用 TradingView 平台类型
                 source_chat_id="tradingview_executor",
                 source_user_id="system",
                 source_username="TradingView Executor",

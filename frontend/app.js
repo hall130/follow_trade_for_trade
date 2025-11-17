@@ -1901,7 +1901,7 @@ class OKXTradingApp {
         }
     }
 
-    // 从OKX API获取K线数据
+    // 从OKX API获取K线数据（通过后端代理）
     async fetchKlineData(symbol, timeframe) {
         // 根据时间周期计算需要的数据量
         let limit = 100;
@@ -1932,9 +1932,8 @@ class OKXTradingApp {
                 break;
         }
         
-        const url = `https://www.okx.com/api/v5/market/candles?instId=${symbol}&bar=${timeframe}&limit=${limit}`;
-        
-
+        // 使用后端代理，避免 CORS 问题
+        const url = `${this.apiBaseUrl}/market/candles?instId=${symbol}&bar=${timeframe}&limit=${limit}`;
         
         const response = await fetch(url);
         if (!response.ok) {
@@ -6900,7 +6899,8 @@ class OKXTradingApp {
     async getTickerPrice(symbol) {
         try {
             // 使用OKX公共API获取ticker数据
-            const url = `https://www.okx.com/api/v5/market/ticker?instId=${symbol}`;
+            // 使用后端代理，避免 CORS 问题
+            const url = `${this.apiBaseUrl}/market/ticker?instId=${symbol}`;
             
             const response = await fetch(url);
             if (!response.ok) {
@@ -7812,10 +7812,6 @@ class OKXTradingApp {
                 const btn = e.target.closest('.add-to-limit-follow') || e.target;
                 const traderData = JSON.parse(btn.dataset.trader);
                 self.addPopularTraderToLimitFollow(traderData);
-            } else if (e.target.matches('.add-to-market-follow') || e.target.closest('.add-to-market-follow')) {
-                const btn = e.target.closest('.add-to-market-follow') || e.target;
-                const traderData = JSON.parse(btn.dataset.trader);
-                self.addPopularTraderToMarketFollow(traderData);
             }
         });
         
@@ -9874,11 +9870,7 @@ class OKXTradingApp {
                         <div class="d-grid gap-2">
                             <button class="btn btn-primary btn-sm add-to-limit-follow" 
                                     data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
-                                <i class="bi bi-arrow-repeat"></i> 添加到限价跟单
-                            </button>
-                            <button class="btn btn-success btn-sm add-to-market-follow" 
-                                    data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
-                                <i class="bi bi-lightning-fill"></i> 添加到市价跟单
+                                <i class="bi bi-arrow-repeat"></i> 添加到跟单交易
                             </button>
                         </div>
                     </div>
@@ -9927,7 +9919,7 @@ class OKXTradingApp {
             if (createResponse && createResponse.ok) {
                 const createResult = await createResponse.json();
                 if (createResult.success || createResult.success === 200) {
-                    this.showToast('成功', '已添加到限价跟单，正在跳转...', 'success');
+                    this.showToast('成功', '已添加到跟单交易，正在跳转...', 'success');
                     setTimeout(() => {
                         this.navigateToPage('limit-follow');
                         // 刷新限价跟单数据
@@ -9941,8 +9933,8 @@ class OKXTradingApp {
             }
             
         } catch (error) {
-            console.error('添加到限价跟单失败:', error);
-            this.showToast('错误', `添加到限价跟单失败: ${error.message}`, 'error');
+            console.error('添加到跟单交易失败:', error);
+            this.showToast('错误', `添加到跟单交易失败: ${error.message}`, 'error');
         }
     }
     
@@ -13993,12 +13985,24 @@ class OKXTradingApp {
     // 加载平台列表
     async loadPlatformsList() {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms`);
+            // 添加时间戳防止浏览器缓存
+            const timestamp = new Date().getTime();
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms?t=${timestamp}`, {
+                method: 'GET',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            });
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
                     this.renderPlatformsList(data.data || []);
+                } else {
+                    console.error('加载平台列表失败:', data.message);
                 }
+            } else {
+                console.error('加载平台列表失败，HTTP状态码:', response.status);
             }
         } catch (error) {
             console.error('加载平台列表失败:', error);
@@ -14032,8 +14036,20 @@ class OKXTradingApp {
                 case 'wechat':
                     platformIcon = '<i class="bi bi-wechat text-success"></i> 微信';
                     break;
+                case 'wechat_official':
+                    platformIcon = '<i class="bi bi-wechat text-primary"></i> 微信公众号';
+                    break;
+                case 'bicoin':
+                    platformIcon = '<i class="bi bi-coin text-warning"></i> 币coin';
+                    break;
+                case 'coinglass':
+                    platformIcon = '<i class="bi bi-graph-up text-info"></i> CoinGlass';
+                    break;
+                case 'tradingview':
+                    platformIcon = '<i class="bi bi-bar-chart text-success"></i> TradingView';
+                    break;
                 default:
-                    platformIcon = platform.platform_type;
+                    platformIcon = this.getPlatformTypeName(platform.platform_type) || platform.platform_type;
             }
             
             // 状态徽章
@@ -14773,6 +14789,17 @@ class OKXTradingApp {
                     config.hot_reload = document.getElementById('wechatHotReload').checked;
                     break;
                 
+                case 'wechat_official':
+                    config.app_id = document.getElementById('wechat_officialAppId').value;
+                    config.app_secret = document.getElementById('wechat_officialAppSecret').value;
+                    config.token = document.getElementById('wechat_officialToken').value || '';
+                    
+                    if (!config.app_id || !config.app_secret) {
+                        this.showToast('错误', '请填写 AppID 和 AppSecret', 'warning');
+                        return;
+                    }
+                    break;
+                
                 case 'coinglass':
                     config.api_key = document.getElementById('coinglassApiKey').value;
                     config.api_secret = document.getElementById('coinglassApiSecret').value || '';
@@ -15315,6 +15342,41 @@ class OKXTradingApp {
                 `;
                 break;
                 
+            case 'wechat_official':
+                fieldsHtml = `
+                    <div class="alert alert-info mb-3">
+                        <i class="bi bi-info-circle"></i> <strong>微信公众号配置</strong><br>
+                        <small>配置微信公众号用于接收和发送消息。需要先在微信公众平台配置服务器URL。</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editWechatOfficialAppId" class="form-label">AppID <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="editWechatOfficialAppId" value="${config.app_id || ''}" placeholder="wxca0a7ba829d1bd7b" required>
+                        <small class="text-muted">从微信公众平台"开发" -> "基本配置"获取</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editWechatOfficialAppSecret" class="form-label">AppSecret <span class="text-danger">*</span></label>
+                        <input type="password" class="form-control" id="editWechatOfficialAppSecret" value="${config.app_secret || ''}" placeholder="输入AppSecret" required>
+                        <small class="text-muted">从微信公众平台"开发" -> "基本配置"获取，需要妥善保管</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editWechatOfficialToken" class="form-label">Token（服务器验证）</label>
+                        <input type="text" class="form-control" id="editWechatOfficialToken" value="${config.token || ''}" placeholder="设置一个随机字符串用于验证">
+                        <small class="text-muted">用于微信服务器验证，建议使用随机字符串。需要在微信公众平台"服务器配置"中填写相同的Token</small>
+                    </div>
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle"></i> <strong>服务器配置步骤：</strong><br>
+                        <small>
+                            1. 保存配置后，在微信公众平台"开发" -> "基本配置" -> "服务器配置"中配置：<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;URL: <code>https://your-domain.com/webhook/wechat_official</code><br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;Token: 与上面填写的Token一致<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;消息加解密方式: 选择"明文模式"<br>
+                            2. 点击"提交"进行验证<br>
+                            3. 验证成功后，用户关注或发送消息时，系统会自动记录用户的openid
+                        </small>
+                    </div>
+                `;
+                break;
+                
             case 'coinglass':
                 fieldsHtml = `
                     <div class="mb-3">
@@ -15458,6 +15520,17 @@ class OKXTradingApp {
                 
                 case 'wechat':
                     config.hot_reload = document.getElementById('editWechatHotReload').checked;
+                    break;
+                
+                case 'wechat_official':
+                    config.app_id = document.getElementById('editWechatOfficialAppId').value;
+                    config.app_secret = document.getElementById('editWechatOfficialAppSecret').value;
+                    config.token = document.getElementById('editWechatOfficialToken').value || '';
+                    
+                    if (!config.app_id || !config.app_secret) {
+                        this.showToast('错误', '请填写 AppID 和 AppSecret', 'warning');
+                        return;
+                    }
                     break;
                 
                 case 'coinglass':
@@ -18041,16 +18114,10 @@ class MyStrategy(BaseStrategy):
                 <td class="text-center">${sharpeRatio}</td>
                 <td><small class="text-muted">${updatedAt}</small></td>
                 <td>
-                    <div class="btn-group" role="group">
-                        <button class="btn btn-sm btn-success add-whale-to-market-follow" 
-                                data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
-                            <i class="bi bi-lightning-fill"></i> 市价跟单
-                        </button>
-                        <button class="btn btn-sm btn-purple add-whale-to-limit-follow" 
-                                data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
-                            <i class="bi bi-arrow-repeat"></i> 限价跟单
-                        </button>
-                    </div>
+                    <button class="btn btn-sm btn-primary add-whale-to-limit-follow" 
+                            data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
+                        <i class="bi bi-arrow-repeat"></i> 跟单交易
+                    </button>
                 </td>
             `;
             
@@ -18069,15 +18136,7 @@ class MyStrategy(BaseStrategy):
             });
         });
         
-        // 市价跟单事件监听
-        container.querySelectorAll('.add-whale-to-market-follow').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const traderData = JSON.parse(btn.getAttribute('data-trader').replace(/&quot;/g, '"'));
-                self.addWhaleTraderToMarketFollow(traderData);
-            });
-        });
-        
-        // 限价跟单事件监听
+        // 跟单交易事件监听
         container.querySelectorAll('.add-whale-to-limit-follow').forEach(btn => {
             btn.addEventListener('click', () => {
                 const traderData = JSON.parse(btn.getAttribute('data-trader').replace(/&quot;/g, '"'));
@@ -18189,7 +18248,7 @@ class MyStrategy(BaseStrategy):
             if (createResponse && createResponse.ok) {
                 const createResult = await createResponse.json();
                 if (createResult.success || createResult.success === 200) {
-                    this.showToast('成功', '已添加到限价跟单，正在跳转...', 'success');
+                    this.showToast('成功', '已添加到跟单交易，正在跳转...', 'success');
                     setTimeout(() => {
                         this.navigateToPage('limit-follow');
                         // 刷新限价跟单数据
@@ -18204,8 +18263,8 @@ class MyStrategy(BaseStrategy):
             }
             
         } catch (error) {
-            console.error('添加到限价跟单失败:', error);
-            this.showToast('错误', `添加到限价跟单失败: ${error.message}`, 'error');
+            console.error('添加到跟单交易失败:', error);
+            this.showToast('错误', `添加到跟单交易失败: ${error.message}`, 'error');
         }
     }
     

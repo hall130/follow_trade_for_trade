@@ -220,11 +220,12 @@ class TradingViewPlatform(MessagePlatform):
                     loop.run_until_complete(runner.cleanup())
                     loop.close()
             
-            server_thread = threading.Thread(target=run_server, daemon=True)
+            server_thread = threading.Thread(target=run_server, daemon=True, name="TradingViewWebhookServer")
             server_thread.start()
             
-            # 等待服务器启动
-            await asyncio.sleep(1)
+            # 等待服务器启动（使用 time.sleep 而不是 asyncio.sleep，避免事件循环冲突）
+            import time
+            time.sleep(1)
             
             self.connected = True
             logger.info(f"✅ TradingView Webhook服务器已启动，等待接收消息")

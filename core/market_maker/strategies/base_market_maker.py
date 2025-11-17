@@ -75,10 +75,67 @@ class BaseMarketMaker(ABC):
             import asyncio
             try:
                 loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 如果事件循环正在运行，在专用线程中运行
+                    import threading
+                    import concurrent.futures
+                    future = concurrent.futures.Future()
+                    def run_in_thread():
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            result = new_loop.run_until_complete(self.ws.connect())
+                            future.set_result(result)
+                        except Exception as e:
+                            future.set_exception(e)
+                        finally:
+                            new_loop.close()
+                    thread = threading.Thread(target=run_in_thread, daemon=True)
+                    thread.start()
+                    thread.join(timeout=30)
+                    if thread.is_alive():
+                        raise TimeoutError("WebSocket连接超时")
+                    future.result()
+                else:
+                    # 事件循环存在但未运行，为了安全也在专用线程中运行
+                    import concurrent.futures
+                    future = concurrent.futures.Future()
+                    def run_in_thread():
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            result = new_loop.run_until_complete(self.ws.connect())
+                            future.set_result(result)
+                        except Exception as e:
+                            future.set_exception(e)
+                        finally:
+                            new_loop.close()
+                    thread = threading.Thread(target=run_in_thread, daemon=True)
+                    thread.start()
+                    thread.join(timeout=30)
+                    if thread.is_alive():
+                        raise TimeoutError("WebSocket连接超时")
+                    future.result()
             except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.ws.connect())
+                # 没有事件循环，在专用线程中创建并运行
+                import concurrent.futures
+                future = concurrent.futures.Future()
+                def run_in_thread():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(self.ws.connect())
+                        future.set_result(result)
+                    except Exception as e:
+                        future.set_exception(e)
+                    finally:
+                        new_loop.close()
+                thread = threading.Thread(target=run_in_thread, daemon=True)
+                thread.start()
+                thread.join(timeout=30)
+                if thread.is_alive():
+                    raise TimeoutError("WebSocket连接超时")
+                future.result()
         else:
             self.ws = None
     

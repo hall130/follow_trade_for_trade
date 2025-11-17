@@ -129,12 +129,38 @@ class WeChatOfficialPlatform(MessagePlatform):
         Args:
             chat_id: 用户的 openid（微信公众号用户的唯一标识）
             message: 消息对象
+        
+        注意：此方法会检查用户是否订阅了该类型的消息
         """
         if not self.connected or not self.session:
             logger.error("微信公众号未连接")
             return False
         
         try:
+            # 检查用户订阅状态（如果消息包含订阅类型信息）
+            subscription_type = getattr(message, 'subscription_type', None) or message.extra_data.get('subscription_type') if hasattr(message, 'extra_data') else None
+            
+            if subscription_type:
+                # 检查用户是否订阅了该类型
+                try:
+                    from core.message_forward.wechat_official_user_manager import get_wechat_official_user_manager
+                    user_manager = get_wechat_official_user_manager()
+                    user = user_manager.get_user(chat_id)
+                    
+                    if not user or not user.get('subscribe') or user.get('status') != 'active':
+                        logger.debug(f"用户未关注或已取消关注: openid={chat_id}")
+                        return False
+                    
+                    # 检查订阅
+                    subscriptions = user_manager.get_user_subscriptions(chat_id)
+                    subscribed_types = [s['subscription_type'] for s in subscriptions if s.get('enabled')]
+                    
+                    if subscription_type not in subscribed_types:
+                        logger.debug(f"用户未订阅该类型消息: openid={chat_id}, type={subscription_type}")
+                        return False
+                except Exception as e:
+                    logger.warning(f"检查用户订阅状态失败: {e}，继续发送消息")
+            
             # 确保 Access Token 有效
             if not await self._ensure_access_token():
                 logger.error("无法获取有效的 Access Token")
