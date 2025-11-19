@@ -1869,7 +1869,24 @@ class LimitFollowExecutor:
         """运行并发监控"""
         logger.info("开始并发限价跟单监控...")
         
-        # 创建HTTP会话
+        # 确保使用当前事件循环（在 Gunicorn/gevent 环境中可能需要 nest_asyncio）
+        try:
+            loop = asyncio.get_running_loop()
+            logger.debug(f"使用运行中的事件循环: {loop}")
+        except RuntimeError:
+            # 如果没有运行的事件循环，获取或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                logger.debug(f"获取或创建事件循环: {loop}")
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                logger.debug(f"创建新事件循环: {loop}")
+        
+        # 创建HTTP会话（使用当前事件循环）
         async with aiohttp.ClientSession() as session:
             while True:
                 try:
@@ -1878,6 +1895,7 @@ class LimitFollowExecutor:
                     
                     if not traders:
                         logger.info("没有需要监控的跟单员")
+                        # 使用当前事件循环的 sleep
                         await asyncio.sleep(self.config['polling_interval'])
                         continue
                     
@@ -1907,18 +1925,63 @@ class LimitFollowExecutor:
                     break
                 except RuntimeError as e:
                     # 检查是否是事件循环关闭错误
-                    if "closed" in str(e).lower() or "no running event loop" in str(e).lower():
-                        logger.error(f"事件循环已关闭，监控将停止: {e}")
-                        break
+                    error_msg = str(e).lower()
+                    if "attached to a different loop" in error_msg:
+                        # 事件循环不匹配，尝试恢复
+                        logger.warning(f"⚠️ 事件循环不匹配，尝试恢复: {e}")
+                        try:
+                            # 等待一小段时间，让事件循环稳定
+                            import time
+                            time.sleep(0.5)
+                            # 尝试重新获取事件循环
+                            try:
+                                current_loop = asyncio.get_running_loop()
+                                logger.debug(f"当前事件循环: {current_loop}")
+                            except RuntimeError:
+                                # 如果没有运行中的循环，获取或创建新的
+                                try:
+                                    current_loop = asyncio.get_event_loop()
+                                    if current_loop.is_closed():
+                                        current_loop = asyncio.new_event_loop()
+                                        asyncio.set_event_loop(current_loop)
+                                except RuntimeError:
+                                    current_loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(current_loop)
+                                logger.debug(f"获取或创建事件循环: {current_loop}")
+                            
+                            # 继续监控循环
+                            logger.info("✅ 事件循环已恢复，继续监控")
+                            continue
+                        except Exception as recover_error:
+                            logger.error(f"❌ 无法恢复事件循环: {recover_error}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                            break
+                    elif "closed" in error_msg or "no running event loop" in error_msg:
+                        logger.error(f"事件循环错误，监控将停止: {e}")
+                        # 尝试重新获取事件循环
+                        try:
+                            loop = asyncio.get_running_loop()
+                            if loop.is_closed():
+                                logger.error("事件循环已关闭，无法继续监控")
+                                break
+                        except RuntimeError:
+                            logger.error("无法获取事件循环，监控将停止")
+                            break
                     else:
                         # 其他 RuntimeError，记录并继续
                         logger.error(f"监控异常: {e}")
                         import traceback
                         logger.error(traceback.format_exc())
                         try:
+                            # 确保事件循环仍然有效
+                            loop = asyncio.get_running_loop()
+                            if loop.is_closed():
+                                logger.error("事件循环已关闭，无法继续监控")
+                                break
                             await asyncio.sleep(10)  # 异常后等待10秒再继续
-                        except RuntimeError:
-                            logger.error("无法继续等待，监控将停止")
+                        except RuntimeError as sleep_e:
+                            logger.error(f"无法继续等待，监控将停止: {sleep_e}")
                             break
                 except Exception as e:
                     logger.error(f"监控异常: {e}")

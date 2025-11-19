@@ -4,7 +4,7 @@ MYSQL_CONFIG = {
     'host': 'localhost',      # 修改为你的MySQL主机
     'port': 3306,            # MySQL端口
     'user': 'root',     # MySQL用户名
-    'password': 'root', # MySQL密码
+    'password': 'Aa11223344..', # MySQL密码
     'db': 'trade_db',        # 数据库名
     'mincached': 2,
     'maxcached': 10
@@ -14,7 +14,7 @@ REDIS_CONFIG = {
     'host': 'localhost',
     'port': 6379,
     'db': 0,
-    'password': 'your_strong_password_here',  # 与 Redis 配置的密码一致
+    'password': 'Aa11223344..',  # 与 Redis 配置的密码一致
     'decode_responses': True,
     'enabled': True  # 启用 Redis
 }
@@ -93,16 +93,16 @@ def get_okx_config():
     """获取OKX交易所配置"""
     return OKX_CONFIG.copy()
 
-# Redis 配置
-REDIS_CONFIG = {
-    'host': 'localhost',
-    'port': 6379,
-    'db': 0,
-    'password': 'songshu123456',  # 如果有密码，在这里设置
-    'decode_responses': True,
-    'enabled': False  # 默认禁用，需要时启用
-}
+# 注意：REDIS_CONFIG 已在文件开头定义（第13行），这里不再重复定义
 
 def get_redis_config():
-    """获取 Redis 配置"""
-    return REDIS_CONFIG.copy() 
+    """获取 Redis 配置（过滤掉 RedisManager 不支持的参数）"""
+    config = REDIS_CONFIG.copy()
+    # 只返回 RedisManager 支持的参数
+    return {
+        'host': config.get('host', 'localhost'),
+        'port': config.get('port', 6379),
+        'db': config.get('db', 0),
+        'password': config.get('password'),
+        'decode_responses': config.get('decode_responses', True)
+    } 

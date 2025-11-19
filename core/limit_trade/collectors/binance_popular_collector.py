@@ -159,12 +159,61 @@ class BinancePopularTraderCollector:
         logger.info(f"[Binance热门] 总共获取到 {len(all_traders)} 个热门带单员")
         return all_traders
     
-    def normalize_popular_trader(self, raw_trader: Dict) -> Dict:
+    async def check_trader_public(self, session: aiohttp.ClientSession, portfolio_id: str) -> bool:
+        """
+        检查Binance带单员是否为公开（通过检查订单历史API）
+        
+        Args:
+            session: aiohttp会话对象
+            portfolio_id: 带单员组合ID
+            
+        Returns:
+            True表示公开（能获取到订单历史），False表示私域（获取不到）
+        """
+        try:
+            # 检查 session 是否有效
+            if session.closed:
+                logger.debug(f"[Binance公开检测] {portfolio_id}: Session已关闭，判断为私域")
+                return False
+            
+            url = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history"
+            payload = {
+                "pageSize": 10,
+                "portfolioId": portfolio_id
+            }
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=5)  # 5秒超时
+            async with session.post(url, headers=headers, json=payload, timeout=timeout) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # 如果能成功获取数据，说明是公开的
+                    if data.get("code") == "000000" or (data.get("success") is not False and data.get("data")):
+                        is_public = True
+                        logger.debug(f"[Binance公开检测] {portfolio_id}: 公开")
+                        return is_public
+                    else:
+                        # API返回错误，可能是私域
+                        logger.debug(f"[Binance公开检测] {portfolio_id}: API错误，判断为私域")
+                        return False
+                else:
+                    # HTTP错误，可能是私域
+                    logger.debug(f"[Binance公开检测] {portfolio_id}: HTTP {response.status}，判断为私域")
+                    return False
+        except Exception as e:
+            logger.warning(f"[Binance公开检测] {portfolio_id}: 检测失败: {e}，默认判断为私域")
+            return False
+    
+    def normalize_popular_trader(self, raw_trader: Dict, is_public: Optional[bool] = None) -> Dict:
         """
         将Binance原始热门带单员数据标准化
         
         Args:
             raw_trader: Binance原始数据
+            is_public: 是否为公开带单员（如果为None，则需要在后续检测）
             
         Returns:
             标准化的带单员信息
@@ -191,6 +240,7 @@ class BinancePopularTraderCollector:
                 'instruments': raw_trader.get('instruments') or raw_trader.get('symbols') or [],  # 交易对列表
                 'tier': raw_trader.get('tier') or raw_trader.get('level') or {},  # 等级信息
                 'full_status': raw_trader.get('isFull') or raw_trader.get('fullStatus') or False,  # 是否已满员
+                'is_public': is_public,  # 是否为公开带单员（None表示未检测）
                 'source': 'binance'  # 数据来源
             }
         except Exception as e:

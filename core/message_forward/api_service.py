@@ -4,7 +4,7 @@
 """
 
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import json
 from utils.logger import get_logger
 
@@ -41,6 +41,7 @@ class MessageForwardAPIService:
             self.db = get_message_forward_db()
         self.manager: Optional[MessageForwardManager] = None
         self.listener_service: Optional[UnifiedListenerService] = None
+        self.reminder_service = None
         self.is_running = False
         
         # 注意：跨 HTTP 请求缓存 Telethon 客户端实例会导致 event loop 错误
@@ -77,23 +78,62 @@ class MessageForwardAPIService:
             enabled_rules_count = len([r for r in rules if r.get('enabled', False)])
             logger.info(f"📋 从数据库加载了 {len(rules)} 个转发规则，其中 {enabled_rules_count} 个已启用")
             
-            # 创建管理器实例
+            # 创建管理器实例（传入数据库连接以支持订阅服务）
             from config.message_forward_config import MESSAGE_FORWARD_CONFIG
-            self.manager = await MessageForwardManager.create_from_config(MESSAGE_FORWARD_CONFIG)
+            # 获取数据库连接池（从db对象中获取）
+            db_pool_for_subscription = None
+            if hasattr(self.db, '_db_pool'):
+                db_pool_for_subscription = self.db._db_pool
+            elif hasattr(self.db, 'db_pool'):
+                db_pool_for_subscription = self.db.db_pool
+            
+            self.manager = await MessageForwardManager.create_from_config(
+                MESSAGE_FORWARD_CONFIG, 
+                db=db_pool_for_subscription
+            )
             
             # 从数据库加载并添加规则到管理器
             loaded_count = 0
             for rule_data in rules:
                 if rule_data.get('enabled', False):
                     try:
+                        # 如果规则有 source_platform_id 但没有 source_platform，从数据库查询并填充
+                        source_platform_id = rule_data.get('source_platform_id')
+                        source_platform = rule_data.get('source_platform', '')
+                        # 优先使用 JOIN 查询得到的 source_platform_type
+                        if not source_platform and rule_data.get('source_platform_type'):
+                            source_platform = rule_data.get('source_platform_type', '')
+                        # 如果还是没有，从数据库查询
+                        if source_platform_id and not source_platform:
+                            # 从数据库查询平台类型
+                            platform_data = self.db.get_platform_by_id(source_platform_id)
+                            if platform_data:
+                                source_platform = platform_data.get('platform_type', '')
+                                logger.info(f"ℹ️ 规则 {rule_data['rule_name']} 通过平台ID {source_platform_id} 获取平台类型: {source_platform}")
+                        
+                        # 如果规则有 target_platform_ids 但没有，尝试从订阅记录获取
+                        target_platform_ids = rule_data.get('target_platform_ids', [])
+                        if not target_platform_ids:
+                            # 从订阅记录获取目标平台ID
+                            try:
+                                from database.global_db_manager import get_global_db_pool
+                                db_pool = get_global_db_pool()
+                                subscription_sql = "SELECT DISTINCT target_platform_id FROM forward_rule_subscriptions WHERE rule_id = %s"
+                                subscription_rows = db_pool.query(subscription_sql, (rule_data['rule_id'],))
+                                if subscription_rows:
+                                    target_platform_ids = [row['target_platform_id'] for row in subscription_rows]
+                                    logger.info(f"ℹ️ 规则 {rule_data['rule_name']} 从订阅记录获取目标平台ID: {target_platform_ids}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ 从订阅记录获取目标平台ID失败: {e}")
+                        
                         forward_rule = ForwardRule(
                             rule_id=rule_data['rule_id'],
                             rule_name=rule_data['rule_name'],
                             enabled=True,
-                            source_platform_id=rule_data.get('source_platform_id'),  # 新字段
-                            source_platform=rule_data.get('source_platform', ''),  # 兼容旧数据
+                            source_platform_id=source_platform_id,  # 新字段
+                            source_platform=source_platform,  # 兼容旧数据，如果为空则从平台ID查询
                             source_chat_ids=rule_data.get('source_chat_ids', []),
-                            target_platform_ids=rule_data.get('target_platform_ids', []),  # 新增：目标平台实例ID列表
+                            target_platform_ids=target_platform_ids,  # 新增：目标平台实例ID列表，如果为空则从订阅记录获取
                             target_platforms=rule_data.get('target_platforms', []),  # 保留：兼容旧数据
                             target_chat_ids=rule_data.get('target_chat_ids', {}),
                             keywords=rule_data.get('keywords', []),
@@ -104,7 +144,7 @@ class MessageForwardAPIService:
                         )
                         self.manager.add_forward_rule(forward_rule)
                         loaded_count += 1
-                        logger.info(f"✅ 已加载转发规则: {rule_data['rule_name']} (源平台ID: {rule_data.get('source_platform_id')}, 源平台: {rule_data.get('source_platform')})")
+                        logger.info(f"✅ 已加载转发规则: {rule_data['rule_name']} (源平台ID: {source_platform_id}, 源平台: {source_platform}, 目标平台ID: {target_platform_ids})")
                     except Exception as e:
                         logger.error(f"❌ 加载规则失败 {rule_data['rule_name']}: {e}")
                         import traceback
@@ -117,6 +157,9 @@ class MessageForwardAPIService:
             logger.info(f"📦 创建统一监听服务，已加载 {len([r for r in rules if r.get('enabled', False)])} 个启用规则")
             self.listener_service = UnifiedListenerService(self.manager, self.db)
             
+            # 将监听服务引用设置到 manager（用于获取平台实例映射）
+            self.manager.set_listener_service(self.listener_service)
+            
             # 启动监听服务（根据规则自动管理平台监听）
             logger.info("🚀 准备启动统一监听服务...")
             await self.listener_service.start()
@@ -125,6 +168,17 @@ class MessageForwardAPIService:
             # 启动管理器
             await self.manager.start()
             self.is_running = True
+            
+            # 启动订阅到期提醒服务
+            try:
+                from core.message_forward.subscription_reminder import SubscriptionReminderService
+                self.reminder_service = SubscriptionReminderService(self.db, self.manager)
+                self.reminder_service.start()
+                logger.info("✅ 订阅到期提醒服务已启动")
+            except Exception as e:
+                logger.warning(f"⚠️ 启动订阅提醒服务失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
             
             logger.info("✅ 消息转发服务启动成功")
             return {
@@ -252,27 +306,62 @@ class MessageForwardAPIService:
                 'message': f'添加失败: {str(e)}'
             }
     
-    def get_platforms(self) -> Dict[str, Any]:
-        """获取平台列表（包含实时连接状态）"""
+    def get_platforms(self, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """获取平台列表（包含实时连接状态，支持分页）"""
         try:
-            platforms = self.db.get_platforms()
+            all_platforms = self.db.get_platforms()
+            
+            # 分页处理
+            total = len(all_platforms)
+            start = (page - 1) * page_size
+            end = start + page_size
+            platforms = all_platforms[start:end]
+            
+            # Webhook类型的平台（不需要主动连接，被动接收消息）
+            webhook_platform_types = ['tradingview', 'dingtalk', 'wechat_official', 'bicoin', 'coinglass']
             
             # 如果服务正在运行，更新实时连接状态
             if self.is_running and self.listener_service:
                 for platform in platforms:
                     platform_id = platform['id']
+                    platform_type = platform.get('platform_type', '').lower()
+                    
+                    # Webhook类型平台：只要已启用就显示为已连接
+                    if platform_type in webhook_platform_types:
+                        if platform.get('enabled', False):
+                            platform['status'] = 'connected'
+                            # 使用中国时区时间
+                            china_tz = timezone(timedelta(hours=8))
+                            platform['last_active_at'] = datetime.now(china_tz).strftime('%Y-%m-%d %H:%M:%S')
+                            logger.debug(f"平台 {platform_id} ({platform_type}) 是Webhook类型，已启用，状态：已连接")
+                        else:
+                            platform['status'] = 'inactive'
+                            logger.debug(f"平台 {platform_id} ({platform_type}) 是Webhook类型，未启用")
                     # 检查平台是否在监听服务中
-                    if platform_id in self.listener_service.listening_platforms:
+                    elif platform_id in self.listener_service.listening_platforms:
                         platform_instance = self.listener_service.listening_platforms[platform_id]
                         # 更新实时状态（兼容 is_connected 和 connected 两种属性名）
                         is_connected = getattr(platform_instance, 'is_connected', None) or getattr(platform_instance, 'connected', False)
                         platform['status'] = 'connected' if is_connected else 'disconnected'
-                        platform['last_active_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        # 使用中国时区时间
+                        china_tz = timezone(timedelta(hours=8))
+                        platform['last_active_at'] = datetime.now(china_tz).strftime('%Y-%m-%d %H:%M:%S')
                         logger.debug(f"平台 {platform_id} 实时状态: {platform['status']}")
                     else:
                         # 平台未在监听服务中
                         platform['status'] = 'disconnected'
                         logger.debug(f"平台 {platform_id} 未在监听服务中")
+            else:
+                # 服务未运行，但Webhook类型平台如果已启用仍显示为就绪
+                for platform in platforms:
+                    platform_id = platform['id']
+                    platform_type = platform.get('platform_type', '').lower()
+                    if platform_type in webhook_platform_types and platform.get('enabled', False):
+                        platform['status'] = 'ready'  # Webhook类型平台就绪状态
+                        # 使用中国时区时间
+                        china_tz = timezone(timedelta(hours=8))
+                        platform['last_active_at'] = datetime.now(china_tz).strftime('%Y-%m-%d %H:%M:%S')
+                        logger.debug(f"平台 {platform_id} ({platform_type}) 是Webhook类型，服务未运行但已启用，状态：就绪")
             
             # 过滤敏感信息
             for platform in platforms:
@@ -321,7 +410,13 @@ class MessageForwardAPIService:
             
             return {
                 'success': True,
-                'data': platforms
+                'data': platforms,
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total': total,
+                    'total_pages': (total + page_size - 1) // page_size if page_size > 0 else 0
+                }
             }
         except Exception as e:
             logger.error(f"❌ 获取平台列表失败: {e}")
@@ -669,8 +764,11 @@ class MessageForwardAPIService:
                 logger.info("钉钉平台测试：发送测试消息")
                 try:
                     from core.message_forward.models import Message, MessageType
+                    # 获取中国时区时间（UTC+8）
+                    china_tz = timezone(timedelta(hours=8))
+                    local_time = datetime.now(china_tz)
                     test_message = Message(
-                        content="[测试] 钉钉消息转发系统连接测试\n测试时间: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        content="[测试] 钉钉消息转发系统连接测试\n测试时间: " + local_time.strftime("%Y-%m-%d %H:%M:%S"),
                         message_type=MessageType.TEXT
                     )
                     
@@ -679,9 +777,12 @@ class MessageForwardAPIService:
                     
                     if send_result:
                         # 返回符合前端期望的格式
+                        # 使用中国时区时间
+                        china_tz = timezone(timedelta(hours=8))
+                        local_time = datetime.now(china_tz)
                         test_msg = {
                             'content': test_message.content,
-                            'timestamp': datetime.now().isoformat(),
+                            'timestamp': local_time.isoformat(),
                             'chat_id': '',
                             'chat_title': '钉钉群'
                         }
@@ -717,11 +818,14 @@ class MessageForwardAPIService:
             
             async def test_message_handler(message_data: Dict[str, Any]):
                 """测试消息处理器"""
+                # 使用中国时区时间
+                china_tz = timezone(timedelta(hours=8))
+                default_timestamp = datetime.now(china_tz)
                 # 构建统一消息对象
                 message = Message(
                     content=message_data.get('text', ''),
                     message_type=MessageType.TEXT,
-                    timestamp=message_data.get('date', datetime.now()),
+                    timestamp=message_data.get('date', default_timestamp),
                     source_platform_id=platform_id,
                     source_platform=PlatformType(platform_data['platform_type']) if hasattr(PlatformType, platform_data['platform_type'].upper()) else None,
                     source_chat_id=str(message_data.get('chat_id', '')),
@@ -1134,6 +1238,9 @@ class MessageForwardAPIService:
                     'message': '添加规则失败'
                 }
             
+            # 自动为每个目标平台和群组创建订阅（有效期30天）
+            await self._create_subscriptions_for_rule(rule_id, rule_data)
+            
             # 如果服务未运行，自动启动服务
             if not self.is_running:
                 logger.info("🔄 检测到添加规则，自动启动消息转发服务...")
@@ -1183,13 +1290,82 @@ class MessageForwardAPIService:
                 'message': f'添加失败: {str(e)}'
             }
     
-    def get_rules(self) -> Dict[str, Any]:
-        """获取规则列表"""
+    async def _create_subscriptions_for_rule(self, rule_id: str, rule_data: Dict[str, Any]):
+        """
+        为规则的所有目标平台和群组创建订阅（有效期30天）
+        
+        Args:
+            rule_id: 规则ID
+            rule_data: 规则数据
+        """
         try:
-            rules = self.db.get_rules()
+            from core.message_forward.invitation_service import SubscriptionService
+            subscription_service = SubscriptionService(self.db)
+            
+            target_platform_ids = rule_data.get('target_platform_ids', [])
+            target_chat_ids = rule_data.get('target_chat_ids', {})
+            
+            # 如果没有target_platform_ids，尝试从target_platforms获取
+            if not target_platform_ids:
+                target_platforms = rule_data.get('target_platforms', [])
+                if target_platforms:
+                    # 获取所有平台，查找匹配的平台类型
+                    all_platforms = self.db.get_platforms()
+                    for platform in all_platforms:
+                        if platform.get('platform_type', '').lower() in [pt.lower() for pt in target_platforms]:
+                            if platform.get('enabled', False):
+                                target_platform_ids.append(platform['id'])
+            
+            # 为每个目标平台和群组创建订阅
+            for platform_id in target_platform_ids:
+                # 获取该平台对应的群组列表
+                platform_data = self.db.get_platform_by_id(platform_id)
+                if not platform_data:
+                    continue
+                
+                platform_type = platform_data.get('platform_type', '').lower()
+                chat_ids = target_chat_ids.get(platform_type, []) or target_chat_ids.get('dingtalk', [])
+                
+                # 如果没有指定chat_ids，使用default
+                if not chat_ids:
+                    chat_ids = ['default']
+                
+                for chat_id in chat_ids:
+                    try:
+                        subscription_service.create_subscription(
+                            rule_id=rule_id,
+                            target_platform_id=platform_id,
+                            target_chat_id=str(chat_id),
+                            duration_days=30  # 默认30天有效期
+                        )
+                        logger.info(f"✅ 已为规则 {rule_id} 创建订阅: 平台ID={platform_id}, 群组={chat_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ 创建订阅失败: 规则ID={rule_id}, 平台ID={platform_id}, 群组={chat_id}, 错误={e}")
+        except Exception as e:
+            logger.error(f"❌ 为规则创建订阅失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    def get_rules(self, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """获取规则列表（支持分页）"""
+        try:
+            all_rules = self.db.get_rules()
+            
+            # 分页处理
+            total = len(all_rules)
+            start = (page - 1) * page_size
+            end = start + page_size
+            rules = all_rules[start:end]
+            
             return {
                 'success': True,
-                'data': rules
+                'data': rules,
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total': total,
+                    'total_pages': (total + page_size - 1) // page_size if page_size > 0 else 0
+                }
             }
         except Exception as e:
             logger.error(f"❌ 获取规则列表失败: {e}")
@@ -1225,6 +1401,16 @@ class MessageForwardAPIService:
             success = self.db.update_rule(rule_id, update_data)
             
             if success:
+                # 如果更新了目标平台或群组，更新订阅
+                if 'target_platform_ids' in update_data or 'target_chat_ids' in update_data:
+                    # 获取完整规则数据
+                    rule = self.db.get_rule_by_id(rule_id)
+                    if rule:
+                        # 合并更新数据
+                        full_rule_data = dict(rule)
+                        full_rule_data.update(update_data)
+                        await self._create_subscriptions_for_rule(rule_id, full_rule_data)
+                
                 return {
                     'success': True,
                     'message': '规则更新成功'
@@ -1707,13 +1893,27 @@ class MessageForwardAPIService:
     
     # ==================== 消息历史 ====================
     
-    def get_message_history(self, limit: int = 100) -> Dict[str, Any]:
-        """获取消息历史"""
+    def get_message_history(self, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """获取消息历史（支持分页）"""
         try:
-            messages = self.db.get_message_history(limit)
+            # 获取总数（需要查询数据库获取总数）
+            all_messages = self.db.get_message_history(limit=10000)  # 获取足够多的数据用于分页
+            total = len(all_messages)
+            
+            # 分页处理
+            start = (page - 1) * page_size
+            end = start + page_size
+            messages = all_messages[start:end]
+            
             return {
                 'success': True,
-                'data': messages
+                'data': messages,
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total': total,
+                    'total_pages': (total + page_size - 1) // page_size if page_size > 0 else 0
+                }
             }
         except Exception as e:
             logger.error(f"❌ 获取消息历史失败: {e}")
@@ -1727,15 +1927,16 @@ class MessageForwardAPIService:
 _service_instance: Optional[MessageForwardAPIService] = None
 
 
-def get_message_forward_service(db_pool=None) -> MessageForwardAPIService:
+def get_message_forward_service(db_pool=None, force_reload: bool = False) -> MessageForwardAPIService:
     """
     获取全局服务实例
     
     Args:
         db_pool: MySQL连接池实例（可选）
+        force_reload: 是否强制重新创建实例（用于代码更新后重新加载）
     """
     global _service_instance
-    if _service_instance is None:
+    if _service_instance is None or force_reload:
         _service_instance = MessageForwardAPIService(db_pool)
     return _service_instance
 

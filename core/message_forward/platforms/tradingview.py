@@ -37,9 +37,15 @@ class TradingViewPlatform(MessagePlatform):
         
         # Webhook配置
         self.use_webhook = config.get('use_webhook', True)  # 是否使用webhook接收方式
-        self.webhook_port = config.get('webhook_port', 8080)  # Webhook监听端口
+        self.webhook_port = config.get('webhook_port', 8080)  # Webhook监听端口（已弃用，不再使用独立服务器）
         self.webhook_path = config.get('webhook_path', '/tradingview/webhook')  # Webhook接收路径
         self.secret_key = config.get('secret_key', '')  # Webhook签名密钥（可选，用于验证）
+        
+        # 如果配置的端口是 80 或 443，记录警告（这些端口被 Nginx 占用）
+        if self.webhook_port in [80, 443]:
+            logger.warning(f"⚠️ 配置的端口 {self.webhook_port} 已被 Nginx 占用")
+            logger.warning("   TradingView Webhook 将通过 Flask API 端点接收: /webhook/tradingview")
+            logger.warning("   请在 TradingView Alert 中配置: https://your-domain/webhook/tradingview")
         
         # 过滤配置
         self.strategy_filter = config.get('strategy_filter', [])  # 策略过滤器（例如：['ASR']，留空表示接收所有）
@@ -57,10 +63,19 @@ class TradingViewPlatform(MessagePlatform):
         logger.info("TradingView平台初始化")
     
     async def connect(self) -> bool:
-        """连接到TradingView（启动Webhook服务器）"""
+        """连接到TradingView（使用Flask API端点，不启动独立服务器）"""
         try:
             if self.use_webhook:
-                return await self._connect_webhook()
+                # TradingView Webhook 通过 Flask API 的 /webhook/tradingview 端点接收
+                # 不需要启动独立的 Webhook 服务器，避免端口冲突
+                # Flask API 已经通过 Nginx 代理对外提供服务
+                logger.info("TradingView Webhook 使用 Flask API 端点接收消息")
+                logger.info(f"   Webhook URL: https://your-domain/webhook/tradingview")
+                logger.info(f"   或: http://your-domain/webhook/tradingview (如果使用HTTP)")
+                logger.info("   请在 TradingView Alert 中配置此 URL")
+                
+                self.connected = True
+                return True
             else:
                 logger.warning("TradingView仅支持Webhook方式")
                 return False
@@ -72,11 +87,21 @@ class TradingViewPlatform(MessagePlatform):
             self.connected = False
             return False
     
-    async def _connect_webhook(self) -> bool:
-        """通过Webhook方式连接（启动HTTP服务器接收消息）"""
+    async def _connect_webhook_legacy(self) -> bool:
+        """通过Webhook方式连接（启动独立HTTP服务器接收消息）- 已弃用，保留用于兼容"""
+        # 注意：此方法已弃用，因为会与 Nginx 端口冲突
+        # 现在使用 Flask API 的 /webhook/tradingview 端点
+        # 如果配置的端口是 80 或 443，直接拒绝启动
+        if self.webhook_port in [80, 443]:
+            logger.error(f"❌ 不能使用端口 {self.webhook_port}，该端口已被 Nginx 占用")
+            logger.error("   请使用 Flask API 端点: https://your-domain/webhook/tradingview")
+            logger.error("   或配置非 80/443 的端口（如 8080），并通过 Nginx 代理")
+            return False
+        
         try:
             from aiohttp import web
             import threading
+            import socket
             
             logger.info("启动TradingView Webhook接收服务器...")
             
@@ -293,6 +318,29 @@ class TradingViewPlatform(MessagePlatform):
         logger.info(f"   请在TradingView Alert中配置webhook地址: http://your-server-ip:{self.webhook_port}{self.webhook_path}")
         while self.listening:
             await asyncio.sleep(1)
+    
+    async def start_listening(self, monitored_chat_ids: Optional[List[str]] = None):
+        """
+        开始监听消息（兼容接口，TradingView通过Webhook接收，不需要主动监听）
+        
+        Args:
+            monitored_chat_ids: 要监听的群组/频道ID列表（TradingView不需要此参数，但保留以兼容接口）
+        """
+        # TradingView平台通过Webhook被动接收消息，不需要主动监听
+        # 只需要确保连接已建立（Webhook服务器已启动）
+        if not self.connected:
+            logger.warning("TradingView未连接，尝试连接...")
+            await self.connect()
+        
+        if self.connected:
+            self.listening = True
+            logger.info("✅ TradingView Webhook监听已就绪，等待接收消息...")
+            logger.info(f"   Webhook地址: http://your-server-ip:{self.webhook_port}{self.webhook_path}")
+            # 保持运行状态
+            while self.listening:
+                await asyncio.sleep(10)  # 每10秒检查一次状态
+        else:
+            logger.error("❌ TradingView连接失败，无法启动监听")
     
     def _parse_webhook_message(self, data: Dict[str, Any]) -> Optional[Message]:
         """

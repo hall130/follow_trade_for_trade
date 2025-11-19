@@ -9657,9 +9657,13 @@ def start_follow_monitor_in_background():
                     new_loop.run_until_complete(task)
                 except (RuntimeError, asyncio.CancelledError) as e:
                     # 事件循环关闭或任务被取消
-                    if "closed" in str(e).lower() or isinstance(e, asyncio.CancelledError):
-                        logger.info("跟单监控器已停止")
+                    error_msg = str(e).lower()
+                    if "closed" in error_msg or isinstance(e, asyncio.CancelledError) or "attached to a different loop" in error_msg:
+                        logger.info(f"跟单监控器已停止: {e}")
                     else:
+                        logger.error(f"跟单监控器异常: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
                         raise
                             
             except KeyboardInterrupt:
@@ -12220,7 +12224,7 @@ def stop_message_forward_service():
 # 获取平台列表
 @app.route('/api/v1/message-forward/platforms', methods=['GET'])
 def get_message_platforms():
-    """获取所有平台"""
+    """获取所有平台（支持分页）"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
             'success': False,
@@ -12228,8 +12232,20 @@ def get_message_platforms():
         }), 503
     
     try:
+        # 获取分页参数
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 20, type=int)
+        
+        # 参数验证
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 20
+        if page_size > 100:
+            page_size = 100
+        
         service = get_message_forward_service()
-        result = service.get_platforms()
+        result = service.get_platforms(page=page, page_size=page_size)
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"获取平台列表失败: {e}")
@@ -12609,7 +12625,7 @@ def disable_message_platform(platform_id):
 # 获取规则列表
 @app.route('/api/v1/message-forward/rules', methods=['GET'])
 def get_message_forward_rules():
-    """获取所有转发规则"""
+    """获取所有转发规则（支持分页）"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
             'success': False,
@@ -12617,8 +12633,20 @@ def get_message_forward_rules():
         }), 503
     
     try:
+        # 获取分页参数
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 20, type=int)
+        
+        # 参数验证
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 20
+        if page_size > 100:
+            page_size = 100
+        
         service = get_message_forward_service()
-        result = service.get_rules()
+        result = service.get_rules(page=page, page_size=page_size)
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"获取规则列表失败: {e}")
@@ -12810,7 +12838,7 @@ def disable_message_forward_rule(rule_id):
 # 获取消息历史
 @app.route('/api/v1/message-forward/history', methods=['GET'])
 def get_message_history():
-    """获取消息历史"""
+    """获取消息历史（支持分页）"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
             'success': False,
@@ -12818,13 +12846,243 @@ def get_message_history():
         }), 503
     
     try:
-        limit = request.args.get('limit', 100, type=int)
+        # 获取分页参数
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 20, type=int)
+        
+        # 参数验证
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 20
+        if page_size > 100:
+            page_size = 100
         
         service = get_message_forward_service()
-        result = service.get_message_history(limit)
+        result = service.get_message_history(page=page, page_size=page_size)
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"获取消息历史失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# ==================== 订阅管理 API ====================
+
+@app.route('/api/v1/message-forward/subscriptions/<rule_id>', methods=['GET'])
+def get_subscriptions(rule_id):
+    """获取规则的所有订阅"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        from core.message_forward.invitation_service import SubscriptionService
+        from database.global_db_manager import get_global_db_pool
+        
+        db_pool = get_global_db_pool()
+        subscription_service = SubscriptionService(db_pool)
+        
+        subscriptions = subscription_service.get_subscriptions_by_rule(rule_id)
+        
+        return jsonify({
+            'success': True,
+            'data': subscriptions,
+            'message': '获取订阅列表成功'
+        }), 200
+    except Exception as e:
+        logger.error(f"获取订阅列表失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/message-forward/subscriptions/check', methods=['POST'])
+def check_subscription():
+    """检查订阅是否有效"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        from core.message_forward.invitation_service import SubscriptionService
+        from database.global_db_manager import get_global_db_pool
+        
+        data = request.get_json()
+        if not data or not all(k in data for k in ['rule_id', 'target_platform_id', 'target_chat_id']):
+            return jsonify({
+                'success': False,
+                'message': '缺少必填字段: rule_id, target_platform_id, target_chat_id'
+            }), 400
+        
+        db_pool = get_global_db_pool()
+        subscription_service = SubscriptionService(db_pool)
+        
+        is_valid = subscription_service.check_subscription_valid(
+            rule_id=data['rule_id'],
+            target_platform_id=data['target_platform_id'],
+            target_chat_id=data['target_chat_id']
+        )
+        
+        subscription = subscription_service.get_subscription(
+            rule_id=data['rule_id'],
+            target_platform_id=data['target_platform_id'],
+            target_chat_id=data['target_chat_id']
+        )
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'is_valid': is_valid,
+                'subscription': subscription
+            },
+            'message': '检查订阅状态成功'
+        }), 200
+    except Exception as e:
+        logger.error(f"检查订阅状态失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/message-forward/subscriptions/test-reminder', methods=['POST'])
+def test_subscription_reminder():
+    """手动触发订阅提醒检查（用于测试单个订阅）"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        service = get_message_forward_service()
+        if not service or not service.reminder_service:
+            return jsonify({
+                'success': False,
+                'message': '订阅提醒服务未启动'
+            }), 503
+        
+        data = request.get_json() or {}
+        
+        # 必须指定订阅信息（测试单个订阅）
+        if not (data.get('rule_id') and data.get('target_platform_id') and data.get('target_chat_id')):
+            return jsonify({
+                'success': False,
+                'message': '缺少必填字段: rule_id, target_platform_id, target_chat_id'
+            }), 400
+        
+        # 测试特定订阅
+        from database.global_db_manager import get_global_db_pool
+        db_pool = get_global_db_pool()
+        
+        sql = """
+            SELECT * FROM forward_rule_subscriptions 
+            WHERE rule_id = %s AND target_platform_id = %s AND target_chat_id = %s
+        """
+        subscriptions = db_pool.query(sql, (
+            data['rule_id'],
+            data['target_platform_id'],
+            data['target_chat_id']
+        ))
+        
+        if not subscriptions:
+            return jsonify({
+                'success': False,
+                'message': '未找到指定的订阅'
+            }), 404
+        
+        subscription = dict(subscriptions[0])
+        
+        # 计算剩余天数（用于显示）
+        from datetime import datetime
+        expire_date = subscription.get('expire_date')
+        if isinstance(expire_date, str):
+            expire_date = datetime.fromisoformat(expire_date.replace('Z', '+00:00'))
+        
+        today = datetime.now().date()
+        expire_date_only = expire_date.date() if hasattr(expire_date, 'date') else expire_date
+        days_left = (expire_date_only - today).days
+        
+        # 直接发送提醒（绕过条件检查）
+        # 注意：_send_reminder 是同步方法，但内部使用异步发送消息
+        try:
+            service.reminder_service._send_reminder(subscription, days_left if days_left > 0 else 1)
+            logger.info(f"✅ 测试提醒已触发: 规则ID={data['rule_id']}, 平台ID={data['target_platform_id']}, 群组={data['target_chat_id']}")
+            
+            return jsonify({
+                'success': True,
+                'message': f'测试提醒已发送到指定订阅（剩余{days_left}天），请查看钉钉群组和日志'
+            }), 200
+        except Exception as send_error:
+            logger.error(f"❌ 发送测试提醒失败: {send_error}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': f'发送测试提醒失败: {str(send_error)}，请查看日志'
+            }), 500
+    except Exception as e:
+        logger.error(f"触发提醒检查失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/message-forward/subscriptions/renew', methods=['POST'])
+def renew_subscription():
+    """续订订阅"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        from core.message_forward.invitation_service import SubscriptionService
+        from database.global_db_manager import get_global_db_pool
+        
+        data = request.get_json()
+        if not data or not all(k in data for k in ['rule_id', 'target_platform_id', 'target_chat_id']):
+            return jsonify({
+                'success': False,
+                'message': '缺少必填字段: rule_id, target_platform_id, target_chat_id'
+            }), 400
+        
+        duration_days = data.get('duration_days', 30)  # 默认续订30天
+        
+        db_pool = get_global_db_pool()
+        subscription_service = SubscriptionService(db_pool)
+        
+        result = subscription_service.renew_subscription(
+            rule_id=data['rule_id'],
+            target_platform_id=data['target_platform_id'],
+            target_chat_id=data['target_chat_id'],
+            duration_days=duration_days,
+            code=None  # 不再使用邀请码
+        )
+        
+        if result.get('success', True):
+            return jsonify({
+                'success': True,
+                'data': result,
+                'message': f'订阅续订成功，已延长 {duration_days} 天'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': result.get('message', '续订失败')
+            }), 400
+    except Exception as e:
+        logger.error(f"续订订阅失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': str(e)

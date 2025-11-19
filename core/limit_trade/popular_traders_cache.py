@@ -77,9 +77,12 @@ class PopularTradersCache:
         Returns:
             缓存的数据，如果不存在或已过期则返回None
         """
-        # 如果exchange是自定义缓存键（以"whale_"开头），直接使用
-        if isinstance(exchange, str) and exchange.startswith('whale_'):
+        # 如果exchange是自定义缓存键（以"whale_"或"echosync_"开头），直接使用
+        if isinstance(exchange, str) and (exchange.startswith('whale_') or exchange.startswith('echosync_')):
             cache_key = f"{CACHE_PREFIX}:{exchange}"
+        # 如果exchange已经包含前缀（完整缓存键），直接使用
+        elif isinstance(exchange, str) and exchange.startswith(f"{CACHE_PREFIX}:"):
+            cache_key = exchange
         else:
             cache_key = self._generate_cache_key(exchange, **kwargs)
         
@@ -127,9 +130,12 @@ class PopularTradersCache:
             ttl: 缓存过期时间（秒），如果为None则使用默认值
             **kwargs: 其他参数
         """
-        # 如果exchange是自定义缓存键（以"whale_"开头），直接使用
-        if isinstance(exchange, str) and exchange.startswith('whale_'):
+        # 如果exchange是自定义缓存键（以"whale_"或"echosync_"开头），直接使用
+        if isinstance(exchange, str) and (exchange.startswith('whale_') or exchange.startswith('echosync_')):
             cache_key = f"{CACHE_PREFIX}:{exchange}"
+        # 如果exchange已经包含前缀（完整缓存键），直接使用
+        elif isinstance(exchange, str) and exchange.startswith(f"{CACHE_PREFIX}:"):
+            cache_key = exchange
         else:
             cache_key = self._generate_cache_key(exchange, **kwargs)
         

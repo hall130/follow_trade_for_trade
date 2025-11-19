@@ -122,7 +122,8 @@ class UnifiedListenerService:
                 return
             
             # 收集需要监听的源平台ID和需要连接的目标平台
-            required_platform_ids: Set[int] = set()
+            required_platform_ids: Set[int] = set()  # 需要监听的源平台ID
+            required_target_platform_ids: Set[int] = set()  # 需要连接的目标平台ID（用于转发消息）
             target_platform_types: Set[str] = set()  # 记录需要的目标平台类型
             
             for rule in enabled_rules:
@@ -143,6 +144,7 @@ class UnifiedListenerService:
                 if target_platform_ids:
                     # 直接使用指定的平台实例ID
                     for platform_id in target_platform_ids:
+                        required_target_platform_ids.add(platform_id)  # 记录目标平台ID
                         if platform_id not in required_platform_ids:
                             if platform_id not in self.listening_platforms:
                                 await self._init_target_platform(platform_id)
@@ -156,12 +158,14 @@ class UnifiedListenerService:
                         for platform in all_platforms:
                             if platform.get('enabled') and platform['platform_type'] in target_platform_types:
                                 platform_id = platform['id']
+                                required_target_platform_ids.add(platform_id)  # 记录目标平台ID
                                 # 如果这个平台不是源平台，也要初始化它（但不启动监听）
                                 if platform_id not in required_platform_ids:
                                     if platform_id not in self.listening_platforms:
                                         await self._init_target_platform(platform_id)
             
             logger.info(f"🎯 需要监听的源平台ID: {required_platform_ids}")
+            logger.info(f"🎯 需要连接的目标平台ID: {required_target_platform_ids}")
             logger.info(f"🎯 需要连接的目标平台类型: {target_platform_types}")
 
 
@@ -173,8 +177,12 @@ class UnifiedListenerService:
                 else:
                     logger.info(f"ℹ️ 平台已在监听中 (ID: {platform_id})")
             
-            # 停止不再需要的平台监听
-            platforms_to_stop = [pid for pid in self.listening_platforms.keys() if pid not in required_platform_ids]
+            # 停止不再需要的平台监听（排除目标平台，因为它们需要用于转发消息）
+            # 只停止那些既不是源平台也不是目标平台的平台
+            platforms_to_stop = [
+                pid for pid in self.listening_platforms.keys() 
+                if pid not in required_platform_ids and pid not in required_target_platform_ids
+            ]
             if platforms_to_stop:
                 logger.info(f"🛑 需要停止监听的平台: {platforms_to_stop}")
 

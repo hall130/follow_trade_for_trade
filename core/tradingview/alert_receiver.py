@@ -10,7 +10,7 @@ import asyncio
 import json
 import hmac
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -137,7 +137,10 @@ class TradingViewAlertReceiver:
             
             # 发送通知
             if self.config['enable_notifications']:
+                logger.info(f"📢 准备发送交易通知，消息管理器: {self.message_manager is not None}")
                 await self._send_trade_notification(trade_info, success)
+            else:
+                logger.warning("⚠️ 通知功能已禁用，不会转发消息")
             
         except Exception as e:
             logger.error(f"处理TradingView Alert异常: {e}")
@@ -200,6 +203,10 @@ class TradingViewAlertReceiver:
             #      action=SELL + direct=SHORT = 开空仓（sell/short）
             #      action=BUY + direct=SHORT = 平空仓（close short）
             
+            # 保存原始 action 和 direct 用于消息格式化
+            original_action = action
+            original_direct = direct
+            
             if direct:
                 # 有 direct 字段，需要结合 action 和 direct 判断
                 if direct in ['LONG', '多', '做多']:
@@ -248,15 +255,16 @@ class TradingViewAlertReceiver:
             
             trade_info = {
                 'symbol': symbol,
-                'action': trade_action,
+                'action': trade_action,  # 内部使用的交易动作（buy/sell/close）
                 'price': float(price),
                 'quantity': float(quantity),
                 'message': message,
                 'alert_name': data.get('alert_name', ''),
                 'strategy': data.get('strategy', 'TradingView'),
-                'timestamp': datetime.now(),
+                'timestamp': datetime.now(timezone.utc),  # 使用 UTC 时间，带时区信息
                 'original_data': data,
-                'direct': direct if direct else None  # 保存原始方向信息
+                'direct': original_direct if original_direct else None,  # 保存原始方向信息（SHORT/LONG）
+                'original_action': original_action  # 保存原始 action（BUY/SELL）
             }
             
             logger.info(f"Alert解析成功: {trade_info}")
@@ -399,43 +407,140 @@ class TradingViewAlertReceiver:
     async def _send_trade_notification(self, trade_info: Dict[str, Any], success: bool):
         """发送交易信号通知（消息转发）"""
         try:
+            logger.info(f"🔔 开始发送交易通知，消息管理器状态: {self.message_manager is not None}")
             if not self.message_manager:
-                logger.debug("消息管理器未初始化，跳过消息转发")
+                logger.warning("⚠️ 消息管理器未初始化，跳过消息转发。请检查消息转发服务是否已启动。")
                 return
+            logger.info("✅ 消息管理器已初始化，继续处理...")
             
-            # 构建通知消息（当前只转发信号，不执行交易）
-            # 格式化动作显示（包含方向信息）
-            action_display = trade_info['action'].upper()
-            if trade_info.get('direct'):
-                direct_display = trade_info['direct']
-                if trade_info['action'] == 'close':
-                    action_display = f"平仓 ({direct_display})"
-                elif trade_info['action'] == 'buy' and direct_display == 'LONG':
-                    action_display = f"开多 ({direct_display})"
-                elif trade_info['action'] == 'sell' and direct_display == 'SHORT':
-                    action_display = f"开空 ({direct_display})"
+            # 根据原始 action 和 direct 判断交易类型（用于显示）
+            original_action = trade_info.get('original_action', '').upper()
+            direct = trade_info.get('direct', '').upper()
+            
+            # 判断交易类型
+            trade_type = ""
+            if original_action == 'BUY' and direct == 'SHORT':
+                trade_type = "平空"
+            elif original_action == 'SELL' and direct == 'LONG':
+                trade_type = "平多"
+            elif original_action == 'BUY' and direct == 'LONG':
+                trade_type = "开多"
+            elif original_action == 'SELL' and direct == 'SHORT':
+                trade_type = "开空"
+            elif original_action == 'BUY':
+                trade_type = "买入"
+            elif original_action == 'SELL':
+                trade_type = "卖出"
+            elif original_action == 'CLOSE' or trade_info.get('action') == 'close':
+                if direct == 'SHORT':
+                    trade_type = "平空"
+                elif direct == 'LONG':
+                    trade_type = "平多"
                 else:
-                    action_display = f"{action_display} ({direct_display})"
+                    trade_type = "平仓"
+            else:
+                trade_type = f"{original_action or trade_info.get('action', '')}"
             
-            message_content = f"""
-📊 TradingView 交易信号
-
-• 交易对: {trade_info['symbol']}
-• 动作: {action_display}
-• 价格: {trade_info['price']}
-• 数量: {trade_info['quantity']}
-• 策略: {trade_info.get('strategy', 'TradingView')}
-• 警报名称: {trade_info.get('alert_name', '未命名')}
-
-💬 消息: {trade_info.get('message', '无')}
-⏰ 时间: {trade_info['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}
-            """
+            # 格式化价格（添加 $ 符号）
+            price = trade_info.get('price', 0)
+            price_str = f"${price:,.2f}" if price else "$0.00"
             
-            # 创建消息对象
+            # 格式化合约名称（从 BTCUSD 转为 BTC-USDT-SWAP）
+            symbol = trade_info.get('symbol', '').upper()
+            logger.info(f"🔍 原始合约符号: {symbol}")
+            
+            # 提取基础币种（移除交易对后缀）
+            base_symbol = symbol
+            
+            # 移除常见的交易对后缀（按长度从长到短排序，优先匹配更长的后缀）
+            # 例如：BTCUSDT 应该匹配 USDT 而不是 USD
+            suffixes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH']
+            matched = False
+            for suffix in suffixes:
+                if symbol.endswith(suffix) and len(symbol) > len(suffix):
+                    base_symbol = symbol[:-len(suffix)]
+                    logger.info(f"✅ 合约名称转换: {symbol} -> {base_symbol} (移除后缀: {suffix})")
+                    matched = True
+                    break
+            
+            # 如果移除后缀后为空或太短，尝试提取前3-4个字符作为基础币种
+            if not matched:
+                # 如果没有匹配到后缀，尝试提取前3-4个字符作为基础币种
+                if len(symbol) >= 3:
+                    # 对于 BTCUSD，提取前3个字符 BTC
+                    old_base = base_symbol
+                    base_symbol = symbol[:3]
+                    logger.info(f"✅ 合约名称转换: {symbol} -> {base_symbol} (提取前3个字符, 之前: {old_base})")
+                else:
+                    base_symbol = symbol
+                    logger.info(f"⚠️ 合约名称转换: {symbol} -> {base_symbol} (保持原样)")
+            elif not base_symbol or len(base_symbol) < 2:
+                # 如果匹配到后缀但结果为空或太短，也尝试提取前3个字符
+                if len(symbol) >= 3:
+                    base_symbol = symbol[:3]
+                    logger.info(f"✅ 合约名称转换: {symbol} -> {base_symbol} (匹配后缀后结果太短，提取前3个字符)")
+                else:
+                    base_symbol = symbol
+                    logger.info(f"⚠️ 合约名称转换: {symbol} -> {base_symbol} (保持原样)")
+            
+            # 构建合约名称
+            contract_name = f"{base_symbol.replace('USD', '')}-USDT-SWAP"
+            logger.info(f"📝 最终合约名称: {contract_name} (原始: {symbol}, 基础币种: {base_symbol})")
+            
+            # 获取消息内容
+            message_content_text = trade_info.get('message', '')
+            
+            # 格式化时间（使用中国时区）
+            from datetime import timezone, timedelta
+            china_tz = timezone(timedelta(hours=8))
+            timestamp = trade_info.get('timestamp')
+            
+            # 如果没有提供 timestamp，使用当前时间（中国时区）
+            if timestamp is None:
+                china_time = datetime.now(china_tz)
+            else:
+                # 如果 timestamp 没有时区信息，假设它是服务器本地时间（可能是 UTC+5 或其他）
+                # 但为了统一，我们假设它是 UTC 时间，然后转换为中国时区（UTC+8）
+                if timestamp.tzinfo is None:
+                    # 假设 timestamp 是 UTC 时间
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                # 转换为中国时区
+                china_time = timestamp.astimezone(china_tz)
+            
+            time_str = china_time.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 构建通知消息（Markdown 格式，格式对齐）
+            # 钉钉 Markdown 需要使用 \n\n 来强制换行，每个字段之间使用双换行
+            message_content = f"""🔔 TradingView 交易信号
+
+📊 **交易类型**: {trade_type}
+
+💵 **价格**:     {price_str}
+
+📈 **合约**:     {contract_name}
+
+🆔 **消息内容**: {message_content_text}
+
+⏰ **时间**:     {time_str}
+
+---
+
+*来自千里金交易平台*"""
+            
+            # 尝试获取 TradingView 平台ID（如果配置了多个 TradingView 平台实例）
+            # 注意：这里暂时不设置 source_platform_id，因为无法确定是哪个具体的平台实例
+            # 规则应该通过 source_platform 类型来匹配，而不是 source_platform_id
+            source_platform_id = None
+            # TODO: 如果将来需要支持多个 TradingView 平台实例，可以通过配置或参数传递 platform_id
+            
+            # 创建消息对象（使用 Markdown 格式）
+            # 钉钉 Markdown 需要使用 formatted_content 字段
             message = Message(
                 content=message_content.strip(),
-                message_type=MessageType.TEXT,
+                message_type=MessageType.MARKDOWN,  # 使用 Markdown 格式
+                formatted_content=message_content.strip(),  # 钉钉 Markdown 使用 formatted_content
                 source_platform=PlatformType.TRADINGVIEW,  # 使用 TradingView 平台类型
+                source_platform_id=source_platform_id,  # 暂时为 None，通过平台类型匹配
                 source_chat_id="tradingview_webhook",
                 source_user_id="tradingview",
                 source_username="TradingView",
@@ -448,6 +553,7 @@ class TradingViewAlertReceiver:
             
             # 发送通知（转发消息）
             # 使用 _on_message_received 方法，它会自动应用转发规则
+            logger.info(f"📤 准备转发 TradingView 信号到消息转发系统: {message.content[:100]}...")
             await self.message_manager._on_message_received(message)
             logger.info("✅ TradingView 信号已转发到消息转发系统")
             
@@ -492,6 +598,11 @@ def get_alert_receiver(trade_service: TradeService = None, message_manager: Mess
     global alert_receiver
     if alert_receiver is None:
         alert_receiver = TradingViewAlertReceiver(trade_service, message_manager)
+    else:
+        # 如果已存在实例，更新 message_manager（因为每次请求可能不同）
+        if message_manager is not None:
+            alert_receiver.message_manager = message_manager
+            logger.debug("✅ 已更新 alert_receiver 的 message_manager")
     return alert_receiver
 
 if __name__ == "__main__":

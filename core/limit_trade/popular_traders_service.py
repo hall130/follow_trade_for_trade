@@ -30,8 +30,12 @@ class PopularTradersService:
         self.binance_collector = BinancePopularTraderCollector(
             self.config.get('binance', {})
         )
-        self.cache = get_cache(ttl=self.config.get('cache_ttl', 1800))  # 默认30分钟缓存
+        self.cache = get_cache(ttl=self.config.get('cache_ttl', 3600))  # 默认1小时缓存
         self.max_pages = self.config.get('max_pages', 4)  # 默认最多获取4页
+        # 公开/私域检测配置
+        self.check_public_enabled = self.config.get('check_public', True)  # 是否检测公开/私域
+        self.check_public_concurrent = self.config.get('check_public_concurrent', 5)  # 并发检测数量
+        self.check_public_interval = self.config.get('check_public_interval', 0.5)  # 检测间隔（秒）
     
     async def get_popular_traders(
         self,
@@ -71,7 +75,17 @@ class PopularTradersService:
         
         result = {}
         
-        async with aiohttp.ClientSession() as session:
+        # 确保 aiohttp.ClientSession 在正确的事件循环中创建
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        
+        # 创建 ClientSession 时显式指定 timeout
+        # 注意：在 Python 3.10+ 中，loop 参数已弃用，不再使用
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             if exchange in ['okx', 'all']:
                 try:
                     okx_params = {
@@ -94,9 +108,24 @@ class PopularTradersService:
                     # 标准化数据
                     normalized_traders = []
                     for trader in raw_traders:
-                        normalized = self.okx_collector.normalize_popular_trader(trader)
+                        normalized = self.okx_collector.normalize_popular_trader(trader, is_public=None)
                         if normalized:
                             normalized_traders.append(normalized)
+                    
+                    # 批量检测公开/私域（异步并发，带间隔控制）
+                    if self.check_public_enabled and normalized_traders:
+                        try:
+                            logger.info(f"[OKX热门] 开始批量检测 {len(normalized_traders)} 个带单员的公开/私域状态...")
+                            await self._batch_check_public_status(session, normalized_traders, 'okx')
+                        except (RuntimeError, ValueError) as e:
+                            error_msg = str(e).lower()
+                            if 'attached to a different loop' in error_msg or 'event loop is closed' in error_msg:
+                                logger.warning(f"[OKX热门] 事件循环错误，跳过公开/私域检测: {e}")
+                                # 将所有带单员标记为未检测
+                                for trader in normalized_traders:
+                                    trader['is_public'] = None
+                            else:
+                                raise
                     
                     result['okx'] = normalized_traders
                     logger.info(f"获取到 {len(normalized_traders)} 个OKX热门带单员")
@@ -137,9 +166,24 @@ class PopularTradersService:
                     # 标准化数据
                     normalized_traders = []
                     for trader in raw_traders:
-                        normalized = self.binance_collector.normalize_popular_trader(trader)
+                        normalized = self.binance_collector.normalize_popular_trader(trader, is_public=None)
                         if normalized:
                             normalized_traders.append(normalized)
+                    
+                    # 批量检测公开/私域（异步并发，带间隔控制）
+                    if self.check_public_enabled and normalized_traders:
+                        try:
+                            logger.info(f"[Binance热门] 开始批量检测 {len(normalized_traders)} 个带单员的公开/私域状态...")
+                            await self._batch_check_public_status(session, normalized_traders, 'binance')
+                        except (RuntimeError, ValueError) as e:
+                            error_msg = str(e).lower()
+                            if 'attached to a different loop' in error_msg or 'event loop is closed' in error_msg:
+                                logger.warning(f"[Binance热门] 事件循环错误，跳过公开/私域检测: {e}")
+                                # 将所有带单员标记为未检测
+                                for trader in normalized_traders:
+                                    trader['is_public'] = None
+                            else:
+                                raise
                     
                     result['binance'] = normalized_traders
                     logger.info(f"获取到 {len(normalized_traders)} 个Binance热门带单员")
@@ -272,4 +316,113 @@ class PopularTradersService:
             all_traders = all_traders[:limit]
         
         return all_traders
+    
+    async def _batch_check_public_status(
+        self,
+        session: aiohttp.ClientSession,
+        traders: List[Dict],
+        exchange: str
+    ):
+        """
+        批量检测带单员的公开/私域状态（异步并发，带间隔控制）
+        
+        Args:
+            session: aiohttp会话对象
+            traders: 带单员列表
+            exchange: 交易所类型（'okx' 或 'binance'）
+        """
+        if not traders:
+            return
+        
+        import asyncio
+        import time
+        
+        # 使用信号量控制并发数量（自动使用当前事件循环）
+        semaphore = asyncio.Semaphore(self.check_public_concurrent)
+        # 使用锁保护共享的时间戳（自动使用当前事件循环）
+        time_lock = asyncio.Lock()
+        last_request_time = [0]  # 使用列表以便在闭包中修改
+        
+        async def check_single_trader(trader: Dict, index: int):
+            """检测单个带单员的公开/私域状态"""
+            try:
+                async with semaphore:
+                    try:
+                        # 控制请求间隔，避免过于频繁（使用锁保护共享时间戳）
+                        async with time_lock:
+                            current_time = time.time()
+                            time_since_last = current_time - last_request_time[0]
+                            if time_since_last < self.check_public_interval:
+                                sleep_time = self.check_public_interval - time_since_last
+                                last_request_time[0] = current_time + sleep_time
+                            else:
+                                sleep_time = 0
+                                last_request_time[0] = current_time
+                        
+                        # 在锁外执行sleep，避免阻塞其他任务
+                        if sleep_time > 0:
+                            await asyncio.sleep(sleep_time)
+                        
+                        # 检查 session 是否仍然有效
+                        if session.closed:
+                            logger.debug(f"[{exchange}公开检测] {trader.get('unique_name', 'unknown')}: Session已关闭，跳过检测")
+                            trader['is_public'] = False
+                            return
+                        
+                        # 执行检测
+                        if exchange == 'okx':
+                            unique_name = trader.get('unique_name', '')
+                            if unique_name:
+                                is_public = await self.okx_collector.check_trader_public(session, unique_name)
+                                trader['is_public'] = is_public
+                        elif exchange == 'binance':
+                            portfolio_id = trader.get('portfolio_id') or trader.get('unique_name', '')
+                            if portfolio_id:
+                                is_public = await self.binance_collector.check_trader_public(session, portfolio_id)
+                                trader['is_public'] = is_public
+                    except (RuntimeError, ValueError) as e:
+                        error_msg = str(e).lower()
+                        # 捕获事件循环相关的错误
+                        if 'attached to a different loop' in error_msg or 'event loop is closed' in error_msg or 'no running event loop' in error_msg or 'timeout should be used inside a task' in error_msg:
+                            logger.debug(f"[{exchange}公开检测] {trader.get('unique_name', 'unknown')}: 事件循环错误，跳过检测: {e}")
+                            trader['is_public'] = False
+                        else:
+                            raise
+            except Exception as e:
+                error_msg = str(e).lower()
+                # 只记录非事件循环相关的错误
+                if 'attached to a different loop' not in error_msg and 'event loop is closed' not in error_msg:
+                    logger.warning(f"[{exchange}公开检测] {trader.get('unique_name', 'unknown')}: 检测失败: {e}，默认判断为私域")
+                trader['is_public'] = False
+        
+        # 创建所有检测任务（带索引，用于日志）
+        tasks = [
+            check_single_trader(trader, index)
+            for index, trader in enumerate(traders)
+        ]
+        
+        # 并发执行所有检测任务（使用 return_exceptions=True 确保所有任务都能完成）
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 检查是否有异常（除了我们已经处理的）
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    error_msg = str(result).lower()
+                    if 'attached to a different loop' not in error_msg and 'event loop is closed' not in error_msg:
+                        logger.warning(f"[{exchange}公开检测] 任务 {i} 出现未处理的异常: {result}")
+        except Exception as e:
+            logger.error(f"[{exchange}公开检测] 批量检测过程中出现错误: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        # 统计结果
+        public_count = sum(1 for trader in traders if trader.get('is_public') is True)
+        private_count = sum(1 for trader in traders if trader.get('is_public') is False)
+        unknown_count = sum(1 for trader in traders if trader.get('is_public') is None)
+        
+        logger.info(
+            f"[{exchange}公开检测] 检测完成 - "
+            f"公开: {public_count}, 私域: {private_count}, 未知: {unknown_count}, "
+            f"总计: {len(traders)}"
+        )
 

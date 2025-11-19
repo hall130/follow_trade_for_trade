@@ -135,12 +135,58 @@ class OKXPopularTraderCollector:
         logger.info(f"[OKX热门] 总共获取到 {len(all_ranks)} 个热门带单员")
         return all_ranks
     
-    def normalize_popular_trader(self, raw_trader: Dict) -> Dict:
+    async def check_trader_public(self, session: aiohttp.ClientSession, unique_name: str) -> bool:
+        """
+        检查OKX带单员是否为公开（通过检查交易记录API）
+        
+        Args:
+            session: aiohttp会话对象
+            unique_name: 带单员唯一标识
+            
+        Returns:
+            True表示公开（有交易记录），False表示私域（无交易记录）
+        """
+        try:
+            # 检查 session 是否有效
+            if session.closed:
+                logger.debug(f"[OKX公开检测] {unique_name}: Session已关闭，判断为私域")
+                return False
+            
+            url = f"https://www.okx.com/priapi/v5/ecotrade/public/community/user/trade-records"
+            params = {
+                'uniqueName': unique_name,
+                'limit': 8
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=5)  # 5秒超时
+            async with session.get(url, params=params, timeout=timeout) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == '0':
+                        trade_records = data.get('data', [])
+                        # 如果有交易记录数据，说明是公开的
+                        is_public = len(trade_records) > 0
+                        logger.debug(f"[OKX公开检测] {unique_name}: {'公开' if is_public else '私域'}")
+                        return is_public
+                    else:
+                        # API返回错误，可能是私域
+                        logger.debug(f"[OKX公开检测] {unique_name}: API错误，判断为私域")
+                        return False
+                else:
+                    # HTTP错误，可能是私域
+                    logger.debug(f"[OKX公开检测] {unique_name}: HTTP {response.status}，判断为私域")
+                    return False
+        except Exception as e:
+            logger.warning(f"[OKX公开检测] {unique_name}: 检测失败: {e}，默认判断为私域")
+            return False
+    
+    def normalize_popular_trader(self, raw_trader: Dict, is_public: Optional[bool] = None) -> Dict:
         """
         将OKX原始热门带单员数据标准化
         
         Args:
             raw_trader: OKX原始数据
+            is_public: 是否为公开带单员（如果为None，则需要在后续检测）
             
         Returns:
             标准化的带单员信息
@@ -168,6 +214,7 @@ class OKXPopularTraderCollector:
                 'instruments': raw_trader.get('instruments', []),  # 交易对列表
                 'tier': raw_trader.get('tier', {}),  # 等级信息
                 'full_status': raw_trader.get('fullStatus', False),  # 是否已满员
+                'is_public': is_public,  # 是否为公开带单员（None表示未检测）
                 'source': 'okx'  # 数据来源
             }
         except Exception as e:

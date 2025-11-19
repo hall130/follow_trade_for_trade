@@ -9789,6 +9789,17 @@ class OKXTradingApp {
                 ? `<span class="badge bg-info">${tierInfo.name}</span>`
                 : '';
             
+            // 公开/私域标注
+            let publicBadge = '';
+            if (trader.is_public === true) {
+                publicBadge = '<span class="badge bg-success"><i class="bi bi-globe"></i> 公开</span>';
+            } else if (trader.is_public === false) {
+                publicBadge = '<span class="badge bg-secondary"><i class="bi bi-lock"></i> 私域</span>';
+            } else {
+                // is_public 为 null 或 undefined，表示未检测
+                publicBadge = '<span class="badge bg-light text-dark"><i class="bi bi-question-circle"></i> 未检测</span>';
+            }
+            
             const yieldColor = trader.yield_ratio >= 0 ? 'text-success' : 'text-danger';
             const yieldIcon = trader.yield_ratio >= 0 ? '↑' : '↓';
             
@@ -9810,7 +9821,10 @@ class OKXTradingApp {
                                 <small class="text-muted"><code>${trader.unique_name}</code></small>
                             </div>
                         </div>
-                        ${exchangeBadge}
+                        <div class="d-flex align-items-center gap-1">
+                            ${publicBadge}
+                            ${exchangeBadge}
+                        </div>
                     </div>
                     <div class="card-body">
                         <div class="row g-2 mb-3">
@@ -13982,12 +13996,12 @@ class OKXTradingApp {
         }
     }
 
-    // 加载平台列表
-    async loadPlatformsList() {
+    // 加载平台列表（支持分页）
+    async loadPlatformsList(page = 1, pageSize = 20) {
         try {
             // 添加时间戳防止浏览器缓存
             const timestamp = new Date().getTime();
-            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms?t=${timestamp}`, {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/platforms?page=${page}&page_size=${pageSize}&t=${timestamp}`, {
                 method: 'GET',
                 headers: {
                     'Cache-Control': 'no-cache',
@@ -13997,7 +14011,7 @@ class OKXTradingApp {
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
-                    this.renderPlatformsList(data.data || []);
+                    this.renderPlatformsList(data.data || [], data.pagination || {});
                 } else {
                     console.error('加载平台列表失败:', data.message);
                 }
@@ -14009,13 +14023,16 @@ class OKXTradingApp {
         }
     }
 
-    // 渲染平台列表
-    renderPlatformsList(platforms) {
+    // 渲染平台列表（支持分页）
+    renderPlatformsList(platforms, pagination = {}) {
         const tbody = document.getElementById('platformsTableBody');
         if (!tbody) return;
         
         if (platforms.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无平台配置</td></tr>';
+            this.renderPagination('platformsPagination', pagination, (page) => {
+                this.loadPlatformsList(page, pagination.page_size || 20);
+            });
             return;
         }
         
@@ -14054,7 +14071,7 @@ class OKXTradingApp {
             
             // 状态徽章
             let statusBadge = '';
-            if (platform.status === 'active' || platform.status === 'connected') {
+            if (platform.status === 'active' || platform.status === 'connected' || platform.status === 'ready') {
                 statusBadge = '<span class="badge bg-success">已连接</span>';
             } else if (platform.status === 'error') {
                 statusBadge = `<span class="badge bg-danger" title="${platform.error_message || ''}">错误</span>`;
@@ -14111,6 +14128,11 @@ class OKXTradingApp {
             `;
             
             tbody.appendChild(row);
+        });
+        
+        // 渲染分页
+        this.renderPagination('platformsPagination', pagination, (page) => {
+            this.loadPlatformsList(page, pagination.page_size || 20);
         });
         
         // 同时更新源平台下拉列表（用于转发规则）
@@ -14586,14 +14608,14 @@ class OKXTradingApp {
         }
     }
 
-    // 加载转发规则列表
-    async loadForwardRulesList() {
+    // 加载转发规则列表（支持分页）
+    async loadForwardRulesList(page = 1, pageSize = 20) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules`);
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/rules?page=${page}&page_size=${pageSize}`);
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
-                    this.renderForwardRulesList(data.data || []);
+                    this.renderForwardRulesList(data.data || [], data.pagination || {});
                 }
             }
         } catch (error) {
@@ -14601,8 +14623,8 @@ class OKXTradingApp {
         }
     }
 
-    // 渲染转发规则列表
-    renderForwardRulesList(rules) {
+    // 渲染转发规则列表（支持分页）
+    renderForwardRulesList(rules, pagination = {}) {
         const tbody = document.getElementById('forwardRulesTableBody');
         if (!tbody) {
             console.error('找不到 forwardRulesTableBody 元素');
@@ -14611,6 +14633,9 @@ class OKXTradingApp {
         
         if (rules.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无转发规则</td></tr>';
+            this.renderPagination('forwardRulesPagination', pagination, (page) => {
+                this.loadForwardRulesList(page, pagination.page_size || 20);
+            });
             return;
         }
         
@@ -14636,6 +14661,9 @@ class OKXTradingApp {
                 <td>${rule.messages_forwarded || 0}</td>
                 <td>
                     <div class="btn-group btn-group-sm">
+                        <button class="btn btn-info btn-sm" onclick="window.app.viewSubscriptions('${rule.rule_id}', '${rule.rule_name}')" title="查看订阅状态">
+                            <i class="bi bi-calendar-check"></i> 订阅状态
+                        </button>
                         ${rule.enabled ? 
                             `<button class="btn btn-warning" onclick="window.app.disableRule('${rule.rule_id}')">
                                 <i class="bi bi-pause-fill"></i> 禁用
@@ -14656,16 +14684,21 @@ class OKXTradingApp {
             
             tbody.appendChild(row);
         });
+        
+        // 渲染分页
+        this.renderPagination('forwardRulesPagination', pagination, (page) => {
+            this.loadForwardRulesList(page, pagination.page_size || 20);
+        });
     }
 
-    // 加载消息历史
-    async loadMessageHistory() {
+    // 加载消息历史（支持分页）
+    async loadMessageHistory(page = 1, pageSize = 20) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/message-forward/history?limit=100`);
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/history?page=${page}&page_size=${pageSize}`);
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
-                    this.renderMessageHistory(data.data || []);
+                    this.renderMessageHistory(data.data || [], data.pagination || {});
                 }
             }
         } catch (error) {
@@ -14673,13 +14706,16 @@ class OKXTradingApp {
         }
     }
 
-    // 渲染消息历史
-    renderMessageHistory(messages) {
+    // 渲染消息历史（支持分页）
+    renderMessageHistory(messages, pagination = {}) {
         const tbody = document.getElementById('historyTableBody');
         if (!tbody) return;
         
         if (messages.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">暂无消息历史</td></tr>';
+            this.renderPagination('historyPagination', pagination, (page) => {
+                this.loadMessageHistory(page, pagination.page_size || 20);
+            });
             return;
         }
         
@@ -14741,6 +14777,142 @@ class OKXTradingApp {
             
             tbody.appendChild(row);
         });
+        
+        // 渲染分页
+        this.renderPagination('historyPagination', pagination, (page) => {
+            this.loadMessageHistory(page, pagination.page_size || 20);
+        });
+    }
+    
+    // 通用分页渲染函数
+    renderPagination(paginationId, pagination, onPageChange) {
+        const paginationEl = document.getElementById(paginationId);
+        if (!paginationEl) return;
+        
+        const { page = 1, page_size = 20, total = 0, total_pages = 0 } = pagination;
+        
+        if (total_pages <= 1) {
+            paginationEl.innerHTML = '';
+            return;
+        }
+        
+        // 清空现有内容
+        paginationEl.innerHTML = '';
+        
+        // 上一页按钮
+        const prevLi = document.createElement('li');
+        prevLi.className = `page-item ${page === 1 ? 'disabled' : ''}`;
+        const prevLink = document.createElement('a');
+        prevLink.className = 'page-link';
+        prevLink.href = '#';
+        prevLink.textContent = '上一页';
+        if (page > 1) {
+            prevLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                onPageChange(page - 1);
+            });
+        }
+        prevLi.appendChild(prevLink);
+        paginationEl.appendChild(prevLi);
+        
+        // 页码按钮（最多显示7个页码）
+        const maxVisible = 7;
+        let startPage = Math.max(1, page - Math.floor(maxVisible / 2));
+        let endPage = Math.min(total_pages, startPage + maxVisible - 1);
+        
+        if (endPage - startPage < maxVisible - 1) {
+            startPage = Math.max(1, endPage - maxVisible + 1);
+        }
+        
+        if (startPage > 1) {
+            const firstLi = document.createElement('li');
+            firstLi.className = 'page-item';
+            const firstLink = document.createElement('a');
+            firstLink.className = 'page-link';
+            firstLink.href = '#';
+            firstLink.textContent = '1';
+            firstLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                onPageChange(1);
+            });
+            firstLi.appendChild(firstLink);
+            paginationEl.appendChild(firstLi);
+            
+            if (startPage > 2) {
+                const ellipsisLi = document.createElement('li');
+                ellipsisLi.className = 'page-item disabled';
+                const ellipsisSpan = document.createElement('span');
+                ellipsisSpan.className = 'page-link';
+                ellipsisSpan.textContent = '...';
+                ellipsisLi.appendChild(ellipsisSpan);
+                paginationEl.appendChild(ellipsisLi);
+            }
+        }
+        
+        for (let i = startPage; i <= endPage; i++) {
+            const pageLi = document.createElement('li');
+            pageLi.className = `page-item ${i === page ? 'active' : ''}`;
+            const pageLink = document.createElement('a');
+            pageLink.className = 'page-link';
+            pageLink.href = '#';
+            pageLink.textContent = String(i);
+            pageLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                onPageChange(i);
+            });
+            pageLi.appendChild(pageLink);
+            paginationEl.appendChild(pageLi);
+        }
+        
+        if (endPage < total_pages) {
+            if (endPage < total_pages - 1) {
+                const ellipsisLi = document.createElement('li');
+                ellipsisLi.className = 'page-item disabled';
+                const ellipsisSpan = document.createElement('span');
+                ellipsisSpan.className = 'page-link';
+                ellipsisSpan.textContent = '...';
+                ellipsisLi.appendChild(ellipsisSpan);
+                paginationEl.appendChild(ellipsisLi);
+            }
+            
+            const lastLi = document.createElement('li');
+            lastLi.className = 'page-item';
+            const lastLink = document.createElement('a');
+            lastLink.className = 'page-link';
+            lastLink.href = '#';
+            lastLink.textContent = String(total_pages);
+            lastLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                onPageChange(total_pages);
+            });
+            lastLi.appendChild(lastLink);
+            paginationEl.appendChild(lastLi);
+        }
+        
+        // 下一页按钮
+        const nextLi = document.createElement('li');
+        nextLi.className = `page-item ${page === total_pages ? 'disabled' : ''}`;
+        const nextLink = document.createElement('a');
+        nextLink.className = 'page-link';
+        nextLink.href = '#';
+        nextLink.textContent = '下一页';
+        if (page < total_pages) {
+            nextLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                onPageChange(page + 1);
+            });
+        }
+        nextLi.appendChild(nextLink);
+        paginationEl.appendChild(nextLi);
+        
+        // 添加总数信息
+        const infoLi = document.createElement('li');
+        infoLi.className = 'page-item disabled';
+        const infoSpan = document.createElement('span');
+        infoSpan.className = 'page-link';
+        infoSpan.textContent = `共 ${total} 条，第 ${page}/${total_pages} 页`;
+        infoLi.appendChild(infoSpan);
+        paginationEl.appendChild(infoLi);
     }
 
     // 保存新平台
@@ -15229,6 +15401,210 @@ class OKXTradingApp {
         } catch (error) {
             console.error('禁用规则失败:', error);
             this.showToast('错误', '禁用规则失败', 'danger');
+        }
+    }
+
+
+    // 查看订阅状态
+    async viewSubscriptions(ruleId, ruleName) {
+        try {
+            document.getElementById('subscriptionRuleId').value = ruleId;
+            document.getElementById('subscriptionRuleName').textContent = ruleName;
+            
+            // 显示模态框
+            const modal = new bootstrap.Modal(document.getElementById('subscriptionModal'));
+            modal.show();
+            
+            // 加载订阅列表
+            await this.loadSubscriptionsList(ruleId);
+        } catch (error) {
+            console.error('打开订阅状态失败:', error);
+            this.showToast('错误', '打开订阅状态失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 加载订阅列表
+    async loadSubscriptionsList(ruleId) {
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/subscriptions/${ruleId}`);
+            const data = await response.json();
+            
+            const tbody = document.getElementById('subscriptionsTableBody');
+            if (!tbody) return;
+            
+            if (!data.success || !data.data || data.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无订阅记录</td></tr>';
+                return;
+            }
+            
+            // 获取所有平台信息（用于显示平台名称）
+            const platformsResponse = await fetch(`${this.apiBaseUrl}/message-forward/platforms?page=1&page_size=100`);
+            const platformsData = await platformsResponse.json();
+            const platforms = platformsData.success && platformsData.data ? platformsData.data : [];
+            
+            tbody.innerHTML = data.data.map(sub => {
+                const statusBadge = sub.subscription_status === 'active' ? 
+                    '<span class="badge bg-success">有效</span>' : 
+                    sub.subscription_status === 'expired' ?
+                    '<span class="badge bg-danger">已过期</span>' :
+                    '<span class="badge bg-secondary">已暂停</span>';
+                
+                const startDate = new Date(sub.start_date).toLocaleString('zh-CN');
+                const expireDate = new Date(sub.expire_date).toLocaleString('zh-CN');
+                
+                // 计算剩余天数
+                const now = new Date();
+                const expire = new Date(sub.expire_date);
+                const daysLeft = Math.ceil((expire - now) / (1000 * 60 * 60 * 24));
+                
+                let daysLeftBadge = '';
+                if (sub.subscription_status === 'active') {
+                    if (daysLeft < 0) {
+                        daysLeftBadge = '<span class="badge bg-danger">已过期</span>';
+                    } else if (daysLeft <= 3) {
+                        daysLeftBadge = `<span class="badge bg-warning">剩余 ${daysLeft} 天</span>`;
+                    } else {
+                        daysLeftBadge = `<span class="badge bg-info">剩余 ${daysLeft} 天</span>`;
+                    }
+                } else {
+                    daysLeftBadge = '-';
+                }
+                
+                // 查找平台名称
+                const platform = platforms.find(p => p.id === sub.target_platform_id);
+                const platformName = platform ? `${platform.platform_name} (${platform.platform_type})` : `平台ID: ${sub.target_platform_id}`;
+                
+                return `
+                    <tr>
+                        <td>${platformName}</td>
+                        <td>${sub.target_chat_id}</td>
+                        <td>${statusBadge}</td>
+                        <td>${startDate}</td>
+                        <td>${expireDate}</td>
+                        <td>${daysLeftBadge}</td>
+                        <td>${sub.total_renewals || 0}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-sm btn-info" onclick="window.app.testSingleReminder('${sub.rule_id}', ${sub.target_platform_id}, '${sub.target_chat_id}')" title="测试提醒">
+                                    <i class="bi bi-bell"></i> 测试
+                                </button>
+                                <button class="btn btn-sm btn-success" onclick="window.app.renewSubscription('${sub.rule_id}', ${sub.target_platform_id}, '${sub.target_chat_id}')" title="续订30天">
+                                    <i class="bi bi-arrow-repeat"></i> 续订
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (error) {
+            console.error('加载订阅列表失败:', error);
+            const tbody = document.getElementById('subscriptionsTableBody');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">加载失败</td></tr>';
+            }
+        }
+    }
+    
+    // 测试提醒功能（所有符合条件的订阅）
+    async testReminder() {
+        try {
+            if (!confirm('确定要测试提醒功能吗？这将立即触发一次提醒检查，所有符合条件的订阅会收到提醒消息。')) {
+                return;
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/subscriptions/test-reminder`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showToast('成功', data.message || '提醒检查已触发，请查看钉钉群组和日志', 'success');
+            } else {
+                this.showToast('错误', data.message || '触发提醒检查失败', 'danger');
+            }
+        } catch (error) {
+            console.error('测试提醒失败:', error);
+            this.showToast('错误', '测试提醒失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 测试单个订阅的提醒功能（绕过条件检查）
+    async testSingleReminder(ruleId, targetPlatformId, targetChatId) {
+        try {
+            if (!confirm('确定要测试该订阅的提醒功能吗？这将立即发送提醒消息，不管是否符合条件。')) {
+                return;
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/subscriptions/test-reminder`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    rule_id: ruleId,
+                    target_platform_id: targetPlatformId,
+                    target_chat_id: targetChatId
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showToast('成功', data.message || '测试提醒已发送', 'success');
+            } else {
+                this.showToast('错误', data.message || '测试提醒失败', 'danger');
+            }
+        } catch (error) {
+            console.error('测试单个订阅提醒失败:', error);
+            this.showToast('错误', '测试提醒失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 续订订阅
+    async renewSubscription(ruleId, targetPlatformId, targetChatId) {
+        try {
+            const duration = prompt('请输入续订天数（默认30天）:', '30');
+            if (!duration) return;
+            
+            const durationDays = parseInt(duration);
+            if (isNaN(durationDays) || durationDays < 1) {
+                this.showToast('错误', '请输入有效的天数', 'danger');
+                return;
+            }
+            
+            if (!confirm(`确定要续订该订阅 ${durationDays} 天吗？`)) {
+                return;
+            }
+            
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/subscriptions/renew`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    rule_id: ruleId,
+                    target_platform_id: targetPlatformId,
+                    target_chat_id: targetChatId,
+                    duration_days: durationDays
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showToast('成功', data.message || '订阅续订成功', 'success');
+                // 刷新订阅列表
+                await this.loadSubscriptionsList(ruleId);
+            } else {
+                this.showToast('错误', data.message || '续订失败', 'danger');
+            }
+        } catch (error) {
+            console.error('续订订阅失败:', error);
+            this.showToast('错误', '续订订阅失败: ' + error.message, 'danger');
         }
     }
 

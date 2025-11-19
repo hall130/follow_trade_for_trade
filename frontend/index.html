@@ -2103,6 +2103,12 @@
                                         </tbody>
                                     </table>
                                 </div>
+                                <!-- 平台管理分页 -->
+                                <nav aria-label="平台管理分页" class="mt-3">
+                                    <ul class="pagination justify-content-center" id="platformsPagination">
+                                        <!-- 分页将在这里动态生成 -->
+                                    </ul>
+                                </nav>
                             </div>
                         </div>
                     </div>
@@ -2131,6 +2137,12 @@
                                         </tbody>
                                     </table>
                                 </div>
+                                <!-- 转发规则分页 -->
+                                <nav aria-label="转发规则分页" class="mt-3">
+                                    <ul class="pagination justify-content-center" id="forwardRulesPagination">
+                                        <!-- 分页将在这里动态生成 -->
+                                    </ul>
+                                </nav>
                             </div>
                         </div>
                     </div>
@@ -2139,7 +2151,7 @@
                     <div class="tab-pane fade" id="history-content">
                         <div class="card">
                             <div class="card-body">
-                                <h5 class="card-title">消息历史（最近100条）</h5>
+                                <h5 class="card-title">消息历史</h5>
                                 <div class="table-responsive">
                                     <table class="table table-hover table-sm">
                                         <thead>
@@ -2158,6 +2170,12 @@
                                         </tbody>
                                     </table>
                                 </div>
+                                <!-- 消息历史分页 -->
+                                <nav aria-label="消息历史分页" class="mt-3">
+                                    <ul class="pagination justify-content-center" id="historyPagination">
+                                        <!-- 分页将在这里动态生成 -->
+                                    </ul>
+                                </nav>
                             </div>
                         </div>
                     </div>
@@ -5043,6 +5061,65 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" id="saveForwardRuleBtn">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- 订阅状态模态框 -->
+    <div class="modal fade" id="subscriptionModal" tabindex="-1" aria-labelledby="subscriptionModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="subscriptionModalLabel">订阅状态</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="subscriptionRuleId">
+                    <div class="mb-3">
+                        <strong>规则名称：</strong><span id="subscriptionRuleName"></span>
+                    </div>
+                    
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i>
+                        <strong>订阅说明：</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>每个转发规则的目标平台和群组都有独立的订阅</li>
+                            <li>订阅有效期为30天，从创建转发规则时开始计算</li>
+                            <li>订阅到期前3天，系统会每天自动发送提醒消息</li>
+                            <li>如需续订，请联系客服</li>
+                        </ul>
+                    </div>
+                    
+                    <!-- 订阅列表 -->
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>目标平台</th>
+                                    <th>目标群组</th>
+                                    <th>订阅状态</th>
+                                    <th>开始时间</th>
+                                    <th>过期时间</th>
+                                    <th>剩余天数</th>
+                                    <th>续订次数</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="subscriptionsTableBody">
+                                <tr>
+                                    <td colspan="8" class="text-center text-muted">加载中...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    <button type="button" class="btn btn-primary" onclick="window.app.loadSubscriptionsList(document.getElementById('subscriptionRuleId').value)">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
                 </div>
             </div>
         </div>

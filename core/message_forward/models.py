@@ -153,19 +153,60 @@ class ForwardRule:
     
     def matches(self, message: Message) -> bool:
         """检查消息是否匹配规则"""
+        from utils.logger import get_logger
+        match_logger = get_logger(__name__)
+        
         # 优先检查平台ID（如果规则指定了具体平台账户）
         if self.source_platform_id is not None:
-            if message.source_platform_id != self.source_platform_id:
+            message_platform_id = getattr(message, 'source_platform_id', None)
+            if message_platform_id is not None and message_platform_id != self.source_platform_id:
+                # 如果消息有 platform_id 但与规则不匹配，则不匹配
+                match_logger.info(f"❌ 平台ID不匹配: 规则要求 {self.source_platform_id}, 消息是 {message_platform_id}")
                 return False
-        # 如果没有指定平台ID，则检查平台类型（兼容旧规则）
-        elif self.source_platform:
-            source_platform_str = message.source_platform.value if isinstance(message.source_platform, PlatformType) else str(message.source_platform)
-            if source_platform_str != self.source_platform:
-                return False
+            elif message_platform_id is None:
+                # 如果消息没有 platform_id，但规则有，回退到检查平台类型
+                # 这样可以支持通过平台类型匹配（即使规则指定了 platform_id）
+                if not self.source_platform:
+                    # 如果规则既没有 platform_id 也没有 platform 类型，则不匹配
+                    match_logger.info(f"❌ 规则只指定了平台ID {self.source_platform_id}，但消息没有平台ID，且规则没有指定平台类型")
+                    return False
+                # 继续检查平台类型
+                match_logger.info(f"ℹ️ 消息没有平台ID，回退到检查平台类型匹配")
         
-        # 检查聊天ID
-        if self.source_chat_ids and message.source_chat_id not in self.source_chat_ids:
-            return False
+        # 检查平台类型（如果规则指定了平台类型，或者消息没有 platform_id）
+        if self.source_platform:
+            # 获取消息的平台类型字符串
+            if isinstance(message.source_platform, PlatformType):
+                source_platform_str = message.source_platform.value
+            else:
+                source_platform_str = str(message.source_platform)
+            
+            # 规则中的 source_platform 可能是平台类型字符串（如 "tradingview"）或平台名称
+            # 先尝试直接匹配
+            if source_platform_str.lower() != self.source_platform.lower():
+                # 如果不匹配，尝试通过平台类型枚举匹配
+                try:
+                    rule_platform_type = PlatformType(self.source_platform.lower())
+                    if message.source_platform != rule_platform_type:
+                        match_logger.info(f"❌ 平台类型不匹配: 规则要求 '{self.source_platform}' (转换为 {rule_platform_type.value}), 消息是 '{source_platform_str}'")
+                        return False
+                    else:
+                        match_logger.info(f"✅ 平台类型匹配: {source_platform_str} == {rule_platform_type.value}")
+                except (ValueError, AttributeError):
+                    # 如果无法转换为 PlatformType，则不匹配
+                    match_logger.info(f"❌ 无法将规则平台类型 '{self.source_platform}' 转换为 PlatformType 枚举")
+                    return False
+            else:
+                match_logger.info(f"✅ 平台类型匹配: {source_platform_str} == {self.source_platform}")
+        
+        # 检查聊天ID（如果规则指定了 source_chat_ids，则必须匹配）
+        if self.source_chat_ids:
+            if message.source_chat_id not in self.source_chat_ids:
+                # 详细日志：为什么聊天ID不匹配
+                from utils.logger import get_logger
+                logger = get_logger(__name__)
+                logger.info(f"❌ 聊天ID不匹配: 规则要求 {self.source_chat_ids}, 消息是 {message.source_chat_id}")
+                return False
         
         # 检查消息类型
         if self.message_types and message.message_type not in self.message_types:

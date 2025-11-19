@@ -211,6 +211,24 @@ def start_flask():
         init_db()
         logger.info("启动Flask API服务器...")
         
+        # 启动数据采集调度器（后台定时采集热门带单员和巨鲸交易员数据）
+        try:
+            from core.limit_trade.data_collector_scheduler import get_scheduler
+            scheduler_config = {
+                'popular_traders_interval': 3600,  # 1小时采集一次
+                'whale_traders_interval': 3600,    # 1小时采集一次
+                'enable_popular_traders': True,
+                'enable_whale_traders': True,
+                'initial_delay': 60  # 1分钟后开始
+            }
+            scheduler = get_scheduler(scheduler_config)
+            scheduler.start()
+            logger.info("✅ 数据采集调度器已启动（热门带单员1小时，巨鲸交易员1小时）")
+        except Exception as e:
+            logger.warning(f"⚠️ 数据采集调度器启动失败: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
+        
         # 初始化并自动启动消息转发服务（如果可用）
         logger.info("=" * 60)
         logger.info("开始初始化消息转发服务...")
