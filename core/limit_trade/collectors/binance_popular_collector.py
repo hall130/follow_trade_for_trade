@@ -26,7 +26,7 @@ class BinancePopularTraderCollector:
         self.config = config or {}
         self.api_base_url = self.config.get(
             'api_base_url',
-            'https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/home-page/query-list'
+            'https://www.marketwebb.me/bapi/futures/v1/friendly/future/copy-trade/home-page/query-list'
         )
         self.timeout = self.config.get('timeout', 10)
     
@@ -163,6 +163,12 @@ class BinancePopularTraderCollector:
         """
         检查Binance带单员是否为公开（通过检查订单历史API）
         
+        使用新的API地址：https://www.marketwebb.mobi/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history
+        
+        判断逻辑：
+        - 如果返回的 data.list 为空数组（total: 0, list: []），则是私域
+        - 如果返回的 data.list 有数据，则是公开
+        
         Args:
             session: aiohttp会话对象
             portfolio_id: 带单员组合ID
@@ -176,10 +182,12 @@ class BinancePopularTraderCollector:
                 logger.debug(f"[Binance公开检测] {portfolio_id}: Session已关闭，判断为私域")
                 return False
             
-            url = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history"
+            # 使用新的API地址
+            url = "https://www.marketwebb.mobi/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history"
+            # 只需要 portfolioId 和 pageSize 两个参数
             payload = {
-                "pageSize": 10,
-                "portfolioId": portfolio_id
+                "portfolioId": portfolio_id,
+                "pageSize": 10
             }
             headers = {
                 'Content-Type': 'application/json',
@@ -190,14 +198,23 @@ class BinancePopularTraderCollector:
             async with session.post(url, headers=headers, json=payload, timeout=timeout) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # 如果能成功获取数据，说明是公开的
-                    if data.get("code") == "000000" or (data.get("success") is not False and data.get("data")):
-                        is_public = True
-                        logger.debug(f"[Binance公开检测] {portfolio_id}: 公开")
-                        return is_public
+                    
+                    # 检查响应格式
+                    if data.get("code") == "000000" and data.get("success") is not False:
+                        data_obj = data.get("data", {})
+                        order_list = data_obj.get("list", [])
+                        total = data_obj.get("total", 0)
+                        
+                        # 判断逻辑：如果 list 为空数组或 total 为 0，则是私域
+                        if total == 0 or len(order_list) == 0:
+                            logger.debug(f"[Binance公开检测] {portfolio_id}: 私域（订单列表为空）")
+                            return False
+                        else:
+                            logger.debug(f"[Binance公开检测] {portfolio_id}: 公开（订单数: {total}）")
+                            return True
                     else:
                         # API返回错误，可能是私域
-                        logger.debug(f"[Binance公开检测] {portfolio_id}: API错误，判断为私域")
+                        logger.debug(f"[Binance公开检测] {portfolio_id}: API错误（code: {data.get('code')}），判断为私域")
                         return False
                 else:
                     # HTTP错误，可能是私域

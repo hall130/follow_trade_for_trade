@@ -29,6 +29,10 @@ class MarketMakerStrategy(StrategyBase):
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
         
+        # 初始化 signals 属性（基类 BaseStrategy 没有此属性，需要手动初始化）
+        if not hasattr(self, 'signals'):
+            self.signals: List[Signal] = []
+        
         # 做市参数
         self.spread = float(self.get_parameter('spread', 0.002))  # 价差（0.2%）
         self.quantity = float(self.get_parameter('quantity', 0.1))  # 每单数量
@@ -108,6 +112,10 @@ class MarketMakerStrategy(StrategyBase):
     def _update_orders(self) -> None:
         """更新订单（维持做市报价）"""
         try:
+            # 确保 signals 属性存在
+            if not hasattr(self, 'signals'):
+                self.signals: List[Signal] = []
+            
             # 获取当前活跃订单
             active_buy_count = len([o for o in self.buy_orders if o.get('active', False)])
             active_sell_count = len([o for o in self.sell_orders if o.get('active', False)])
@@ -142,10 +150,16 @@ class MarketMakerStrategy(StrategyBase):
                 
         except Exception as e:
             logger.error(f"更新订单失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _check_stop_loss_take_profit(self) -> None:
         """检查止损止盈"""
         try:
+            # 确保 signals 属性存在
+            if not hasattr(self, 'signals'):
+                self.signals: List[Signal] = []
+            
             # 计算未实现盈亏（如果有持仓）
             if self.position_size != 0:
                 if self.position_size > 0:  # 多头
@@ -186,10 +200,16 @@ class MarketMakerStrategy(StrategyBase):
                     
         except Exception as e:
             logger.error(f"检查止损止盈失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _check_rebalance(self) -> None:
         """检查并执行重平衡"""
         try:
+            # 确保 signals 属性存在
+            if not hasattr(self, 'signals'):
+                self.signals: List[Signal] = []
+            
             if not self.enable_rebalance:
                 return
             
@@ -237,6 +257,8 @@ class MarketMakerStrategy(StrategyBase):
                 
         except Exception as e:
             logger.error(f"检查重平衡失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def _cancel_all_orders(self) -> None:
         """取消所有订单"""

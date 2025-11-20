@@ -4,7 +4,7 @@ MYSQL_CONFIG = {
     'host': 'localhost',      # 修改为你的MySQL主机
     'port': 3306,            # MySQL端口
     'user': 'root',     # MySQL用户名
-    'password': 'Aa11223344..', # MySQL密码
+    'password': 'root', # MySQL密码
     'db': 'trade_db',        # 数据库名
     'mincached': 2,
     'maxcached': 10

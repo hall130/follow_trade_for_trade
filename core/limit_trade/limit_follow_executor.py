@@ -515,7 +515,6 @@ class LimitFollowExecutor:
         """
         try:
             import requests
-            import time
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -1866,28 +1865,28 @@ class LimitFollowExecutor:
     # 同步监控方法已删除，使用异步方法替代
     
     async def run_monitoring_async(self):
-        """运行并发监控"""
+        """运行并发监控（应该在独立线程的事件循环中运行）"""
         logger.info("开始并发限价跟单监控...")
         
-        # 确保使用当前事件循环（在 Gunicorn/gevent 环境中可能需要 nest_asyncio）
+        # 确保使用当前线程的事件循环（应该由调用者在新线程中创建）
         try:
             loop = asyncio.get_running_loop()
             logger.debug(f"使用运行中的事件循环: {loop}")
         except RuntimeError:
-            # 如果没有运行的事件循环，获取或创建新的
+            # 如果没有运行中的事件循环，尝试获取当前线程的事件循环
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_closed():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                logger.debug(f"获取或创建事件循环: {loop}")
+                    logger.error("当前线程的事件循环已关闭，无法继续监控")
+                    return
+                logger.debug(f"使用当前线程的事件循环: {loop}")
             except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                logger.debug(f"创建新事件循环: {loop}")
+                logger.error("当前线程没有事件循环，无法继续监控（应该在独立线程中运行）")
+                return
         
-        # 创建HTTP会话（使用当前事件循环）
-        async with aiohttp.ClientSession() as session:
+        # 创建HTTP会话（使用当前事件循环，设置超时避免阻塞）
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             while True:
                 try:
                     # 获取被监控的跟单员
@@ -1895,8 +1894,20 @@ class LimitFollowExecutor:
                     
                     if not traders:
                         logger.info("没有需要监控的跟单员")
-                        # 使用当前事件循环的 sleep
-                        await asyncio.sleep(self.config['polling_interval'])
+                        # 使用当前运行中的事件循环来创建 sleep，确保使用正确的事件循环
+                        try:
+                            current_loop = asyncio.get_running_loop()
+                            # 使用 loop.create_future() 和 loop.call_later() 来创建 sleep
+                            # 这样可以确保 Future 被附加到正确的事件循环
+                            future = current_loop.create_future()
+                            current_loop.call_later(
+                                self.config['polling_interval'],
+                                lambda: future.set_result(None) if not future.done() else None
+                            )
+                            await future
+                        except RuntimeError:
+                            # 如果无法获取运行中的事件循环，使用标准的 sleep（作为后备）
+                            await asyncio.sleep(self.config['polling_interval'])
                         continue
                     
                     logger.info(f"开始并发检查 {len(traders)} 个跟单员...")
@@ -1904,12 +1915,14 @@ class LimitFollowExecutor:
                     # 创建所有跟单员的检查任务
                     tasks = []
                     for trader in traders:
-                        task = self.check_trader_async(session, trader)
-                        tasks.append(task)
+                        # 创建协程对象（稍后通过 gather 执行）
+                        coro = self.check_trader_async(session, trader)
+                        tasks.append(coro)
                     
                     # 并发执行所有任务
                     start_time = time.time()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
                     end_time = time.time()
                     
                     execution_time = end_time - start_time
@@ -1918,7 +1931,19 @@ class LimitFollowExecutor:
                     # 等待下次轮询
                     interval = self.config['polling_interval']
                     logger.info(f"等待 {interval} 秒后进行下次检查...")
-                    await asyncio.sleep(interval)
+                    # 使用当前运行中的事件循环来创建 sleep，确保使用正确的事件循环
+                    try:
+                        current_loop = asyncio.get_running_loop()
+                        # 使用 loop.create_future() 和 loop.call_later() 来创建 sleep
+                        future = current_loop.create_future()
+                        current_loop.call_later(
+                            interval,
+                            lambda: future.set_result(None) if not future.done() else None
+                        )
+                        await future
+                    except RuntimeError:
+                        # 如果无法获取运行中的事件循环，使用标准的 sleep（作为后备）
+                        await asyncio.sleep(interval)
                     
                 except KeyboardInterrupt:
                     logger.info("监控已停止")
@@ -1927,31 +1952,30 @@ class LimitFollowExecutor:
                     # 检查是否是事件循环关闭错误
                     error_msg = str(e).lower()
                     if "attached to a different loop" in error_msg:
-                        # 事件循环不匹配，尝试恢复
-                        logger.warning(f"⚠️ 事件循环不匹配，尝试恢复: {e}")
+                        # 事件循环不匹配，这是一个严重问题，说明事件循环被外部操作影响了
+                        # 在独立线程中运行的任务不应该出现这种情况
+                        logger.error(f"❌ 事件循环不匹配（严重错误）: {e}")
+                        logger.error("这通常是因为其他操作（如热门带单员采集）影响了当前线程的事件循环")
+                        logger.error("LimitFollowExecutor 应该在完全独立的线程和事件循环中运行")
+                        
+                        # 尝试重新获取当前运行中的事件循环（不创建新的）
                         try:
-                            # 等待一小段时间，让事件循环稳定
-                            import time
-                            time.sleep(0.5)
-                            # 尝试重新获取事件循环
-                            try:
-                                current_loop = asyncio.get_running_loop()
-                                logger.debug(f"当前事件循环: {current_loop}")
-                            except RuntimeError:
-                                # 如果没有运行中的循环，获取或创建新的
-                                try:
-                                    current_loop = asyncio.get_event_loop()
-                                    if current_loop.is_closed():
-                                        current_loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(current_loop)
-                                except RuntimeError:
-                                    current_loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(current_loop)
-                                logger.debug(f"获取或创建事件循环: {current_loop}")
-                            
-                            # 继续监控循环
+                            current_loop = asyncio.get_running_loop()
+                            if current_loop.is_closed():
+                                logger.error("当前事件循环已关闭，无法继续监控")
+                                break
+                            logger.warning(f"当前事件循环: {current_loop}，尝试继续...")
+                            # 等待一小段时间，让事件循环稳定（使用同步 sleep，避免事件循环问题）
+                            time.sleep(1.0)  # 增加等待时间
+                            # 继续监控循环（跳过本次迭代）
                             logger.info("✅ 事件循环已恢复，继续监控")
                             continue
+                        except RuntimeError as loop_error:
+                            logger.error(f"❌ 无法获取运行中的事件循环: {loop_error}")
+                            logger.error("LimitFollowExecutor 监控将停止，需要重启服务")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                            break
                         except Exception as recover_error:
                             logger.error(f"❌ 无法恢复事件循环: {recover_error}")
                             import traceback

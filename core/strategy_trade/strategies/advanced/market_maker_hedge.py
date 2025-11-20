@@ -54,6 +54,10 @@ class MarketMakerHedgeStrategy(MarketMakerStrategy):
     def _check_and_hedge(self) -> None:
         """检查并执行对冲"""
         try:
+            # 确保 signals 属性存在
+            if not hasattr(self, 'signals'):
+                self.signals: List[Signal] = []
+            
             if not self.enable_hedge or self.current_price == 0:
                 return
             
@@ -105,6 +109,8 @@ class MarketMakerHedgeStrategy(MarketMakerStrategy):
                 
         except Exception as e:
             logger.error(f"检查对冲失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     def get_performance(self) -> Dict[str, Any]:
         """获取策略表现"""

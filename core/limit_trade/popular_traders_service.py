@@ -76,14 +76,21 @@ class PopularTradersService:
         result = {}
         
         # 确保 aiohttp.ClientSession 在正确的事件循环中创建
+        # 只使用当前运行中的事件循环，不尝试获取全局事件循环（避免冲突）
         import asyncio
         try:
             loop = asyncio.get_running_loop()
+            # 验证事件循环是否有效
+            if loop.is_closed():
+                raise RuntimeError("事件循环已关闭")
         except RuntimeError:
-            loop = asyncio.get_event_loop()
+            # 如果没有运行中的事件循环，说明不在异步上下文中
+            # 这不应该发生，因为 get_popular_traders 是异步函数
+            raise RuntimeError("get_popular_traders 必须在异步上下文中调用，且必须有运行中的事件循环")
         
         # 创建 ClientSession 时显式指定 timeout
         # 注意：在 Python 3.10+ 中，loop 参数已弃用，不再使用
+        # aiohttp.ClientSession 会自动使用当前运行中的事件循环
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             if exchange in ['okx', 'all']:

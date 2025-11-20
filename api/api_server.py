@@ -6080,7 +6080,7 @@ def get_popular_traders():
                     use_cache=use_cache,
                     **kwargs
                 ),
-                timeout=120  # 热门带单员查询可能需要较长时间
+                timeout=180  # 热门带单员查询可能需要较长时间（包含公开/私域检测）
             )
             
             return jsonify({
@@ -6099,7 +6099,7 @@ def get_popular_traders():
                     use_cache=use_cache,
                     **kwargs
                 ),
-                timeout=120
+                timeout=180  # 热门带单员查询可能需要较长时间（包含公开/私域检测）
             )
             
             total = sum(len(traders) for traders in traders_dict.values())
@@ -9644,17 +9644,20 @@ def start_follow_monitor_in_background():
             new_loop = None
             task = None
             try:
-                # 在新线程中创建全新的事件循环
+                # 在新线程中创建全新的事件循环（完全独立，不受 nest_asyncio 影响）
+                # 注意：nest_asyncio 只影响主线程，独立线程的事件循环应该是干净的
                 new_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(new_loop)
                 
-                # 创建监控任务（无限循环）
-                task = new_loop.create_task(executor.run_monitoring_async())
+                # 验证事件循环是独立的（不应该被 nest_asyncio 影响）
+                if hasattr(new_loop, '_nest_patched'):
+                    logger.warning("⚠️ 事件循环被 nest_asyncio 补丁影响，这可能导致问题")
                 
-                # 直接运行任务（无限循环会一直运行）
-                # 如果任务内部发生异常导致事件循环关闭，run_until_complete 会抛出异常
+                logger.info(f"✅ 限价跟单监控器已在独立线程和事件循环中启动: {new_loop}")
+                
+                # 直接运行异步函数（不使用 create_task，避免任务管理问题）
                 try:
-                    new_loop.run_until_complete(task)
+                    new_loop.run_until_complete(executor.run_monitoring_async())
                 except (RuntimeError, asyncio.CancelledError) as e:
                     # 事件循环关闭或任务被取消
                     error_msg = str(e).lower()
@@ -9777,16 +9780,26 @@ def run_async_safe(coro, timeout=60):
     future = concurrent.futures.Future()
     
     def run_in_thread():
-        """在新线程中运行，创建完全独立的事件循环"""
+        """在新线程中运行，创建完全独立的事件循环（完全隔离，不影响其他线程）"""
+        import threading
+        thread_id = threading.current_thread().ident
+        thread_name = threading.current_thread().name
+        
+        logger.debug(f"[run_async_safe] [线程 {thread_id}:{thread_name}] 开始运行异步协程...")
+        
         new_loop = None
         try:
-            # 在新线程中创建全新的事件循环
+            # 在新线程中创建全新的事件循环（完全独立，不受 nest_asyncio 影响）
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
+            
+            logger.debug(f"[run_async_safe] [线程 {thread_id}:{thread_name}] 创建独立事件循环: {new_loop} (ID: {id(new_loop)})")
             
             # 运行协程
             result = new_loop.run_until_complete(coro)
             future.set_result(result)
+            
+            logger.debug(f"[run_async_safe] [线程 {thread_id}:{thread_name}] 异步协程执行完成")
             
         except Exception as e:
             # 记录错误
@@ -9820,8 +9833,10 @@ def run_async_safe(coro, timeout=60):
                         except Exception:
                             pass
     
-    # 在新线程中运行
-    thread = threading.Thread(target=run_in_thread, daemon=True, name="AsyncSafeRunner")
+    # 在新线程中运行（使用唯一的线程名称，便于调试）
+    import uuid
+    thread_name = f"AsyncSafeRunner-{uuid.uuid4().hex[:8]}"
+    thread = threading.Thread(target=run_in_thread, daemon=True, name=thread_name)
     thread.start()
     thread.join(timeout=timeout)
     
@@ -11110,6 +11125,19 @@ def run_backtest():
                 logger.info(f"📊 准备请求OKX历史数据: symbol={symbol}, interval={okx_timeframe}")
                 logger.info(f"📊 目标时间范围: {start_date} -> {end_date}")
                 
+                # 🔧 先尝试从 Redis 缓存获取历史数据
+                from core.strategy_trade.utils.historical_data_cache import (
+                    get_cached_historical_data,
+                    cache_historical_data
+                )
+                
+                cached_data = get_cached_historical_data(symbol, okx_timeframe, start_date, end_date)
+                if cached_data:
+                    logger.info(f"📊 ✅ 从 Redis 缓存获取历史数据: {len(cached_data)} 条")
+                    all_historical_data = cached_data
+                else:
+                    logger.info(f"📊 ⚠️ Redis 缓存未命中，从 API 获取历史数据")
+                
                 # 循环加载历史数据，直到覆盖指定的时间范围
                 import asyncio
                 import time as time_module
@@ -11175,6 +11203,20 @@ def run_backtest():
                     if len(batch_data) < 300:
                         logger.info(f"📊 返回数据少于300条，可能已到数据起点")
                         break
+                    
+                    # 将从 API 获取的数据缓存到 Redis
+                    if all_historical_data and len(all_historical_data) > 0:
+                        cache_success = cache_historical_data(
+                            symbol=symbol,
+                            timeframe=okx_timeframe,
+                            start_date=start_date,
+                            end_date=end_date,
+                            historical_data=all_historical_data
+                        )
+                        if cache_success:
+                            logger.info(f"📊 ✅ 历史数据已缓存到 Redis")
+                        else:
+                            logger.warning(f"📊 ⚠️ 历史数据缓存失败（不影响回测）")
                 
                 historical_data = all_historical_data
                 logger.info(f"📊 总共获取到 {len(historical_data) if historical_data else 0} 条历史数据")
@@ -13154,7 +13196,7 @@ def receive_tradingview_webhook():
             # 先尝试不使用 force（如果 Content-Type 正确）
             if 'application/json' in content_type:
                 data = request.get_json(silent=True)
-                if data:
+            if data:
                     logger.info(f"使用 Flask get_json() 解析成功（标准 Content-Type）: {data}")
             else:
                 # Content-Type 不正确，使用 force=True 强制解析
@@ -13193,54 +13235,54 @@ def receive_tradingview_webhook():
                     logger.debug(f"标准 JSON 解析失败: {json_error}, payload: {repr(cleaned_payload[:100])}")
                     
                     # 检查是否是类似 {symbol:BTCUSDT,action:BUY} 的格式（无引号）
-                    working_payload = cleaned_payload
-                    if len(working_payload) >= 2:
-                        if (working_payload.startswith("'") and working_payload.endswith("'")) or \
-                           (working_payload.startswith('"') and working_payload.endswith('"')):
-                            working_payload = working_payload[1:-1].strip()
-                    
-                    # 检查是否是花括号格式且无引号（非标准 JSON）
-                    is_non_standard_json = False
-                    if working_payload.startswith('{') and working_payload.endswith('}'):
-                        inner = working_payload[1:-1].strip()
-                        # 检查是否包含引号（标准 JSON 应该有引号）
-                        has_quotes = '"' in inner or ("'" in inner and inner.count("'") > 2)
-                        if not has_quotes:
-                            is_non_standard_json = True
-                    
-                    if is_non_standard_json:
+                working_payload = cleaned_payload
+                if len(working_payload) >= 2:
+                    if (working_payload.startswith("'") and working_payload.endswith("'")) or \
+                       (working_payload.startswith('"') and working_payload.endswith('"')):
+                        working_payload = working_payload[1:-1].strip()
+                
+                # 检查是否是花括号格式且无引号（非标准 JSON）
+                is_non_standard_json = False
+                if working_payload.startswith('{') and working_payload.endswith('}'):
+                    inner = working_payload[1:-1].strip()
+                    # 检查是否包含引号（标准 JSON 应该有引号）
+                    has_quotes = '"' in inner or ("'" in inner and inner.count("'") > 2)
+                    if not has_quotes:
+                        is_non_standard_json = True
+                
+                if is_non_standard_json:
                         # 使用正则表达式解析非标准 JSON
-                        inner = working_payload[1:-1].strip()
-                        data = {}
-                        # 使用正则表达式匹配 key:value（值可能包含空格）
-                        pattern = r'(\w+)\s*:\s*([^,}]+)'
-                        matches = re.findall(pattern, inner)
+                    inner = working_payload[1:-1].strip()
+                    data = {}
+                    # 使用正则表达式匹配 key:value（值可能包含空格）
+                    pattern = r'(\w+)\s*:\s*([^,}]+)'
+                    matches = re.findall(pattern, inner)
+                    
+                    for key, value in matches:
+                        key = key.strip()
+                        value = value.strip()
                         
-                        for key, value in matches:
-                            key = key.strip()
-                            value = value.strip()
-                            
-                            # 移除值两端的引号（如果有）
-                            if (value.startswith('"') and value.endswith('"')) or \
-                               (value.startswith("'") and value.endswith("'")):
-                                value = value[1:-1]
-                            
-                            # 尝试转换为数字
-                            try:
-                                if '.' in value:
-                                    data[key] = float(value)
-                                else:
-                                    data[key] = int(value)
-                            except ValueError:
-                                data[key] = value
+                        # 移除值两端的引号（如果有）
+                        if (value.startswith('"') and value.endswith('"')) or \
+                           (value.startswith("'") and value.endswith("'")):
+                            value = value[1:-1]
                         
-                        if data:
-                            logger.info(f"使用正则表达式解析非标准 JSON（无引号格式）: {data}")
-                        else:
-                            raise ValueError("正则表达式解析失败，未提取到任何数据")
+                        # 尝试转换为数字
+                        try:
+                            if '.' in value:
+                                data[key] = float(value)
+                            else:
+                                data[key] = int(value)
+                        except ValueError:
+                            data[key] = value
+                    
+                    if data:
+                        logger.info(f"使用正则表达式解析非标准 JSON（无引号格式）: {data}")
                     else:
-                        # 有引号但解析失败，可能是格式问题
-                        raise json_error
+                        raise ValueError("正则表达式解析失败，未提取到任何数据")
+                else:
+                    # 有引号但解析失败，可能是格式问题
+                    raise json_error
             except (json.JSONDecodeError, ValueError) as e:
                 # 所有解析方法都失败
                 logger.warning(f"所有 JSON 解析方法都失败: {e}")

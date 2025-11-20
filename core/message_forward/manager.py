@@ -80,6 +80,28 @@ class MessageForwardManager:
             logger.warning(f"获取平台实例映射失败: {e}")
             return None
     
+    def _get_platform_instance_by_id(self, platform_id: int) -> Optional[MessagePlatform]:
+        """
+        根据平台ID获取平台实例（优先从映射中获取，如果不存在则动态创建）
+        
+        Args:
+            platform_id: 平台ID
+            
+        Returns:
+            平台实例，如果无法获取则返回None
+        """
+        try:
+            # 优先从监听服务获取
+            if self._listener_service and hasattr(self._listener_service, 'listening_platforms'):
+                if platform_id in self._listener_service.listening_platforms:
+                    return self._listener_service.listening_platforms[platform_id]
+            
+            # 如果不在映射中，尝试动态创建
+            return self._get_or_create_platform_instance(platform_id)
+        except Exception as e:
+            logger.warning(f"获取平台实例失败 (ID: {platform_id}): {e}")
+            return None
+    
     def _get_or_create_platform_instance(self, platform_id: int) -> Optional[MessagePlatform]:
         """
         根据平台ID获取或创建平台实例（用于 webhook 平台等不需要监听的平台）
@@ -274,11 +296,33 @@ class MessageForwardManager:
                 logger.info(f"   - 规则源聊天ID: {rule.source_chat_ids}")
                 logger.info(f"   - 消息源聊天ID: {message.source_chat_id}")
                 
-                if rule.matches(message):
-                    matched_rules.append(rule)
-                    logger.info(f"✅ 消息匹配规则: {rule.rule_name} (ID: {rule_id})")
-                else:
+                # 检查规则是否匹配
+                if not rule.matches(message):
                     logger.info(f"❌ 规则 {rule.rule_name} 不匹配")
+                    continue
+                
+                # 如果规则指定了源平台ID，检查该平台实例的策略过滤器
+                if rule.source_platform_id is not None:
+                    source_platform = self._get_platform_instance_by_id(rule.source_platform_id)
+                    if source_platform and hasattr(source_platform, 'strategy_filter') and source_platform.strategy_filter:
+                        # 从消息的 extra_data 中获取原始数据
+                        original_data = message.extra_data.get('trade_info', {}).get('original_data', {})
+                        type_ = original_data.get('type_')
+                        strategy = type_ or original_data.get('strategy') or original_data.get('indicator')
+                        
+                        if strategy:
+                            if strategy not in source_platform.strategy_filter:
+                                logger.info(f"❌ 规则 {rule.rule_name} 的源平台实例 (ID: {rule.source_platform_id}) 策略过滤器不匹配: '{strategy}' 不在 {source_platform.strategy_filter} 中")
+                                continue
+                            else:
+                                logger.info(f"✅ 规则 {rule.rule_name} 的源平台实例策略过滤器匹配: '{strategy}' 在 {source_platform.strategy_filter} 中")
+                        else:
+                            # 如果没有策略标识，但平台配置了过滤器，则不匹配
+                            logger.info(f"❌ 规则 {rule.rule_name} 的源平台实例 (ID: {rule.source_platform_id}) 配置了策略过滤器 {source_platform.strategy_filter}，但消息没有策略标识")
+                            continue
+                
+                matched_rules.append(rule)
+                logger.info(f"✅ 消息匹配规则: {rule.rule_name} (ID: {rule_id})")
             
             if not matched_rules:
                 source_platform_str = message.source_platform.value if isinstance(message.source_platform, PlatformType) else str(message.source_platform)

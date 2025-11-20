@@ -213,12 +213,59 @@ class DingTalkPlatform(MessagePlatform):
                 timestamp, sign = self._generate_sign()
                 url = f"{self.webhook_url}&timestamp={timestamp}&sign={sign}"
             
+            # 从消息中提取交易类型（用于钉钉消息标题）
+            # 优先从 extra_data 中获取 trade_info，然后提取 trade_type
+            title = "消息转发"  # 默认标题
+            if message.extra_data:
+                trade_info = message.extra_data.get('trade_info')
+                if trade_info:
+                    # 从 trade_info 中提取交易类型
+                    original_action = trade_info.get('original_action', '').upper()
+                    direct = trade_info.get('direct', '').upper()
+                    
+                    # 判断交易类型（与 alert_receiver.py 中的逻辑保持一致）
+                    if original_action == 'BUY' and direct == 'SHORT':
+                        title = "平空"
+                    elif original_action == 'SELL' and direct == 'LONG':
+                        title = "平多"
+                    elif original_action == 'BUY' and direct == 'LONG':
+                        title = "开多"
+                    elif original_action == 'SELL' and direct == 'SHORT':
+                        title = "开空"
+                    elif original_action == 'BUY':
+                        title = "买入"
+                    elif original_action == 'SELL':
+                        title = "卖出"
+                    elif original_action == 'CLOSE' or trade_info.get('action') == 'close':
+                        if direct == 'SHORT':
+                            title = "平空"
+                        elif direct == 'LONG':
+                            title = "平多"
+                        else:
+                            title = "平仓"
+            
+            # 如果从 extra_data 中没有获取到，尝试从消息内容中解析
+            if title == "消息转发" and message.content:
+                import re
+                # 方法1：尝试从消息内容中提取交易类型（格式：📊 **交易类型**: 平空）
+                match = re.search(r'\*\*交易类型\*\*:\s*(\S+)', message.content)
+                if match:
+                    title = match.group(1)
+                else:
+                    # 方法2：尝试从消息第一行提取标题（格式：🔔 TradingView 交易信号 或 🔔 平空）
+                    first_line = message.content.split('\n')[0].strip()
+                    # 移除 emoji 和多余空格
+                    first_line_clean = re.sub(r'^[🔔📊💵📈🆔⏰]+', '', first_line).strip()
+                    if first_line_clean and first_line_clean != "TradingView 交易信号":
+                        # 如果第一行不是默认标题，使用它作为 title
+                        title = first_line_clean
+            
             # 构造消息体
             if message.message_type == MessageType.MARKDOWN:
                 payload = {
                     "msgtype": "markdown",
                     "markdown": {
-                        "title": "消息转发",
+                        "title": title,
                         "text": message.formatted_content or message.content
                     }
                 }
@@ -226,7 +273,7 @@ class DingTalkPlatform(MessagePlatform):
                 payload = {
                     "msgtype": "link",
                     "link": {
-                        "title": "消息转发",
+                        "title": title,
                         "text": message.content,
                         "messageUrl": message.extra_data.get('url', ''),
                         "picUrl": message.extra_data.get('pic_url', '')

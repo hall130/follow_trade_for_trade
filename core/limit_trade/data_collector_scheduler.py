@@ -157,24 +157,100 @@ class DataCollectorScheduler:
             logger.error(traceback.format_exc())
     
     def _collect_popular_traders(self):
-        """采集热门带单员数据"""
+        """采集热门带单员数据（在独立线程中运行，使用独立的事件循环）"""
         try:
-            # 使用 asyncio 运行异步函数
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            # 在独立线程中运行，创建完全独立的事件循环
+            import threading
+            import concurrent.futures
             
-            try:
-                # 采集所有交易所的数据（使用缓存，但会更新缓存）
-                result = loop.run_until_complete(
-                    self.popular_traders_service.get_popular_traders(
+            future = concurrent.futures.Future()
+            
+            def run_in_thread():
+                """在独立线程中运行异步采集（完全隔离，不影响其他线程）"""
+                import threading
+                thread_id = threading.current_thread().ident
+                thread_name = threading.current_thread().name
+                
+                logger.info(f"[数据采集调度器] [线程 {thread_id}:{thread_name}] 开始热门带单员采集...")
+                
+                new_loop = None
+                try:
+                    # 在新线程中创建全新的事件循环（完全独立，不受 nest_asyncio 影响）
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    
+                    logger.info(f"[数据采集调度器] [线程 {thread_id}:{thread_name}] 创建独立事件循环: {new_loop} (ID: {id(new_loop)})")
+                    
+                    # 采集所有交易所的数据（强制采集，不使用缓存读取，但采集完成后会写入缓存）
+                    result = new_loop.run_until_complete(
+                        self.popular_traders_service.get_popular_traders(
+                            exchange='all',
+                            fetch_all=True,
+                            use_cache=False,  # 不使用缓存读取，强制从 API 采集
+                            time_range='30D',
+                            order='DESC',
+                            country_id='CN'
+                        )
+                    )
+                    
+                    logger.info(f"[数据采集调度器] [线程 {thread_id}:{thread_name}] 热门带单员采集完成")
+                    
+                    # 手动写入缓存（因为 use_cache=False 时不会自动写入）
+                    # 使用与采集相同的参数，确保缓存键一致
+                    self.popular_traders_service.cache.set(
                         exchange='all',
-                        fetch_all=True,
-                        use_cache=False,  # 不使用缓存，强制采集
+                        data=result,
+                        ttl=self.popular_traders_interval,  # 缓存时间与采集间隔一致
                         time_range='30D',
                         order='DESC',
                         country_id='CN'
                     )
-                )
+                    
+                    future.set_result(result)
+                    
+                except Exception as e:
+                    logger.error(f"[数据采集调度器] 热门带单员采集线程异常: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    if not future.done():
+                        future.set_exception(e)
+                finally:
+                    # 清理事件循环
+                    if new_loop:
+                        try:
+                            # 取消所有待处理的任务
+                            try:
+                                pending = asyncio.all_tasks(new_loop)
+                                if pending:
+                                    for t in pending:
+                                        if not t.done():
+                                            t.cancel()
+                                    # 等待所有任务完成（忽略异常）
+                                    try:
+                                        new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                                    except (RuntimeError, asyncio.CancelledError):
+                                        pass
+                            except RuntimeError:
+                                pass
+                        except Exception:
+                            pass
+                        finally:
+                            new_loop.close()
+            
+            # 在新线程中运行（使用唯一的线程名称，便于调试和隔离）
+            import uuid
+            thread_id = uuid.uuid4().hex[:8]
+            thread = threading.Thread(
+                target=run_in_thread, 
+                daemon=True, 
+                name=f"PopularTradersCollector-{thread_id}"
+            )
+            logger.info(f"[数据采集调度器] 启动热门带单员采集线程: {thread.name}")
+            thread.start()
+            
+            # 等待结果（设置超时，避免无限等待）
+            try:
+                result = future.result(timeout=300)  # 5分钟超时
                 
                 # 统计数据量
                 total_count = sum(len(traders) for traders in result.values() if isinstance(traders, list))
@@ -191,8 +267,14 @@ class DataCollectorScheduler:
                     f"总计: {total_count}"
                 )
                 
-            finally:
-                loop.close()
+            except concurrent.futures.TimeoutError:
+                logger.error("[数据采集调度器] 热门带单员采集超时（5分钟）")
+                self.stats['popular_traders']['errors'] += 1
+            except Exception as e:
+                logger.error(f"[数据采集调度器] 热门带单员采集失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.stats['popular_traders']['errors'] += 1
                 
         except Exception as e:
             logger.error(f"[数据采集调度器] 热门带单员采集失败: {e}")
@@ -201,31 +283,79 @@ class DataCollectorScheduler:
             self.stats['popular_traders']['errors'] += 1
     
     def _collect_whale_traders(self):
-        """采集巨鲸交易员数据"""
+        """采集巨鲸交易员数据（在独立线程中运行，使用独立的事件循环）"""
         try:
-            # 使用 asyncio 运行异步函数
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            # 在独立线程中运行，创建完全独立的事件循环
+            import threading
+            import concurrent.futures
             
-            try:
-                # 采集不同排序方式的排行榜数据
-                sort_types = ['total_pnl', 'avg_win_rate', 'updated_at']
-                period_days_list = [1, 7, 30, 180]  # 不同时间周期
-                
-                total_count = 0
-                for sort_by in sort_types:
-                    for period_days in period_days_list:
-                        result = loop.run_until_complete(
-                            self.echosync_service.get_leaderboard(
-                                sort_by=sort_by,
-                                period_days=period_days,
-                                page_size=100,
-                                use_cache=False  # 不使用缓存，强制采集
+            future = concurrent.futures.Future()
+            
+            def run_in_thread():
+                """在独立线程中运行异步采集"""
+                new_loop = None
+                try:
+                    # 在新线程中创建全新的事件循环（完全独立）
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    
+                    # 采集不同排序方式的排行榜数据
+                    sort_types = ['total_pnl', 'avg_win_rate', 'updated_at']
+                    period_days_list = [1, 7, 30, 180]  # 不同时间周期
+                    
+                    total_count = 0
+                    for sort_by in sort_types:
+                        for period_days in period_days_list:
+                            result = new_loop.run_until_complete(
+                                self.echosync_service.get_leaderboard(
+                                    sort_by=sort_by,
+                                    period_days=period_days,
+                                    page_size=100,
+                                    use_cache=False  # 不使用缓存，强制采集
+                                )
                             )
-                        )
-                        
-                        if result.get('success') and result.get('data'):
-                            total_count += len(result.get('data', []))
+                            
+                            if result.get('success') and result.get('data'):
+                                total_count += len(result.get('data', []))
+                    
+                    future.set_result(total_count)
+                    
+                except Exception as e:
+                    logger.error(f"[数据采集调度器] 巨鲸交易员采集线程异常: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    if not future.done():
+                        future.set_exception(e)
+                finally:
+                    # 清理事件循环
+                    if new_loop:
+                        try:
+                            # 取消所有待处理的任务
+                            try:
+                                pending = asyncio.all_tasks(new_loop)
+                                if pending:
+                                    for t in pending:
+                                        if not t.done():
+                                            t.cancel()
+                                    # 等待所有任务完成（忽略异常）
+                                    try:
+                                        new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                                    except (RuntimeError, asyncio.CancelledError):
+                                        pass
+                            except RuntimeError:
+                                pass
+                        except Exception:
+                            pass
+                        finally:
+                            new_loop.close()
+            
+            # 在新线程中运行
+            thread = threading.Thread(target=run_in_thread, daemon=True, name="WhaleTradersCollector")
+            thread.start()
+            
+            # 等待结果（设置超时，避免无限等待）
+            try:
+                total_count = future.result(timeout=300)  # 5分钟超时
                 
                 # 更新统计信息
                 self.stats['whale_traders']['last_collect_time'] = time.time()
@@ -237,8 +367,14 @@ class DataCollectorScheduler:
                     f"总计: {total_count} 条记录"
                 )
                 
-            finally:
-                loop.close()
+            except concurrent.futures.TimeoutError:
+                logger.error("[数据采集调度器] 巨鲸交易员采集超时（5分钟）")
+                self.stats['whale_traders']['errors'] += 1
+            except Exception as e:
+                logger.error(f"[数据采集调度器] 巨鲸交易员采集失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.stats['whale_traders']['errors'] += 1
                 
         except Exception as e:
             logger.error(f"[数据采集调度器] 巨鲸交易员采集失败: {e}")

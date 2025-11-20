@@ -413,6 +413,47 @@ class TradingViewAlertReceiver:
                 return
             logger.info("✅ 消息管理器已初始化，继续处理...")
             
+            # 检查策略过滤器（在转发之前）
+            # 获取原始数据（包含 type_ 字段）
+            original_data = trade_info.get('original_data', {})
+            type_ = original_data.get('type_')
+            
+            # 获取所有 TradingView 平台实例，检查策略过滤器
+            from core.message_forward.models import PlatformType
+            tradingview_platforms = []
+            if self.message_manager and hasattr(self.message_manager, 'platforms'):
+                for platform_id, platform in self.message_manager.platforms.items():
+                    if hasattr(platform, 'platform_type') and platform.platform_type == PlatformType.TRADINGVIEW:
+                        tradingview_platforms.append(platform)
+            
+            # 如果有策略过滤器配置，检查是否匹配
+            if tradingview_platforms:
+                # 检查所有 TradingView 平台实例的策略过滤器
+                should_forward = False
+                for platform in tradingview_platforms:
+                    if hasattr(platform, 'strategy_filter') and platform.strategy_filter:
+                        # 优先使用 type_ 字段
+                        strategy = type_ or original_data.get('strategy') or original_data.get('indicator')
+                        if strategy:
+                            if strategy in platform.strategy_filter:
+                                logger.info(f"✅ 策略过滤器匹配: '{strategy}' 在过滤器列表 {platform.strategy_filter} 中")
+                                should_forward = True
+                                break
+                            else:
+                                logger.info(f"❌ 策略过滤器不匹配: '{strategy}' 不在过滤器列表 {platform.strategy_filter} 中")
+                        else:
+                            # 如果没有 type_/strategy/indicator 字段，且策略过滤器不为空，则不转发
+                            logger.warning(f"⚠️ 消息没有策略标识（type_/strategy/indicator），但平台配置了策略过滤器 {platform.strategy_filter}，跳过转发")
+                    else:
+                        # 没有配置策略过滤器，允许转发
+                        should_forward = True
+                        logger.info("✅ 平台未配置策略过滤器，允许转发")
+                        break
+                
+                if not should_forward:
+                    logger.warning(f"⚠️ 所有 TradingView 平台的策略过滤器都不匹配，跳过消息转发。type_={type_}, original_data={original_data}")
+                    return
+            
             # 根据原始 action 和 direct 判断交易类型（用于显示）
             original_action = trade_info.get('original_action', '').upper()
             direct = trade_info.get('direct', '').upper()

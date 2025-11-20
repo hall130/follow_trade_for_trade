@@ -9704,7 +9704,10 @@ class OKXTradingApp {
                 params.append('limit', limit);
             }
             
-            const response = await this.apiRequest(`${this.apiBaseUrl}/popular-traders?${params}`);
+            // 热门带单员请求可能需要较长时间（包含公开/私域检测），设置超时为200秒
+            const response = await this.apiRequest(`${this.apiBaseUrl}/popular-traders?${params}`, {
+                timeout: 200000  // 200秒超时
+            });
             
             if (!response || !response.ok) {
                 throw new Error('获取热门带单员失败');
@@ -9823,7 +9826,7 @@ class OKXTradingApp {
                         </div>
                         <div class="d-flex align-items-center gap-1">
                             ${publicBadge}
-                            ${exchangeBadge}
+                        ${exchangeBadge}
                         </div>
                     </div>
                     <div class="card-body">
@@ -10030,7 +10033,10 @@ class OKXTradingApp {
                 params.append('limit', limit);
             }
             
-            const response = await this.apiRequest(`${this.apiBaseUrl}/popular-traders?${params}`);
+            // 热门带单员请求可能需要较长时间（包含公开/私域检测），设置超时为200秒
+            const response = await this.apiRequest(`${this.apiBaseUrl}/popular-traders?${params}`, {
+                timeout: 200000  // 200秒超时
+            });
             
             if (!response || !response.ok) {
                 throw new Error('获取Hyperliquid交易员失败');
@@ -15423,6 +15429,10 @@ class OKXTradingApp {
         }
     }
     
+    // 存储原始订阅数据（用于搜索过滤）
+    _subscriptionsData = null;
+    _subscriptionsPlatforms = null;
+    
     // 加载订阅列表
     async loadSubscriptionsList(ruleId) {
         try {
@@ -15433,6 +15443,8 @@ class OKXTradingApp {
             if (!tbody) return;
             
             if (!data.success || !data.data || data.data.length === 0) {
+                this._subscriptionsData = [];
+                this._subscriptionsPlatforms = [];
                 tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无订阅记录</td></tr>';
                 return;
             }
@@ -15442,7 +15454,32 @@ class OKXTradingApp {
             const platformsData = await platformsResponse.json();
             const platforms = platformsData.success && platformsData.data ? platformsData.data : [];
             
-            tbody.innerHTML = data.data.map(sub => {
+            // 保存原始数据
+            this._subscriptionsData = data.data;
+            this._subscriptionsPlatforms = platforms;
+            
+            // 渲染表格（应用搜索过滤）
+            this.renderSubscriptionsTable(data.data, platforms);
+        } catch (error) {
+            console.error('加载订阅列表失败:', error);
+            const tbody = document.getElementById('subscriptionsTableBody');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">加载失败</td></tr>';
+            }
+        }
+    }
+    
+    // 渲染订阅表格
+    renderSubscriptionsTable(subscriptions, platforms) {
+        const tbody = document.getElementById('subscriptionsTableBody');
+        if (!tbody) return;
+        
+        if (!subscriptions || subscriptions.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无订阅记录</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = subscriptions.map(sub => {
                 const statusBadge = sub.subscription_status === 'active' ? 
                     '<span class="badge bg-success">有效</span>' : 
                     sub.subscription_status === 'expired' ?
@@ -15495,13 +15532,57 @@ class OKXTradingApp {
                         </td>
                     </tr>
                 `;
-            }).join('');
-        } catch (error) {
-            console.error('加载订阅列表失败:', error);
-            const tbody = document.getElementById('subscriptionsTableBody');
-            if (tbody) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">加载失败</td></tr>';
-            }
+        }).join('');
+    }
+    
+    // 过滤订阅列表（模糊搜索）
+    filterSubscriptions() {
+        if (!this._subscriptionsData || !this._subscriptionsPlatforms) {
+            return;
+        }
+        
+        const searchInput = document.getElementById('subscriptionSearchInput');
+        if (!searchInput) return;
+        
+        const searchTerm = searchInput.value.trim().toLowerCase();
+        
+        // 如果没有搜索词，显示所有数据
+        if (!searchTerm) {
+            this.renderSubscriptionsTable(this._subscriptionsData, this._subscriptionsPlatforms);
+            return;
+        }
+        
+        // 过滤数据
+        const filtered = this._subscriptionsData.filter(sub => {
+            // 查找平台名称
+            const platform = this._subscriptionsPlatforms.find(p => p.id === sub.target_platform_id);
+            const platformName = platform ? `${platform.platform_name} ${platform.platform_type}` : `平台ID: ${sub.target_platform_id}`;
+            
+            // 搜索字段：平台名称、群组ID、状态、开始时间、过期时间、续订次数
+            const searchFields = [
+                platformName.toLowerCase(),
+                (sub.target_chat_id || '').toLowerCase(),
+                (sub.subscription_status === 'active' ? '有效' : 
+                 sub.subscription_status === 'expired' ? '已过期' : '已暂停').toLowerCase(),
+                new Date(sub.start_date).toLocaleString('zh-CN').toLowerCase(),
+                new Date(sub.expire_date).toLocaleString('zh-CN').toLowerCase(),
+                String(sub.total_renewals || 0)
+            ];
+            
+            // 模糊匹配：检查搜索词是否包含在任何字段中
+            return searchFields.some(field => field.includes(searchTerm));
+        });
+        
+        // 渲染过滤后的数据
+        this.renderSubscriptionsTable(filtered, this._subscriptionsPlatforms);
+    }
+    
+    // 清除搜索
+    clearSubscriptionSearch() {
+        const searchInput = document.getElementById('subscriptionSearchInput');
+        if (searchInput) {
+            searchInput.value = '';
+            this.filterSubscriptions();
         }
     }
     
@@ -16613,10 +16694,10 @@ class OKXTradingApp {
     // 加载策略模板到创建策略模态框
     async loadStrategyTemplatesForCreate() {
         try {
-            // 专门获取策略交易模态框中的选择器
-            const strategySelect = document.querySelector('#createStrategyTradeModal #strategyType');
+            // 专门获取策略交易模态框中的选择器（使用正确的ID）
+            const strategySelect = document.getElementById('createStrategyTradeType');
             if (!strategySelect) {
-                console.error('❌ 找不到策略交易模态框中的策略类型选择器');
+                console.error('❌ 找不到策略交易模态框中的策略类型选择器 (ID: createStrategyTradeType)');
                 return;
             }
 
@@ -17779,12 +17860,14 @@ class MyStrategy(BaseStrategy):
                 console.log(`🔍 bb_std 最终值: ${strategyConfig.bb_std} (${typeof strategyConfig.bb_std})`);
             }
             
-            const response = await fetch(`${this.apiBaseUrl}/strategy/backtests`, {
+            // 回测可能需要较长时间，使用 apiRequest 并设置更长的超时（10分钟）
+            const response = await this.apiRequest(`${this.apiBaseUrl}/strategy/backtests`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(requestData)
+                body: JSON.stringify(requestData),
+                timeout: 600000  // 10分钟超时（600秒）
             });
             
             if (response.ok) {
@@ -18491,9 +18574,9 @@ class MyStrategy(BaseStrategy):
                 <td><small class="text-muted">${updatedAt}</small></td>
                 <td>
                     <button class="btn btn-sm btn-primary add-whale-to-limit-follow" 
-                            data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
+                                data-trader="${JSON.stringify(trader).replace(/"/g, '&quot;')}">
                         <i class="bi bi-arrow-repeat"></i> 跟单交易
-                    </button>
+                        </button>
                 </td>
             `;
             
@@ -19360,7 +19443,8 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 策略类型变化事件 - 使用事件委托，专门针对策略交易模态框
     document.addEventListener('change', (e) => {
-        if (e.target && e.target.id === 'strategyType' && e.target.closest('#createStrategyTradeModal')) {
+        // 修复：使用正确的ID createStrategyTradeType
+        if (e.target && e.target.id === 'createStrategyTradeType' && e.target.closest('#createStrategyTradeModal')) {
             
             if (window.app) {
                 window.app.onStrategyTypeChangeTrade(e.target.value);

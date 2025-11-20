@@ -317,7 +317,14 @@ class TradingViewPlatform(MessagePlatform):
         logger.info("TradingView Webhook监听已启动，等待TradingView推送信号...")
         logger.info(f"   请在TradingView Alert中配置webhook地址: http://your-server-ip:{self.webhook_port}{self.webhook_path}")
         while self.listening:
-            await asyncio.sleep(1)
+            # 使用 loop.call_later 而不是 asyncio.sleep，避免 nest_asyncio 影响
+            current_loop = asyncio.get_running_loop()
+            future = current_loop.create_future()
+            def set_result():
+                if not future.done():
+                    future.set_result(None)
+            current_loop.call_later(1, set_result)
+            await future
     
     async def start_listening(self, monitored_chat_ids: Optional[List[str]] = None):
         """
@@ -338,7 +345,14 @@ class TradingViewPlatform(MessagePlatform):
             logger.info(f"   Webhook地址: http://your-server-ip:{self.webhook_port}{self.webhook_path}")
             # 保持运行状态
             while self.listening:
-                await asyncio.sleep(10)  # 每10秒检查一次状态
+                # 使用 loop.call_later 而不是 asyncio.sleep，避免 nest_asyncio 影响
+                current_loop = asyncio.get_running_loop()
+                future = current_loop.create_future()
+                def set_result():
+                    if not future.done():
+                        future.set_result(None)
+                current_loop.call_later(10, set_result)
+                await future
         else:
             logger.error("❌ TradingView连接失败，无法启动监听")
     
@@ -439,9 +453,21 @@ class TradingViewPlatform(MessagePlatform):
         """判断是否应该转发此消息"""
         # 策略过滤
         if self.strategy_filter:
-            strategy = raw_data.get('strategy') or raw_data.get('indicator') or message.source_username
-            if strategy and strategy not in self.strategy_filter:
-                return False
+            # 优先使用 type_ 字段（如 "ASR-VC"、"ASR-TP"、"ASR-HD"）
+            # 如果没有 type_，再尝试 strategy、indicator 等字段
+            strategy = (
+                raw_data.get('type_') or  # 优先使用 type_ 字段
+                raw_data.get('strategy') or 
+                raw_data.get('indicator') or 
+                message.source_username
+            )
+            
+            if strategy:
+                # 完整匹配（精确匹配）
+                # 例如：type_="ASR-VC" 必须配置 "ASR-VC" 才能匹配
+                if strategy not in self.strategy_filter:
+                    logger.debug(f"策略过滤器不匹配: 策略 '{strategy}' 不在过滤器列表 {self.strategy_filter} 中")
+                    return False
         
         # 交易对过滤
         if self.symbol_filter:
