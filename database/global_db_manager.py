@@ -69,6 +69,13 @@ class MySQLPool:
             cursor.execute(sql, args or ())
             return cursor.fetchall()
     
+    def query_one(self, sql, args=None):
+        """查询单条记录，返回第一条结果或None"""
+        result = self.query(sql, args)
+        if result and len(result) > 0:
+            return result[0]
+        return None
+    
     def execute(self, sql, args=None):
         """执行更新并返回最后插入的ID"""
         with self.get_conn().cursor() as cursor:

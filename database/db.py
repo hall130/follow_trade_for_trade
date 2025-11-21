@@ -30,7 +30,7 @@ class MySQLPool:
                 cursorclass=pymysql.cursors.DictCursor,
                 mincached=mincached, 
                 maxcached=maxcached,
-                maxconnections=maxcached * 2,  # 最大连接数
+                maxconnections=maxcached * 3,  # 最大连接数（提高以支持更多并发，100用户建议150+）
                 blocking=True,  # 阻塞等待连接
                 ping=7  # 每7次查询ping一次数据库
             )
@@ -81,6 +81,13 @@ class MySQLPool:
                     conn.close()
                 except:
                     pass
+    
+    def query_one(self, sql, args=None):
+        """查询单条记录，返回第一条结果或None"""
+        result = self.query(sql, args)
+        if result and len(result) > 0:
+            return result[0]
+        return None
 
     def execute(self, sql, args=None, max_retries=3):
         """执行SQL语句，带重试机制和连接异常处理"""

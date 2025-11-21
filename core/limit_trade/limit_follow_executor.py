@@ -1599,19 +1599,27 @@ class LimitFollowExecutor:
                     # 向交易所发送实际订单
                     import asyncio
                     try:
-                        # 尝试获取现有事件循环
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # 如果事件循环正在运行，创建任务
-                            task = loop.create_task(limit_follow_service._submit_order_to_exchange(order))
-                            # 等待任务完成
-                            result = await task
-                        else:
-                            # 如果事件循环没有运行，运行到完成
-                            result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
+                        # 使用 get_running_loop() 获取当前运行中的事件循环（更安全）
+                        loop = asyncio.get_running_loop()
+                        # 如果事件循环正在运行，创建任务
+                        task = loop.create_task(limit_follow_service._submit_order_to_exchange(order))
+                        # 等待任务完成
+                        result = await task
                     except RuntimeError:
-                        # 如果没有事件循环，创建一个新的
-                        result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
+                        # 如果没有运行中的事件循环，尝试获取当前线程的事件循环
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                # 如果事件循环正在运行，创建任务
+                                task = loop.create_task(limit_follow_service._submit_order_to_exchange(order))
+                                # 等待任务完成
+                                result = await task
+                            else:
+                                # 如果事件循环没有运行，运行到完成
+                                result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
+                        except RuntimeError:
+                            # 如果没有事件循环，创建一个新的
+                            result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
                     
                     if result:
                         success_count += 1
@@ -1873,16 +1881,11 @@ class LimitFollowExecutor:
             loop = asyncio.get_running_loop()
             logger.debug(f"使用运行中的事件循环: {loop}")
         except RuntimeError:
-            # 如果没有运行中的事件循环，尝试获取当前线程的事件循环
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    logger.error("当前线程的事件循环已关闭，无法继续监控")
-                    return
-                logger.debug(f"使用当前线程的事件循环: {loop}")
-            except RuntimeError:
-                logger.error("当前线程没有事件循环，无法继续监控（应该在独立线程中运行）")
-                return
+            # 如果没有运行中的事件循环，说明当前线程没有事件循环
+            # 这不应该发生，因为 run_monitoring_async 应该在独立线程中运行
+            logger.error("当前线程没有运行中的事件循环，无法继续监控（应该在独立线程中运行）")
+            logger.error("LimitFollowExecutor 必须在独立线程中运行，使用 start_follow_monitor_in_background() 启动")
+            return
         
         # 创建HTTP会话（使用当前事件循环，设置超时避免阻塞）
         timeout = aiohttp.ClientTimeout(total=30, connect=10)

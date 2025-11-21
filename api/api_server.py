@@ -10338,7 +10338,7 @@ def create_strategy_trade():
 # 回测API
 @app.route('/api/v1/strategy/backtests', methods=['GET'])
 def get_backtests():
-    """获取回测历史"""
+    """获取回测历史（支持缓存和分页）"""
     try:
         if not STRATEGY_MODULE_AVAILABLE:
             return jsonify({
@@ -10347,23 +10347,84 @@ def get_backtests():
                 'data': []
             })
         
+        # 获取分页参数
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 50, type=int)
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        
+        # 参数验证
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 50
+        if page_size > 200:  # 限制最大每页数量
+            page_size = 200
+        
+        # 🔧 尝试从 Redis 缓存获取（所有用户共享缓存，60秒过期）
+        cache_key = "backtest:list:all"
+        try:
+            from core.redis_manager import get_redis_manager
+            redis_manager = get_redis_manager()
+            if redis_manager and redis_manager.is_connected():
+                cached_data = redis_manager.get(cache_key)
+                if cached_data:
+                    logger.debug("✅ 从 Redis 缓存获取回测历史列表")
+                    # 应用分页
+                    all_backtests = cached_data
+                    total = len(all_backtests)
+                    start_idx = (page - 1) * page_size
+                    end_idx = start_idx + page_size
+                    paginated_backtests = all_backtests[start_idx:end_idx]
+                    
+                    return jsonify({
+                        'success': True,
+                        'message': '获取回测历史成功（缓存）',
+                        'data': paginated_backtests,
+                        'pagination': {
+                            'page': page,
+                            'page_size': page_size,
+                            'total': total,
+                            'total_pages': (total + page_size - 1) // page_size
+                        }
+                    })
+        except Exception as cache_error:
+            logger.debug(f"Redis 缓存获取失败（继续从数据库查询）: {cache_error}")
+        
         # 从数据库获取回测历史
         if db_pool:
             try:
-                query = """
+                # 构建查询条件（如果支持用户隔离）
+                where_clause = ""
+                query_params = []
+                if user_id and AUTH_MODULE_AVAILABLE:
+                    # 可以根据需要添加用户过滤
+                    # where_clause = "WHERE user_id = %s"
+                    # query_params.append(user_id)
+                    pass
+                
+                # 先获取总数
+                count_query = f"SELECT COUNT(*) as total FROM strategy_backtests {where_clause}"
+                count_result = db_pool.query_one(count_query, tuple(query_params) if query_params else None)
+                total = count_result['total'] if count_result else 0
+                
+                # 分页查询
+                offset = (page - 1) * page_size
+                query = f"""
                 SELECT id, strategy_name, backtest_name, start_date, end_date,
                        initial_capital, final_capital, total_return, max_drawdown,
                        sharpe_ratio, status, started_at as created_at
                 FROM strategy_backtests 
+                {where_clause}
                 ORDER BY started_at DESC
-                
+                LIMIT %s OFFSET %s
                 """
-                results = db_pool.query(query)
+                query_params.extend([page_size, offset])
+                results = db_pool.query(query, tuple(query_params))
                 
                 # 格式化数据
                 backtests = []
                 for row in results:
-                    backtests.append({
+                    backtest_item = {
                         'id': row.get('id'),
                         'strategy_name': row.get('strategy_name'),
                         'backtest_name': row.get('backtest_name'),
@@ -10376,12 +10437,61 @@ def get_backtests():
                         'sharpe_ratio': float(row.get('sharpe_ratio', 0)),
                         'status': row.get('status', 'COMPLETED'),
                         'created_at': row.get('created_at')
-                    })
+                    }
+                    # 使用 format_datetime 处理 datetime 对象
+                    backtest_item = format_datetime(backtest_item)
+                    backtests.append(backtest_item)
+                
+                # 🔧 缓存到 Redis（缓存所有数据，供后续请求使用）
+                try:
+                    from core.redis_manager import get_redis_manager
+                    redis_manager = get_redis_manager()
+                    if redis_manager and redis_manager.is_connected():
+                        # 获取完整列表用于缓存（不分页）
+                        full_query = f"""
+                        SELECT id, strategy_name, backtest_name, start_date, end_date,
+                               initial_capital, final_capital, total_return, max_drawdown,
+                               sharpe_ratio, status, started_at as created_at
+                        FROM strategy_backtests 
+                        {where_clause}
+                        ORDER BY started_at DESC
+                        LIMIT 1000
+                        """
+                        full_results = db_pool.query(full_query, tuple(query_params[:-2]) if query_params else None)
+                        full_backtests = []
+                        for row in full_results:
+                            backtest_item = {
+                                'id': row.get('id'),
+                                'strategy_name': row.get('strategy_name'),
+                                'backtest_name': row.get('backtest_name'),
+                                'start_date': row.get('start_date'),
+                                'end_date': row.get('end_date'),
+                                'initial_capital': float(row.get('initial_capital', 0)),
+                                'final_capital': float(row.get('final_capital', 0)),
+                                'total_return': float(row.get('total_return', 0)),
+                                'max_drawdown': float(row.get('max_drawdown', 0)),
+                                'sharpe_ratio': float(row.get('sharpe_ratio', 0)),
+                                'status': row.get('status', 'COMPLETED'),
+                                'created_at': row.get('created_at')
+                            }
+                            # 使用 format_datetime 处理 datetime 对象（确保可以 JSON 序列化）
+                            backtest_item = format_datetime(backtest_item)
+                            full_backtests.append(backtest_item)
+                        redis_manager.set(cache_key, full_backtests, ttl=60)  # 缓存60秒
+                        logger.debug(f"✅ 回测历史列表已缓存到 Redis: {len(full_backtests)} 条")
+                except Exception as cache_error:
+                    logger.debug(f"Redis 缓存设置失败（不影响响应）: {cache_error}")
                 
                 return jsonify({
                     'success': True,
                     'message': '获取回测历史成功',
-                    'data': backtests
+                    'data': backtests,
+                    'pagination': {
+                        'page': page,
+                        'page_size': page_size,
+                        'total': total,
+                        'total_pages': (total + page_size - 1) // page_size
+                    }
                 })
                 
             except Exception as db_error:
@@ -10389,13 +10499,25 @@ def get_backtests():
                 return jsonify({
                     'success': True,
                     'message': '获取回测历史成功',
-                    'data': []  # 数据库错误时返回空列表，避免前端报错
+                    'data': [],
+                    'pagination': {
+                        'page': page,
+                        'page_size': page_size,
+                        'total': 0,
+                        'total_pages': 0
+                    }
                 })
         else:
             return jsonify({
                 'success': True,
                 'message': '获取回测历史成功',
-                'data': []
+                'data': [],
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total': 0,
+                    'total_pages': 0
+                }
             })
         
     except Exception as e:
@@ -13129,6 +13251,402 @@ def renew_subscription():
             'success': False,
             'message': str(e)
         }), 500
+
+# ==================== 转发交易 API ====================
+
+@app.route('/api/v1/forward-trade/configs', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def get_forward_trade_configs():
+    """获取转发交易配置列表"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 查询配置列表
+        query = """
+            SELECT 
+                ftc.id,
+                ftc.config_name,
+                ftc.user_id,
+                ftc.source_platform_id,
+                ftc.source_platform_name,
+                ftc.customer_uid,
+                ftc.customer_name,
+                ftc.amount_ratio,
+                ftc.min_amount,
+                ftc.max_amount,
+                ftc.enabled,
+                ftc.symbol_filter,
+                ftc.action_filter,
+                ftc.risk_control,
+                ftc.created_at,
+                ftc.updated_at,
+                mp.platform_name as source_platform_display_name
+            FROM forward_trade_configs ftc
+            LEFT JOIN message_platforms mp ON ftc.source_platform_id = mp.id
+            WHERE ftc.user_id = %s
+            ORDER BY ftc.created_at DESC
+        """
+        rows = db_pool.query(query, (user_id,))
+        
+        configs = []
+        for row in rows:
+            configs.append({
+                'id': row['id'],
+                'config_name': row['config_name'],
+                'user_id': row['user_id'],
+                'source_platform_id': row['source_platform_id'],
+                'source_platform_name': row['source_platform_name'] or row.get('source_platform_display_name'),
+                'customer_uid': row['customer_uid'],
+                'customer_name': row['customer_name'],
+                'amount_ratio': float(row['amount_ratio']),
+                'min_amount': float(row['min_amount']) if row['min_amount'] else None,
+                'max_amount': float(row['max_amount']) if row['max_amount'] else None,
+                'enabled': bool(row['enabled']),
+                'symbol_filter': json.loads(row['symbol_filter']) if row['symbol_filter'] else None,
+                'action_filter': json.loads(row['action_filter']) if row['action_filter'] else None,
+                'risk_control': json.loads(row['risk_control']) if row['risk_control'] else {},
+                'created_at': row['created_at'].isoformat() if row['created_at'] else None,
+                'updated_at': row['updated_at'].isoformat() if row['updated_at'] else None
+            })
+        
+        return jsonify({
+            'success': True,
+            'data': configs,
+            'message': '获取配置列表成功'
+        })
+    except Exception as e:
+        logger.error(f"获取转发交易配置列表失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/v1/forward-trade/configs', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def create_forward_trade_config():
+    """创建转发交易配置"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': '请求数据为空'}), 400
+        
+        # 验证必需字段
+        required_fields = ['config_name', 'source_platform_id', 'customer_uid', 'amount_ratio']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'success': False, 'message': f'缺少必需字段: {field}'}), 400
+        
+        # 获取平台和客户账号信息（用于冗余字段）
+        platform_data = db_pool.query_one(
+            "SELECT platform_name FROM message_platforms WHERE id = %s",
+            (data['source_platform_id'],)
+        )
+        customer_data = db_pool.query_one(
+            "SELECT name, owner_user_id FROM customers WHERE customer_uid = %s",
+            (data['customer_uid'],)
+        )
+        
+        if not platform_data:
+            return jsonify({'success': False, 'message': '消息源平台不存在'}), 400
+        if not customer_data:
+            return jsonify({'success': False, 'message': '客户账号不存在'}), 400
+        
+        # 检查客户账号是否属于当前用户
+        if customer_data['owner_user_id'] != user_id:
+            return jsonify({'success': False, 'message': '无权使用该客户账号'}), 403
+        
+        # 插入配置
+        query = """
+            INSERT INTO forward_trade_configs 
+            (config_name, user_id, source_platform_id, source_platform_name, customer_uid, customer_name, 
+             amount_ratio, min_amount, max_amount, enabled, symbol_filter, action_filter, risk_control, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        params = (
+            data['config_name'],
+            user_id,
+            data['source_platform_id'],
+            platform_data['platform_name'],
+            data['customer_uid'],
+            customer_data['name'],
+            data['amount_ratio'],
+            data.get('min_amount'),
+            data.get('max_amount'),
+            data.get('enabled', True),
+            json.dumps(data.get('symbol_filter')) if data.get('symbol_filter') else None,
+            json.dumps(data.get('action_filter')) if data.get('action_filter') else None,
+            json.dumps(data.get('risk_control', {})) if data.get('risk_control') else None,
+            user_id
+        )
+        
+        config_id = db_pool.execute(query, params)
+        
+        # 刷新转发交易服务缓存
+        try:
+            message_forward_service = get_message_forward_service()
+            if message_forward_service and message_forward_service.manager and message_forward_service.manager._forward_trade_service:
+                import asyncio
+                asyncio.create_task(message_forward_service.manager._forward_trade_service._refresh_configs_cache())
+        except Exception as e:
+            logger.warning(f"刷新转发交易配置缓存失败: {e}")
+        
+        return jsonify({
+            'success': True,
+            'data': {'id': config_id},
+            'message': '创建配置成功'
+        })
+    except Exception as e:
+        logger.error(f"创建转发交易配置失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/v1/forward-trade/configs/<int:config_id>', methods=['PUT'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def update_forward_trade_config(config_id):
+    """更新转发交易配置"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': '请求数据为空'}), 400
+        
+        # 检查配置是否存在且属于当前用户
+        existing = db_pool.query_one(
+            "SELECT id FROM forward_trade_configs WHERE id = %s AND user_id = %s",
+            (config_id, user_id)
+        )
+        if not existing:
+            return jsonify({'success': False, 'message': '配置不存在或无权限'}), 404
+        
+        # 构建更新字段
+        update_fields = []
+        update_values = []
+        
+        if 'config_name' in data:
+            update_fields.append("config_name = %s")
+            update_values.append(data['config_name'])
+        
+        if 'source_platform_id' in data:
+            update_fields.append("source_platform_id = %s")
+            update_values.append(data['source_platform_id'])
+            # 更新冗余字段
+            platform_data = db_pool.query_one(
+                "SELECT platform_name FROM message_platforms WHERE id = %s",
+                (data['source_platform_id'],)
+            )
+            if platform_data:
+                update_fields.append("source_platform_name = %s")
+                update_values.append(platform_data['platform_name'])
+        
+        if 'customer_uid' in data:
+            # 检查客户账号是否属于当前用户
+            customer_data = db_pool.query_one(
+                "SELECT name, owner_user_id FROM customers WHERE customer_uid = %s",
+                (data['customer_uid'],)
+            )
+            if not customer_data:
+                return jsonify({'success': False, 'message': '客户账号不存在'}), 400
+            if customer_data['owner_user_id'] != user_id:
+                return jsonify({'success': False, 'message': '无权使用该客户账号'}), 403
+            
+            update_fields.append("customer_uid = %s")
+            update_values.append(data['customer_uid'])
+            # 更新冗余字段
+            update_fields.append("customer_name = %s")
+            update_values.append(customer_data['name'])
+        
+        if 'amount_ratio' in data:
+            update_fields.append("amount_ratio = %s")
+            update_values.append(data['amount_ratio'])
+        
+        if 'min_amount' in data:
+            update_fields.append("min_amount = %s")
+            update_values.append(data.get('min_amount'))
+        
+        if 'max_amount' in data:
+            update_fields.append("max_amount = %s")
+            update_values.append(data.get('max_amount'))
+        
+        if 'enabled' in data:
+            update_fields.append("enabled = %s")
+            update_values.append(data['enabled'])
+        
+        if 'symbol_filter' in data:
+            update_fields.append("symbol_filter = %s")
+            update_values.append(json.dumps(data['symbol_filter']) if data['symbol_filter'] else None)
+        
+        if 'action_filter' in data:
+            update_fields.append("action_filter = %s")
+            update_values.append(json.dumps(data['action_filter']) if data['action_filter'] else None)
+        
+        if 'risk_control' in data:
+            update_fields.append("risk_control = %s")
+            update_values.append(json.dumps(data['risk_control']) if data['risk_control'] else None)
+        
+        if not update_fields:
+            return jsonify({'success': False, 'message': '没有提供更新字段'}), 400
+        
+        update_values.append(config_id)
+        query = f"UPDATE forward_trade_configs SET {', '.join(update_fields)} WHERE id = %s"
+        db_pool.execute(query, tuple(update_values))
+        
+        # 刷新转发交易服务缓存
+        try:
+            message_forward_service = get_message_forward_service()
+            if message_forward_service and message_forward_service.manager and message_forward_service.manager._forward_trade_service:
+                import asyncio
+                asyncio.create_task(message_forward_service.manager._forward_trade_service._refresh_configs_cache())
+        except Exception as e:
+            logger.warning(f"刷新转发交易配置缓存失败: {e}")
+        
+        return jsonify({
+            'success': True,
+            'message': '更新配置成功'
+        })
+    except Exception as e:
+        logger.error(f"更新转发交易配置失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/v1/forward-trade/configs/<int:config_id>', methods=['DELETE'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def delete_forward_trade_config(config_id):
+    """删除转发交易配置"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查配置是否存在且属于当前用户
+        existing = db_pool.query_one(
+            "SELECT id FROM forward_trade_configs WHERE id = %s AND user_id = %s",
+            (config_id, user_id)
+        )
+        if not existing:
+            return jsonify({'success': False, 'message': '配置不存在或无权限'}), 404
+        
+        # 删除配置
+        db_pool.execute("DELETE FROM forward_trade_configs WHERE id = %s", (config_id,))
+        
+        # 刷新转发交易服务缓存
+        try:
+            message_forward_service = get_message_forward_service()
+            if message_forward_service and message_forward_service.manager and message_forward_service.manager._forward_trade_service:
+                import asyncio
+                asyncio.create_task(message_forward_service.manager._forward_trade_service._refresh_configs_cache())
+        except Exception as e:
+            logger.warning(f"刷新转发交易配置缓存失败: {e}")
+        
+        return jsonify({
+            'success': True,
+            'message': '删除配置成功'
+        })
+    except Exception as e:
+        logger.error(f"删除转发交易配置失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/v1/forward-trade/records', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def get_forward_trade_records():
+    """获取转发交易执行记录"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        config_id = request.args.get('config_id', type=int)
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 20, type=int)
+        
+        # 构建查询条件
+        where_clause = "ftc.user_id = %s"
+        params = [user_id]
+        
+        if config_id:
+            where_clause += " AND ftr.config_id = %s"
+            params.append(config_id)
+        
+        # 查询总数
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM forward_trade_records ftr
+            INNER JOIN forward_trade_configs ftc ON ftr.config_id = ftc.id
+            WHERE {where_clause}
+        """
+        count_result = db_pool.query_one(count_query, tuple(params))
+        total = count_result['total'] if count_result else 0
+        
+        # 查询记录
+        query = f"""
+            SELECT 
+                ftr.id,
+                ftr.config_id,
+                ftr.message_id,
+                ftr.source_platform_id,
+                ftr.symbol,
+                ftr.action,
+                ftr.direct,
+                ftr.price,
+                ftr.quantity,
+                ftr.amount,
+                ftr.amount_ratio,
+                ftr.order_id,
+                ftr.order_status,
+                ftr.execution_status,
+                ftr.error_message,
+                ftr.executed_at,
+                ftr.created_at,
+                ftc.config_name
+            FROM forward_trade_records ftr
+            INNER JOIN forward_trade_configs ftc ON ftr.config_id = ftc.id
+            WHERE {where_clause}
+            ORDER BY ftr.created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([page_size, (page - 1) * page_size])
+        rows = db_pool.query(query, tuple(params))
+        
+        records = []
+        for row in rows:
+            records.append({
+                'id': row['id'],
+                'config_id': row['config_id'],
+                'config_name': row['config_name'],
+                'message_id': row['message_id'],
+                'source_platform_id': row['source_platform_id'],
+                'symbol': row['symbol'],
+                'action': row['action'],
+                'direct': row['direct'],
+                'price': float(row['price']),
+                'quantity': float(row['quantity']) if row['quantity'] else None,
+                'amount': float(row['amount']) if row['amount'] else None,
+                'amount_ratio': float(row['amount_ratio']) if row['amount_ratio'] else None,
+                'order_id': row['order_id'],
+                'order_status': row['order_status'],
+                'execution_status': row['execution_status'],
+                'error_message': row['error_message'],
+                'executed_at': row['executed_at'].isoformat() if row['executed_at'] else None,
+                'created_at': row['created_at'].isoformat() if row['created_at'] else None
+            })
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'records': records,
+                'total': total,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total + page_size - 1) // page_size
+            },
+            'message': '获取执行记录成功'
+        })
+    except Exception as e:
+        logger.error(f"获取转发交易执行记录失败: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 # ==================== 消息转发模块 API 结束 ====================
 

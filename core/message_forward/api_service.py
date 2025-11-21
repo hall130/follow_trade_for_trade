@@ -92,6 +92,14 @@ class MessageForwardAPIService:
                 db=db_pool_for_subscription
             )
             
+            # 初始化转发交易服务
+            if self.manager._forward_trade_service:
+                try:
+                    await self.manager._forward_trade_service.initialize()
+                    logger.info("✅ 转发交易服务初始化完成")
+                except Exception as e:
+                    logger.warning(f"⚠️ 转发交易服务初始化失败: {e}")
+            
             # 从数据库加载并添加规则到管理器
             loaded_count = 0
             for rule_data in rules:

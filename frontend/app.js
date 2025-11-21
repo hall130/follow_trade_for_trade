@@ -1338,6 +1338,9 @@ class OKXTradingApp {
             case 'strategy-trade':
                 this.loadStrategyTradeData();
                 break;
+            case 'forward-trade':
+                this.loadForwardTradeData();
+                break;
             case 'message-forward':
                 this.loadMessageForwardData();
                 break;
@@ -10938,10 +10941,367 @@ class OKXTradingApp {
             this.showToast('错误', '移除客户失败，请检查网络连接', 'danger');
         }
     }
+    // ==================== 转发交易模块 ====================
+    
+    async loadForwardTradeData() {
+        try {
+            // 加载配置列表
+            await this.loadForwardTradeConfigs();
+            
+            // 加载执行记录
+            await this.loadForwardTradeRecords();
+            
+            // 加载消息源和客户账号列表（用于创建配置）
+            await this.loadForwardTradeSourcePlatforms();
+            await this.loadForwardTradeCustomers();
+            
+        } catch (error) {
+            console.error('加载转发交易数据失败:', error);
+            this.showToast('错误', '加载转发交易数据失败', 'danger');
+        }
+    }
+    
+    // 加载转发交易配置列表
+    async loadForwardTradeConfigs() {
+        try {
+            const tableBody = document.getElementById('forwardTradeTableBody');
+            if (!tableBody) {
+                console.warn('转发交易配置表格不存在');
+                return;
+            }
+            
+            tableBody.innerHTML = '<tr><td colspan="9" class="text-center">加载中...</td></tr>';
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/forward-trade/configs`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && Array.isArray(data.data)) {
+                    this.renderForwardTradeConfigsTable(data.data);
+                } else {
+                    tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无配置</td></tr>';
+                }
+            } else {
+                tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">加载失败</td></tr>';
+            }
+        } catch (error) {
+            console.error('加载转发交易配置列表失败:', error);
+            const tableBody = document.getElementById('forwardTradeTableBody');
+            if (tableBody) {
+                tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">加载失败</td></tr>';
+            }
+        }
+    }
+    
+    // 渲染转发交易配置表格
+    renderForwardTradeConfigsTable(configs) {
+        const tableBody = document.getElementById('forwardTradeTableBody');
+        if (!tableBody) return;
+        
+        if (!configs || configs.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无配置</td></tr>';
+            return;
+        }
+        
+        tableBody.innerHTML = configs.map(config => `
+            <tr>
+                <td>${this.escapeHtml(config.config_name || '-')}</td>
+                <td>${this.escapeHtml(config.source_platform_name || '-')}</td>
+                <td>${this.escapeHtml(config.customer_name || '-')}</td>
+                <td>${(config.amount_ratio * 100).toFixed(2)}%</td>
+                <td>${config.min_amount ? config.min_amount.toFixed(2) : '-'}</td>
+                <td>${config.max_amount ? config.max_amount.toFixed(2) : '-'}</td>
+                <td>
+                    <span class="badge ${config.enabled ? 'bg-success' : 'bg-secondary'}">
+                        ${config.enabled ? '启用' : '禁用'}
+                    </span>
+                </td>
+                <td>${config.created_at ? new Date(config.created_at).toLocaleString('zh-CN') : '-'}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="window.app.editForwardTradeConfig(${config.id})" title="编辑">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="btn btn-sm btn-danger" onclick="window.app.deleteForwardTradeConfig(${config.id})" title="删除">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    }
+    
+    // 加载转发交易执行记录
+    async loadForwardTradeRecords() {
+        try {
+            const tableBody = document.getElementById('forwardTradeRecordsTableBody');
+            if (!tableBody) {
+                console.warn('转发交易执行记录表格不存在');
+                return;
+            }
+            
+            tableBody.innerHTML = '<tr><td colspan="8" class="text-center">加载中...</td></tr>';
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/forward-trade/records?page=1&page_size=50`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data && Array.isArray(data.data.records)) {
+                    this.renderForwardTradeRecordsTable(data.data.records);
+                } else {
+                    tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无执行记录</td></tr>';
+                }
+            } else {
+                tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">加载失败</td></tr>';
+            }
+        } catch (error) {
+            console.error('加载转发交易执行记录失败:', error);
+            const tableBody = document.getElementById('forwardTradeRecordsTableBody');
+            if (tableBody) {
+                tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">加载失败</td></tr>';
+            }
+        }
+    }
+    
+    // 渲染转发交易执行记录表格
+    renderForwardTradeRecordsTable(records) {
+        const tableBody = document.getElementById('forwardTradeRecordsTableBody');
+        if (!tableBody) return;
+        
+        if (!records || records.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无执行记录</td></tr>';
+            return;
+        }
+        
+        tableBody.innerHTML = records.map(record => {
+            const statusClass = record.execution_status === 'success' ? 'bg-success' : 
+                              record.execution_status === 'failed' ? 'bg-danger' : 'bg-warning';
+            const statusText = record.execution_status === 'success' ? '成功' : 
+                             record.execution_status === 'failed' ? '失败' : '待处理';
+            
+            return `
+                <tr>
+                    <td>${this.escapeHtml(record.config_name || '-')}</td>
+                    <td>${this.escapeHtml(record.symbol || '-')}</td>
+                    <td>${this.escapeHtml(record.action || '-')}</td>
+                    <td>${record.price ? record.price.toFixed(2) : '-'}</td>
+                    <td>${record.amount ? record.amount.toFixed(2) : '-'}</td>
+                    <td>${this.escapeHtml(record.order_id || '-')}</td>
+                    <td>
+                        <span class="badge ${statusClass}">${statusText}</span>
+                    </td>
+                    <td>${record.executed_at ? new Date(record.executed_at).toLocaleString('zh-CN') : '-'}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+    
+    // 加载消息源平台列表（仅 TradingView）
+    async loadForwardTradeSourcePlatforms() {
+        try {
+            const select = document.getElementById('forwardTradeSourcePlatform');
+            if (!select) return;
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/message-forward/platforms?page=1&page_size=100`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && Array.isArray(data.data)) {
+                    // 只显示 TradingView 平台
+                    const tradingViewPlatforms = data.data.filter(p => p.platform_type === 'tradingview');
+                    
+                    select.innerHTML = '<option value="">请选择消息源</option>' + 
+                        tradingViewPlatforms.map(platform => 
+                            `<option value="${platform.id}">${this.escapeHtml(platform.platform_name || `TradingView-${platform.id}`)}</option>`
+                        ).join('');
+                }
+            }
+        } catch (error) {
+            console.error('加载消息源平台列表失败:', error);
+        }
+    }
+    
+    // 加载客户账号列表
+    async loadForwardTradeCustomers() {
+        try {
+            const select = document.getElementById('forwardTradeCustomer');
+            if (!select) return;
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/customers?page=1&page_size=100`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data && Array.isArray(data.data.customers)) {
+                    select.innerHTML = '<option value="">请选择客户账号</option>' + 
+                        data.data.customers.map(customer => 
+                            `<option value="${this.escapeHtml(customer.customer_uid)}">${this.escapeHtml(customer.name || customer.customer_uid)}</option>`
+                        ).join('');
+                }
+            }
+        } catch (error) {
+            console.error('加载客户账号列表失败:', error);
+        }
+    }
+    
+    // 创建转发交易配置
+    async createForwardTradeConfig() {
+        try {
+            const form = document.getElementById('createForwardTradeForm');
+            if (!form) return;
+            
+            const formData = {
+                config_name: document.getElementById('forwardTradeConfigName').value.trim(),
+                source_platform_id: parseInt(document.getElementById('forwardTradeSourcePlatform').value),
+                customer_uid: document.getElementById('forwardTradeCustomer').value.trim(),
+                amount_ratio: parseFloat(document.getElementById('forwardTradeAmountRatio').value),
+                min_amount: document.getElementById('forwardTradeMinAmount').value ? 
+                    parseFloat(document.getElementById('forwardTradeMinAmount').value) : null,
+                max_amount: document.getElementById('forwardTradeMaxAmount').value ? 
+                    parseFloat(document.getElementById('forwardTradeMaxAmount').value) : null,
+                enabled: document.getElementById('forwardTradeEnabled').checked,
+                symbol_filter: document.getElementById('forwardTradeSymbolFilter').value.trim() ? 
+                    document.getElementById('forwardTradeSymbolFilter').value.split(',').map(s => s.trim()).filter(s => s) : null,
+                action_filter: Array.from(document.getElementById('forwardTradeActionFilter').selectedOptions).map(o => o.value)
+            };
+            
+            // 验证必填字段
+            if (!formData.config_name || !formData.source_platform_id || !formData.customer_uid || !formData.amount_ratio) {
+                this.showToast('错误', '请填写所有必填字段', 'danger');
+                return;
+            }
+            
+            // 验证金额比例
+            if (formData.amount_ratio < 0.0001 || formData.amount_ratio > 1.0) {
+                this.showToast('错误', '金额比例必须在 0.0001 到 1.0 之间', 'danger');
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/forward-trade/configs`, {
+                method: 'POST',
+                body: JSON.stringify(formData)
+            });
+            
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '配置创建成功', 'success');
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('createForwardTradeModal'));
+                    if (modal) modal.hide();
+                    // 重置表单
+                    form.reset();
+                    // 刷新列表
+                    await this.loadForwardTradeData();
+                } else {
+                    this.showToast('错误', data.message || '配置创建失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || '配置创建请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('创建转发交易配置失败:', error);
+            this.showToast('错误', '配置创建失败', 'danger');
+        }
+    }
+    
+    // 编辑转发交易配置
+    async editForwardTradeConfig(configId) {
+        try {
+            // 先加载配置详情
+            const response = await this.apiRequest(`${this.apiBaseUrl}/forward-trade/configs`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && Array.isArray(data.data)) {
+                    const config = data.data.find(c => c.id === configId);
+                    if (config) {
+                        // 填充表单（这里可以创建一个编辑模态框，暂时使用创建模态框）
+                        document.getElementById('forwardTradeConfigName').value = config.config_name;
+                        document.getElementById('forwardTradeSourcePlatform').value = config.source_platform_id;
+                        document.getElementById('forwardTradeCustomer').value = config.customer_uid;
+                        document.getElementById('forwardTradeAmountRatio').value = config.amount_ratio;
+                        document.getElementById('forwardTradeMinAmount').value = config.min_amount || '';
+                        document.getElementById('forwardTradeMaxAmount').value = config.max_amount || '';
+                        document.getElementById('forwardTradeEnabled').checked = config.enabled;
+                        document.getElementById('forwardTradeSymbolFilter').value = config.symbol_filter ? config.symbol_filter.join(',') : '';
+                        
+                        // 设置动作过滤
+                        if (config.action_filter && Array.isArray(config.action_filter)) {
+                            const actionSelect = document.getElementById('forwardTradeActionFilter');
+                            Array.from(actionSelect.options).forEach(option => {
+                                option.selected = config.action_filter.includes(option.value);
+                            });
+                        }
+                        
+                        // 打开模态框
+                        const modal = new bootstrap.Modal(document.getElementById('createForwardTradeModal'));
+                        modal.show();
+                        
+                        // 保存编辑的配置ID（可以添加一个隐藏字段）
+                        // 这里简化处理，直接调用更新API
+                        this.updateForwardTradeConfig(configId, config);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('编辑转发交易配置失败:', error);
+            this.showToast('错误', '加载配置详情失败', 'danger');
+        }
+    }
+    
+    // 更新转发交易配置
+    async updateForwardTradeConfig(configId, formData) {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/forward-trade/configs/${configId}`, {
+                method: 'PUT',
+                body: JSON.stringify(formData)
+            });
+            
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '配置更新成功', 'success');
+                    await this.loadForwardTradeData();
+                } else {
+                    this.showToast('错误', data.message || '配置更新失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || '配置更新请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('更新转发交易配置失败:', error);
+            this.showToast('错误', '配置更新失败', 'danger');
+        }
+    }
+    
+    // 删除转发交易配置
+    async deleteForwardTradeConfig(configId) {
+        try {
+            if (!confirm('确定要删除此配置吗？')) {
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/forward-trade/configs/${configId}`, {
+                method: 'DELETE'
+            });
+            
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '配置删除成功', 'success');
+                    await this.loadForwardTradeData();
+                } else {
+                    this.showToast('错误', data.message || '配置删除失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || '配置删除请求失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除转发交易配置失败:', error);
+            this.showToast('错误', '配置删除失败', 'danger');
+        }
+    }
+    
     // ==================== 策略交易模块 ====================
     
     // 加载策略交易数据
-    async loadStrategyTradeData() {
+    async loadStrategyTradeData(forceRefresh = false) {
         try {
             // 加载策略统计
             await this.loadStrategyTradeStats();
@@ -10949,8 +11309,15 @@ class OKXTradingApp {
             // 加载策略列表
             await this.loadStrategyTradeList();
             
-            // 加载回测历史
-            await this.loadBacktestHistory();
+            // 加载回测历史（只在首次加载或强制刷新时加载，避免频繁请求导致429错误）
+            const now = Date.now();
+            const lastBacktestLoad = this._lastBacktestLoadTime || 0;
+            const backtestLoadInterval = 60000; // 60秒内只加载一次
+            
+            if (forceRefresh || (now - lastBacktestLoad) > backtestLoadInterval) {
+                await this.loadBacktestHistory();
+                this._lastBacktestLoadTime = now;
+            }
             
         } catch (error) {
             console.error('加载策略交易数据失败:', error);
@@ -11106,25 +11473,43 @@ class OKXTradingApp {
                 return;
             }
             
-            tableBody.innerHTML = '<tr><td colspan="11" class="text-center">加载中...</td></tr>';
+            // 检查是否正在加载，避免重复请求
+            if (this._loadingBacktestHistory) {
+                return;
+            }
+            this._loadingBacktestHistory = true;
             
-            const response = await fetch(`${this.apiBaseUrl}/strategy/backtests`);
-            if (response.ok) {
+            // 如果表格已经有数据且不是首次加载，不显示加载中
+            if (!tableBody.querySelector('tr') || tableBody.querySelector('tr').textContent.includes('加载中')) {
+                tableBody.innerHTML = '<tr><td colspan="11" class="text-center">加载中...</td></tr>';
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/strategy/backtests`);
+            if (response && response.ok) {
                 const data = await response.json();
                 if (data.success && Array.isArray(data.data)) {
                     this.renderBacktestTable(data.data);
                 } else {
                     tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-muted">暂无回测数据</td></tr>';
                 }
+            } else if (response && response.status === 429) {
+                // 429 错误：请求过于频繁
+                console.warn('回测历史请求过于频繁，稍后重试');
+                // 不更新表格，保持当前内容
             } else {
-                tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">无法加载回测数据</td></tr>';
+                if (tableBody.querySelector('tr') && !tableBody.querySelector('tr').textContent.includes('加载中')) {
+                    // 只在没有数据时显示错误
+                    tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">无法加载回测数据</td></tr>';
+                }
             }
         } catch (error) {
             console.error('加载回测历史失败:', error);
             const tableBody = document.getElementById('backtestTableBody');
-            if (tableBody) {
+            if (tableBody && (!tableBody.querySelector('tr') || tableBody.querySelector('tr').textContent.includes('加载中'))) {
                 tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">加载失败</td></tr>';
             }
+        } finally {
+            this._loadingBacktestHistory = false;
         }
     }
     
@@ -19616,8 +20001,41 @@ document.addEventListener('DOMContentLoaded', function() {
     // Telegram监听服务已移除，现在使用统一的消息转发服务
     
     // 初始化转发规则模态框
-            if (window.app) {
+    if (window.app) {
         window.app.initForwardRuleModal();
+    }
+    
+    // ==================== 转发交易模块事件监听 ====================
+    
+    // 刷新转发交易按钮
+    const refreshForwardTradeBtn = document.getElementById('refreshForwardTradeBtn');
+    if (refreshForwardTradeBtn) {
+        refreshForwardTradeBtn.addEventListener('click', () => {
+            if (window.app) {
+                window.app.loadForwardTradeData();
+            }
+        });
+    }
+    
+    // 保存转发交易配置按钮
+    const saveForwardTradeBtn = document.getElementById('saveForwardTradeBtn');
+    if (saveForwardTradeBtn) {
+        saveForwardTradeBtn.addEventListener('click', async () => {
+            if (window.app) {
+                await window.app.createForwardTradeConfig();
+            }
+        });
+    }
+    
+    // 创建转发交易配置模态框打开时，加载下拉列表
+    const createForwardTradeModal = document.getElementById('createForwardTradeModal');
+    if (createForwardTradeModal) {
+        createForwardTradeModal.addEventListener('show.bs.modal', () => {
+            if (window.app) {
+                window.app.loadForwardTradeSourcePlatforms();
+                window.app.loadForwardTradeCustomers();
+            }
+        });
     }
 });
 

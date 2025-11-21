@@ -117,8 +117,17 @@ class RedisManager:
         if self.is_connected():
             try:
                 import json
+                from datetime import datetime, date
+                
+                # 自定义 JSON 序列化函数，处理 datetime 和 date 对象
+                def json_serializer(obj):
+                    if isinstance(obj, (datetime, date)):
+                        return obj.isoformat()
+                    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+                
                 if isinstance(value, (dict, list)):
-                    value = json.dumps(value)
+                    # 使用自定义序列化函数处理 datetime 对象
+                    value = json.dumps(value, default=json_serializer)
                 if ttl:
                     self.client.setex(key, ttl, value)
                 else:
@@ -239,7 +248,15 @@ def redis_cache(key_prefix: str = '', ttl: int = 300):
             # 生成缓存键
             import hashlib
             import json
-            cache_key = f"{key_prefix}:{func.__name__}:{hashlib.md5(json.dumps({'args': args, 'kwargs': kwargs}, sort_keys=True).encode()).hexdigest()}"
+            from datetime import datetime, date
+            
+            # 自定义 JSON 序列化函数，处理 datetime 和 date 对象
+            def json_serializer(obj):
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+            
+            cache_key = f"{key_prefix}:{func.__name__}:{hashlib.md5(json.dumps({'args': args, 'kwargs': kwargs}, sort_keys=True, default=json_serializer).encode()).hexdigest()}"
             
             # 尝试从缓存获取
             redis_manager = get_redis_manager()

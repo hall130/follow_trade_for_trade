@@ -93,6 +93,12 @@
                         <li><a class="nav-link sub-item" href="#" data-page="signal-trades" data-permission="signal_sources">
                             <i class="bi bi-broadcast-pin"></i> 信号源交易
                         </a></li>
+                        <li><a class="nav-link sub-item" href="#" data-page="strategies" data-permission="strategies">
+                            <i class="bi bi-gear"></i> 策略管理
+                        </a></li>
+                        <li><a class="nav-link sub-item" href="#" data-page="rules" data-permission="rules">
+                            <i class="bi bi-list-check"></i> 规则管理
+                        </a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="nav-link sub-item" href="#" data-page="positions" data-permission="customers">
                             <i class="bi bi-bag-check"></i> 当前持仓
@@ -139,14 +145,11 @@
                         <i class="bi bi-chevron-down ms-auto"></i>
                     </a>
                     <ul class="collapse" id="strategyMenu">
-                        <li><a class="nav-link sub-item" href="#" data-page="strategies" data-permission="strategies">
-                            <i class="bi bi-gear"></i> 策略管理
-                        </a></li>
                         <li><a class="nav-link sub-item" href="#" data-page="strategy-trade" data-permission="strategy_live">
                             <i class="bi bi-graph-up-arrow"></i> 策略交易
                         </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="rules" data-permission="rules">
-                            <i class="bi bi-list-check"></i> 规则管理
+                        <li><a class="nav-link sub-item" href="#" data-page="forward-trade" data-permission="strategy_live">
+                            <i class="bi bi-arrow-left-right"></i> 转发交易
                         </a></li>
                     </ul>
                 </li>
@@ -715,6 +718,92 @@
                                         </thead>
                                         <tbody id="backtestTableBody">
                                             <!-- 回测数据将在这里动态加载 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 转发交易页面 -->
+        <div id="forward-trade-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2><i class="bi bi-arrow-left-right"></i> 转发交易</h2>
+                            <div class="btn-group">
+                                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createForwardTradeModal">
+                                    <i class="bi bi-plus"></i> 创建配置
+                                </button>
+                                <button class="btn btn-info" id="refreshForwardTradeBtn">
+                                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 配置列表 -->
+                <div class="row">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">转发交易配置列表</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover" id="forwardTradeTable">
+                                        <thead>
+                                            <tr>
+                                                <th>配置名称</th>
+                                                <th>消息源</th>
+                                                <th>客户账号</th>
+                                                <th>金额比例</th>
+                                                <th>最小金额</th>
+                                                <th>最大金额</th>
+                                                <th>状态</th>
+                                                <th>创建时间</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="forwardTradeTableBody">
+                                            <!-- 配置数据将在这里动态加载 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 执行记录 -->
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">执行记录</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-hover" id="forwardTradeRecordsTable">
+                                        <thead>
+                                            <tr>
+                                                <th>配置名称</th>
+                                                <th>交易对</th>
+                                                <th>动作</th>
+                                                <th>价格</th>
+                                                <th>金额</th>
+                                                <th>订单ID</th>
+                                                <th>执行状态</th>
+                                                <th>执行时间</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="forwardTradeRecordsTableBody">
+                                            <!-- 执行记录将在这里动态加载 -->
                                         </tbody>
                                     </table>
                                 </div>
@@ -5808,6 +5897,97 @@ class MyStrategy(BaseStrategy):
                     <button type="button" class="btn btn-primary" id="uploadStrategyBtn" style="display: none;">
                         <i class="bi bi-cloud-upload"></i> 上传策略
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建转发交易配置模态框 -->
+    <div class="modal fade" id="createForwardTradeModal" tabindex="-1" aria-labelledby="createForwardTradeModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="createForwardTradeModalLabel">
+                        <i class="bi bi-plus-circle"></i> 创建转发交易配置
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="createForwardTradeForm">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="forwardTradeConfigName" class="form-label">配置名称 *</label>
+                                <input type="text" class="form-control" id="forwardTradeConfigName" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="forwardTradeSourcePlatform" class="form-label">消息源 *</label>
+                                <select class="form-select" id="forwardTradeSourcePlatform" required>
+                                    <option value="">请选择消息源</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="forwardTradeCustomer" class="form-label">客户账号 *</label>
+                                <select class="form-select" id="forwardTradeCustomer" required>
+                                    <option value="">请选择客户账号</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="forwardTradeAmountRatio" class="form-label">金额比例 * (0.0001-1.0000)</label>
+                                <input type="number" class="form-control" id="forwardTradeAmountRatio" 
+                                       min="0.0001" max="1.0000" step="0.0001" value="1.0000" required>
+                                <div class="form-text">跟随金额的比例，1.0 表示100%跟随</div>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="forwardTradeMinAmount" class="form-label">最小金额 (USDT)</label>
+                                <input type="number" class="form-control" id="forwardTradeMinAmount" 
+                                       min="0" step="0.01" placeholder="留空则不限制">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="forwardTradeMaxAmount" class="form-label">最大金额 (USDT)</label>
+                                <input type="number" class="form-control" id="forwardTradeMaxAmount" 
+                                       min="0" step="0.01" placeholder="留空则不限制">
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="forwardTradeSymbolFilter" class="form-label">交易对过滤</label>
+                                <input type="text" class="form-control" id="forwardTradeSymbolFilter" 
+                                       placeholder="例如: BTC-USDT,ETH-USDT (留空则跟随所有)">
+                                <div class="form-text">多个交易对用逗号分隔</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="forwardTradeActionFilter" class="form-label">交易动作过滤</label>
+                                <select class="form-select" id="forwardTradeActionFilter" multiple>
+                                    <option value="buy">买入/开多</option>
+                                    <option value="sell">卖出/开空</option>
+                                    <option value="close">平仓</option>
+                                </select>
+                                <div class="form-text">留空则跟随所有动作</div>
+                            </div>
+                        </div>
+                        
+                        <div class="row mt-3">
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="forwardTradeEnabled" checked>
+                                    <label class="form-check-label" for="forwardTradeEnabled">
+                                        启用配置
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="saveForwardTradeBtn">保存</button>
                 </div>
             </div>
         </div>

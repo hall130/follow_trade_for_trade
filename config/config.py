@@ -6,8 +6,8 @@ MYSQL_CONFIG = {
     'user': 'root',     # MySQL用户名
     'password': 'root', # MySQL密码
     'db': 'trade_db',        # 数据库名
-    'mincached': 2,
-    'maxcached': 10
+    'mincached': 5,          # 最小缓存连接数（提高以支持更多并发）
+    'maxcached': 50          # 最大缓存连接数（提高以支持100+用户并发）
 }
 
 REDIS_CONFIG = {

@@ -49,6 +49,16 @@ class MessageForwardManager:
         # 数据库操作实例（用于动态创建平台实例）
         self._db = db
         
+        # 转发交易服务（如果提供了数据库连接）
+        self._forward_trade_service = None
+        if db:
+            try:
+                from core.forward_trade import ForwardTradeService
+                self._forward_trade_service = ForwardTradeService(db)
+                logger.info("✅ 转发交易服务已初始化")
+            except Exception as e:
+                logger.warning(f"⚠️ 转发交易服务初始化失败: {e}")
+        
         logger.info("消息转发管理器初始化")
     
     def set_listener_service(self, listener_service):
@@ -333,6 +343,15 @@ class MessageForwardManager:
             # 转发到匹配的规则
             for rule in matched_rules:
                 await self._forward_message(message, rule, platform_id_map)
+            
+            # 处理转发交易（如果消息来自 TradingView）
+            if self._forward_trade_service and message.source_platform == PlatformType.TRADINGVIEW:
+                try:
+                    await self._forward_trade_service.handle_message(message)
+                except Exception as e:
+                    logger.error(f"处理转发交易失败: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     
         except Exception as e:
             logger.error(f"处理消息失败: {e}")
