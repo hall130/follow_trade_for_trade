@@ -31,7 +31,7 @@ class PopularTradersService:
             self.config.get('binance', {})
         )
         self.cache = get_cache(ttl=self.config.get('cache_ttl', 3600))  # 默认1小时缓存
-        self.max_pages = self.config.get('max_pages', 4)  # 默认最多获取4页
+        self.max_pages = self.config.get('max_pages', 10)  # 默认最多获取10页
         # 公开/私域检测配置
         self.check_public_enabled = self.config.get('check_public', True)  # 是否检测公开/私域
         self.check_public_concurrent = self.config.get('check_public_concurrent', 5)  # 并发检测数量
@@ -201,6 +201,14 @@ class PopularTradersService:
         
         # 如果使用缓存，将结果缓存起来
         if use_cache:
+            try:
+                # 1. 缓存原始数据（不包含排序信息，可以用于后续筛选）
+                raw_cache_key = self.cache._generate_raw_cache_key(exchange, **kwargs)
+                self.cache.set(raw_cache_key, result, **kwargs)
+            except Exception as e:
+                logger.debug(f"[热门带单员服务] 设置原始数据缓存失败: {e}")
+            
+            # 2. 同时缓存到普通缓存键（向后兼容）
             self.cache.set(exchange, result, **kwargs)
         
         return result
@@ -344,9 +352,18 @@ class PopularTradersService:
         import asyncio
         import time
         
-        # 使用信号量控制并发数量（自动使用当前事件循环）
+        # 确保在正确的事件循环中创建 Semaphore 和 Lock
+        # 获取当前运行中的事件循环，确保所有异步对象都在同一个循环中
+        try:
+            current_loop = asyncio.get_running_loop()
+            if current_loop.is_closed():
+                raise RuntimeError("事件循环已关闭")
+        except RuntimeError:
+            raise RuntimeError("_batch_check_public_status 必须在运行中的事件循环中调用")
+        
+        # 使用信号量控制并发数量（在同一事件循环中创建）
         semaphore = asyncio.Semaphore(self.check_public_concurrent)
-        # 使用锁保护共享的时间戳（自动使用当前事件循环）
+        # 使用锁保护共享的时间戳（在同一事件循环中创建）
         time_lock = asyncio.Lock()
         last_request_time = [0]  # 使用列表以便在闭包中修改
         
@@ -409,7 +426,21 @@ class PopularTradersService:
         ]
         
         # 并发执行所有检测任务（使用 return_exceptions=True 确保所有任务都能完成）
+        # 确保 gather 在正确的事件循环中执行
         try:
+            # 验证当前事件循环仍然有效
+            current_loop = asyncio.get_running_loop()
+            if current_loop.is_closed():
+                logger.error(f"[{exchange}公开检测] 事件循环已关闭，无法执行批量检测")
+                # 将所有带单员标记为未检测
+                for trader in traders:
+                    trader['is_public'] = None
+                return
+            
+            if not tasks:
+                logger.warning(f"[{exchange}公开检测] 没有待检测的带单员")
+                return
+            
             results = await asyncio.gather(*tasks, return_exceptions=True)
             # 检查是否有异常（除了我们已经处理的）
             for i, result in enumerate(results):
@@ -417,6 +448,17 @@ class PopularTradersService:
                     error_msg = str(result).lower()
                     if 'attached to a different loop' not in error_msg and 'event loop is closed' not in error_msg:
                         logger.warning(f"[{exchange}公开检测] 任务 {i} 出现未处理的异常: {result}")
+        except RuntimeError as e:
+            error_msg = str(e).lower()
+            if 'attached to a different loop' in error_msg or 'event loop is closed' in error_msg:
+                logger.error(f"[{exchange}公开检测] 事件循环错误，无法执行批量检测: {e}")
+                # 将所有带单员标记为未检测
+                for trader in traders:
+                    trader['is_public'] = None
+            else:
+                logger.error(f"[{exchange}公开检测] 批量检测过程中出现错误: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         except Exception as e:
             logger.error(f"[{exchange}公开检测] 批量检测过程中出现错误: {e}")
             import traceback

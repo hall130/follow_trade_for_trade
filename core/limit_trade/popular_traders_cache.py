@@ -46,25 +46,47 @@ class PopularTradersCache:
             缓存键字符串（带前缀）
         """
         # 构建缓存键，包含关键参数
+        # 注意：为了优化缓存，我们使用更通用的键，不包含排序参数
+        # 这样相同交易所的数据可以共享，筛选时只需要从缓存中筛选
         key_parts = [f"exchange:{exchange}"]
         
-        # 添加关键筛选参数
+        # 只添加影响数据内容的参数，不包含排序参数
+        # 排序参数不影响数据本身，只影响展示顺序
         if 'time_range' in kwargs:
             key_parts.append(f"time_range:{kwargs['time_range']}")
-        if 'data_type' in kwargs:
-            key_parts.append(f"data_type:{kwargs['data_type']}")
-        if 'order' in kwargs:
-            key_parts.append(f"order:{kwargs['order']}")
         if 'country_id' in kwargs:
             key_parts.append(f"country_id:{kwargs['country_id']}")
-        if 'okx_data_type' in kwargs:
-            key_parts.append(f"okx_data_type:{kwargs['okx_data_type']}")
-        if 'binance_data_type' in kwargs:
-            key_parts.append(f"binance_data_type:{kwargs['binance_data_type']}")
+        # 不包含 data_type、okx_data_type、binance_data_type、order 等排序参数
+        # 这些参数只影响排序，不影响数据内容
         
         # 添加前缀
         cache_key = "|".join(key_parts)
         return f"{CACHE_PREFIX}:{cache_key}"
+    
+    def _generate_raw_cache_key(self, exchange: str, **kwargs) -> str:
+        """
+        生成原始数据缓存键（用于存储完整的原始数据，不包含排序）
+        
+        Args:
+            exchange: 交易所类型 ('okx', 'binance', 'all')
+            **kwargs: 其他参数
+            
+        Returns:
+            缓存键字符串
+        """
+        # 对于 'all'，我们需要分别缓存 'okx' 和 'binance' 的原始数据
+        if exchange == 'all':
+            # 返回一个特殊键，表示这是所有交易所的原始数据
+            return f"{CACHE_PREFIX}:raw:all"
+        else:
+            # 单个交易所的原始数据
+            key_parts = [f"raw:exchange:{exchange}"]
+            if 'time_range' in kwargs:
+                key_parts.append(f"time_range:{kwargs['time_range']}")
+            if 'country_id' in kwargs:
+                key_parts.append(f"country_id:{kwargs['country_id']}")
+            cache_key = "|".join(key_parts)
+            return f"{CACHE_PREFIX}:{cache_key}"
     
     def get(self, exchange: str, **kwargs) -> Optional[Any]:
         """
@@ -84,7 +106,30 @@ class PopularTradersCache:
         elif isinstance(exchange, str) and exchange.startswith(f"{CACHE_PREFIX}:"):
             cache_key = exchange
         else:
+            # 优先尝试原始数据缓存键
+            try:
+                raw_cache_key = self._generate_raw_cache_key(exchange, **kwargs)
+                # 先尝试原始数据缓存
+                raw_data = self._get_from_cache(raw_cache_key)
+                if raw_data is not None:
+                    return raw_data
+            except Exception:
+                pass
+            # 如果原始数据缓存不存在，尝试普通缓存键
             cache_key = self._generate_cache_key(exchange, **kwargs)
+        
+        return self._get_from_cache(cache_key)
+    
+    def _get_from_cache(self, cache_key: str) -> Optional[Any]:
+        """
+        从缓存获取数据（内部方法）
+        
+        Args:
+            cache_key: 缓存键
+            
+        Returns:
+            缓存的数据，如果不存在或已过期则返回None
+        """
         
         # 优先使用 Redis
         if self.use_redis:

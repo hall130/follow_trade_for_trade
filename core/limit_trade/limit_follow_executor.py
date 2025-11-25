@@ -41,16 +41,18 @@ class LimitFollowExecutor:
         self.db_pool = db_pool
         self.limit_follow_db = LimitFollowDB(db_pool)
         
-        # 去重机制：记录每个跟单员的最后处理订单ID
-        self.last_ord_ids = {}
+        # 去重机制：记录每个跟单员的最后处理订单ID和时间戳
+        self.last_ord_ids = {}  # {trader_unique_name: ord_id}
+        self.last_trade_times = {}  # {trader_unique_name: timestamp_ms}
         
-        # 从数据库加载最新的订单ID
+        # 从数据库加载最新的订单ID和时间戳
         self._load_latest_ord_ids()
         
         # 配置
         self.config = {
             'polling_interval': 5,  # 轮询间隔（秒）
-            'trade_limit': 1,  # 每次获取的交易记录数量
+            'trade_limit': 1,  # 每次获取的交易记录数量（正常情况）
+            'gap_detection_limit': 100,  # 检测到订单ID变化时，获取更多记录用于回溯查找
             'max_retry_attempts': 3,  # 最大重试次数
             'retry_delay': 5,  # 重试延迟（秒）
             'request_timeout': 10,  # 请求超时时间（秒）
@@ -79,11 +81,11 @@ class LimitFollowExecutor:
             return 1.0, 0.0  # 默认全限价
         
     def _load_latest_ord_ids(self):
-        """从数据库加载最新的订单ID"""
+        """从数据库加载最新的订单ID和时间戳"""
         try:
             # 使用子查询获取每个跟单员的最新记录
             query = """
-                SELECT l1.trader_unique_name, l1.extra_data
+                SELECT l1.trader_unique_name, l1.extra_data, l1.created_at
                 FROM limit_follow_logs l1
                 INNER JOIN (
                     SELECT trader_unique_name, MAX(created_at) as max_created_at
@@ -99,20 +101,43 @@ class LimitFollowExecutor:
             # 使用参数化查询避免格式化字符串问题，查询两种类型的记录
             records = self.db_pool.query(query, ('%发现新交易%', '%发现新交易%'))
             
-            # 构建最新订单ID字典
+            # 构建最新订单ID和时间戳字典
             latest_by_trader = {}
+            latest_times = {}
             for record in records:
                 trader_unique_name = record['trader_unique_name']
                 extra_data = json.loads(record['extra_data']) if record['extra_data'] else {}
                 ord_id = extra_data.get('ord_id', '')
+                c_time = extra_data.get('cTime', '')  # 交易时间戳（毫秒）
+                
                 if ord_id:
                     latest_by_trader[trader_unique_name] = ord_id
+                
+                # 提取交易时间戳
+                if c_time:
+                    try:
+                        latest_times[trader_unique_name] = int(c_time)
+                    except (ValueError, TypeError):
+                        # 如果无法解析，使用日志创建时间作为fallback
+                        if record.get('created_at'):
+                            from datetime import datetime
+                            try:
+                                if isinstance(record['created_at'], str):
+                                    dt = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
+                                else:
+                                    dt = record['created_at']
+                                latest_times[trader_unique_name] = int(dt.timestamp() * 1000)
+                            except:
+                                pass
             
             self.last_ord_ids = latest_by_trader
-            logger.info(f"从数据库加载了 {len(self.last_ord_ids)} 个跟单员的最新订单ID: {self.last_ord_ids}")
+            self.last_trade_times = latest_times
+            logger.info(f"从数据库加载了 {len(self.last_ord_ids)} 个跟单员的最新订单ID和时间戳")
+            logger.debug(f"最新订单ID: {self.last_ord_ids}")
+            logger.debug(f"最新交易时间: {self.last_trade_times}")
             
         except Exception as e:
-            logger.error(f"加载最新订单ID失败: {e}")
+            logger.error(f"加载最新订单ID和时间戳失败: {e}")
     
     def _save_processed_order_id(self, trader_unique_name: str, ord_id: str):
         """保存已处理的订单ID到数据库"""
@@ -201,7 +226,8 @@ class LimitFollowExecutor:
         self, 
         session: aiohttp.ClientSession, 
         trader_unique_name: str, 
-        limit: int = 1
+        limit: int = 1,
+        start_time_ms: Optional[int] = None
     ) -> List[Dict]:
         """
         异步获取交易记录（统一接口）
@@ -210,6 +236,7 @@ class LimitFollowExecutor:
             session: aiohttp会话对象
             trader_unique_name: 带单员唯一标识
             limit: 获取的记录数量限制
+            start_time_ms: 起始时间（毫秒时间戳），用于动态计算查询时间范围
             
         Returns:
             标准化的交易记录列表
@@ -222,11 +249,12 @@ class LimitFollowExecutor:
                 logger.error(f"无法获取带单员 {trader_unique_name} 的采集器")
                 return []
             
-            # 获取原始交易记录
+            # 获取原始交易记录（传递start_time_ms参数）
             raw_records = await collector.get_trade_records_async(
                 session, 
                 trader_unique_name, 
-                limit
+                limit,
+                start_time_ms=start_time_ms
             )
             
             # 标准化所有记录
@@ -243,16 +271,21 @@ class LimitFollowExecutor:
             return []
     
     def _log_new_trade(self, trader_unique_name: str, trade: Dict):
-        """记录新交易到日志"""
+        """记录新交易到日志（包含订单ID和时间戳）"""
         try:
+            ord_id = trade.get('ordId', '')
+            c_time = trade.get('cTime', '')
+            
             log_data = {
                 'trader_unique_name': trader_unique_name,
-                'ord_id': trade.get('ordId', ''),
+                'ord_id': ord_id,
+                'cTime': c_time,  # 保存交易时间戳（毫秒），用于后续查询和去重
                 'side': trade.get('side', ''),
                 'sz': trade.get('sz', ''),
                 'avgPx': trade.get('avgPx', ''),
                 'instId': trade.get('instId', ''),
-                'cTime': trade.get('cTime', '')
+                'posSide': trade.get('posSide', ''),
+                'source': trade.get('source', '')  # 数据来源（okx/binance/hyperliquid）
             }
             
                     # 创建LimitFollowLog对象
@@ -731,9 +764,9 @@ class LimitFollowExecutor:
                 
                 symbol = order_info[0]['symbol']
                 
-                # 获取客户账户信息
+                # 获取客户账户信息（包含交易所类型）
                 customer_info = self.db_pool.query(
-                    "SELECT api_key, api_secret, passphrase, is_demo FROM customers WHERE customer_uid = %s",
+                    "SELECT api_key, api_secret, passphrase, is_demo, COALESCE(exchange, 'okx') as exchange FROM customers WHERE customer_uid = %s",
                     (strategy.customer_uid,)
                 )
                 
@@ -742,10 +775,11 @@ class LimitFollowExecutor:
                     return
                 
                 customer_data = customer_info[0]
+                exchange_type = customer_data.get('exchange', 'okx').lower()  # 获取交易所类型，默认为okx
                 
-                # 创建REST客户端
+                # 创建REST客户端（支持多交易所）
                 rest_client = create_exchange_client(
-                    exchange='okx',
+                    exchange=exchange_type,
                     client_type='rest',
                     api_key=customer_data['api_key'],
                     api_secret=customer_data['api_secret'],
@@ -753,11 +787,13 @@ class LimitFollowExecutor:
                     is_demo=customer_data['is_demo']
                 )
                 
-                # 调用交易所API撤销订单
-                logger.info(f"[撤单] 调用REST API撤单: instId={symbol}, ordId={exchange_order_id} (尝试 {attempt + 1}/{max_retries})")
-                cancel_result = await rest_client.cancel_order(symbol, ordId=exchange_order_id)
+                # 调用交易所API撤销订单（使用统一接口，支持多交易所）
+                logger.info(f"[撤单] 调用REST API撤单: symbol={symbol}, order_id={exchange_order_id} (交易所: {exchange_type}, 尝试 {attempt + 1}/{max_retries})")
                 
-                if cancel_result and cancel_result.get('code') == '0':
+                # 使用统一接口：cancel_order(symbol: str, order_id: str) -> bool
+                cancel_success = await rest_client.cancel_order(symbol, exchange_order_id)
+                
+                if cancel_success:
                     # 更新数据库状态
                     self.db_pool.execute("""
                         UPDATE limit_follow_orders 
@@ -765,11 +801,10 @@ class LimitFollowExecutor:
                         WHERE order_uid = %s
                     """, (order_uid,))
                     
-                    logger.info(f"订单 {order_uid} 撤单成功")
+                    logger.info(f"订单 {order_uid} 撤单成功 (交易所: {exchange_type})")
                     return  # 成功，退出重试循环
                 else:
-                    error_msg = cancel_result.get('msg', '未知错误') if cancel_result else '请求失败'
-                    logger.warning(f"订单 {order_uid} 撤单失败: {error_msg} (尝试 {attempt + 1}/{max_retries})")
+                    logger.warning(f"订单 {order_uid} 撤单失败 (交易所: {exchange_type}, 尝试 {attempt + 1}/{max_retries})")
                     
                     # 如果是最后一次尝试，记录最终失败
                     if attempt == max_retries - 1:
@@ -1232,12 +1267,12 @@ class LimitFollowExecutor:
     async def _get_customer_positions(self, customer_uid: str, symbol: str) -> List[Dict]:
         """获取客户当前持仓"""
         try:
-            # 直接从OKX API获取实时持仓信息
+            # 从交易所API获取实时持仓信息（支持多交易所）
             if not hasattr(self, 'limit_follow_service'):
                 from limit_follow_service import LimitFollowService
                 self.limit_follow_service = LimitFollowService(self.db_pool)
             
-            # 获取客户持仓
+            # 获取客户持仓（支持多交易所）
             positions = await self.limit_follow_service._get_customer_positions(customer_uid, symbol)
             
             if not positions:
@@ -1606,20 +1641,8 @@ class LimitFollowExecutor:
                         # 等待任务完成
                         result = await task
                     except RuntimeError:
-                        # 如果没有运行中的事件循环，尝试获取当前线程的事件循环
-                        try:
-                            loop = asyncio.get_event_loop()
-                            if loop.is_running():
-                                # 如果事件循环正在运行，创建任务
-                                task = loop.create_task(limit_follow_service._submit_order_to_exchange(order))
-                                # 等待任务完成
-                                result = await task
-                            else:
-                                # 如果事件循环没有运行，运行到完成
-                                result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
-                        except RuntimeError:
-                            # 如果没有事件循环，创建一个新的
-                            result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
+                        # 如果没有事件循环，创建一个新的
+                        result = asyncio.run(limit_follow_service._submit_order_to_exchange(order))
                     
                     if result:
                         success_count += 1
@@ -1792,34 +1815,149 @@ class LimitFollowExecutor:
                 logger.warning(f"无法获取带单员 {trader_unique_name} 的采集器，跳过检查")
                 return
             
-            # 异步获取交易记录（已标准化）
-            trades = await self.get_trade_records_async(session, trader_unique_name, self.config['trade_limit'])
+            # 获取最后处理的交易时间，用于动态计算查询时间范围
+            last_trade_time = self.last_trade_times.get(trader_unique_name)
+            last_ord_id = self.last_ord_ids.get(trader_unique_name, '')
+            start_time_ms = None
+            if last_trade_time:
+                # 从最后处理时间往前推1小时，确保不会漏单（考虑时区、延迟等因素）
+                start_time_ms = last_trade_time - (60 * 60 * 1000)  # 1小时前
+                logger.debug(f"使用动态时间范围: {start_time_ms} (最后处理时间: {last_trade_time})")
+            
+            # 先获取少量记录检查是否有新交易
+            initial_limit = self.config['trade_limit']
+            trades = await self.get_trade_records_async(
+                session, 
+                trader_unique_name, 
+                initial_limit,
+                start_time_ms=start_time_ms
+            )
+            
             new_trades = []
             
             if trades:
                 # 获取最新一条交易（已经是标准化格式）
                 latest_trade = trades[0]
                 ord_id = latest_trade.get('ordId', '')
+                c_time_str = latest_trade.get('cTime', '')
                 
                 if ord_id:
-                    # 检查是否是新的订单ID
-                    last_ord_id = self.last_ord_ids.get(trader_unique_name, '')
+                    # 解析交易时间戳
+                    c_time_ms = None
+                    try:
+                        if c_time_str:
+                            c_time_ms = int(c_time_str)
+                    except (ValueError, TypeError):
+                        logger.warning(f"无法解析交易时间戳: {c_time_str}")
                     
+                    # 检查是否是新的订单
+                    last_time = self.last_trade_times.get(trader_unique_name, 0)
+                    
+                    is_new_order = False
+                    
+                    # 判断1: 订单ID不同
                     if ord_id != last_ord_id:
-                        # 新的订单ID，添加到新交易列表
-                        new_trades.append(latest_trade)
-                        # 更新最后处理的订单ID
-                        self.last_ord_ids[trader_unique_name] = ord_id
+                        is_new_order = True
+                        logger.info(f"检测到订单ID变化: {last_ord_id} -> {ord_id}")
                         
-                        # 记录到日志
-                        self._log_new_trade(trader_unique_name, latest_trade)
+                        # 如果订单ID不同，说明可能有中间交易被跳过
+                        # 需要获取更多记录进行回溯查找
+                        if last_ord_id:
+                            logger.warning(f"⚠️ 检测到订单ID跳跃，可能存在中间交易被跳过！")
+                            logger.info(f"开始回溯查找，获取更多交易记录...")
+                            
+                            # 获取更多记录用于回溯查找
+                            gap_limit = self.config.get('gap_detection_limit', 100)
+                            all_trades = await self.get_trade_records_async(
+                                session,
+                                trader_unique_name,
+                                gap_limit,
+                                start_time_ms=start_time_ms
+                            )
+                            
+                            if all_trades:
+                                logger.info(f"获取到 {len(all_trades)} 条交易记录用于回溯查找")
+                                
+                                # 从最新记录开始，倒序查找上次处理的订单ID
+                                found_last_order = False
+                                for i, trade in enumerate(all_trades):
+                                    trade_ord_id = trade.get('ordId', '')
+                                    
+                                    # 如果找到上次处理的订单，说明找到了连续点
+                                    if trade_ord_id == last_ord_id:
+                                        found_last_order = True
+                                        logger.info(f"✅ 找到上次处理的订单 {last_ord_id}，位置: {i+1}/{len(all_trades)}")
+                                        
+                                        # 获取从上次处理订单之后的所有新交易（倒序，需要反转）
+                                        new_trades = all_trades[:i]  # 从开始到找到的位置之前的所有交易
+                                        new_trades.reverse()  # 反转，按时间正序处理
+                                        
+                                        logger.info(f"📋 找到 {len(new_trades)} 笔中间被跳过的交易")
+                                        break
+                                
+                                # 如果没有找到上次处理的订单，说明所有记录都是新的
+                                if not found_last_order:
+                                    logger.warning(f"⚠️ 未找到上次处理的订单 {last_ord_id}，可能时间范围不够或订单已被清理")
+                                    logger.info(f"将处理获取到的所有 {len(all_trades)} 条交易记录")
+                                    
+                                    # 反转所有交易，按时间正序处理
+                                    new_trades = list(reversed(all_trades))
+                                    
+                                    # 但需要检查是否真的都是新交易（可能上次处理的订单不在时间范围内）
+                                    # 这里我们保守处理：只处理时间戳大于上次处理时间的交易
+                                    if last_time > 0:
+                                        filtered_trades = []
+                                        for trade in new_trades:
+                                            trade_time_str = trade.get('cTime', '')
+                                            try:
+                                                trade_time = int(trade_time_str) if trade_time_str else 0
+                                                if trade_time > last_time:
+                                                    filtered_trades.append(trade)
+                                                else:
+                                                    logger.debug(f"跳过时间戳小于上次处理时间的交易: {trade_time} <= {last_time}")
+                                            except (ValueError, TypeError):
+                                                # 如果无法解析时间戳，保守处理：包含该交易
+                                                filtered_trades.append(trade)
+                                        new_trades = filtered_trades
+                                        logger.info(f"过滤后，需要处理 {len(new_trades)} 笔新交易")
+                        else:
+                            # 如果没有上次处理的订单ID，说明是首次处理，只处理最新一条
+                            new_trades = [latest_trade]
+                            logger.info(f"首次处理该跟单员，处理最新1条交易")
+                    
+                    # 判断2: 如果订单ID相同但时间更新，也可能是新订单（处理订单ID重复的情况）
+                    elif c_time_ms and c_time_ms > last_time + 1000:  # 时间差超过1秒
+                        is_new_order = True
+                        logger.debug(f"订单ID相同但时间更新: {c_time_ms} > {last_time}")
+                        new_trades = [latest_trade]
+                    
+                    # 如果检测到新订单，更新最后处理的订单ID和时间戳
+                    if is_new_order and new_trades:
+                        # 更新为最新处理的交易信息
+                        latest_processed = new_trades[-1]  # 最后一个（最新的）
+                        latest_ord_id = latest_processed.get('ordId', '')
+                        latest_time_str = latest_processed.get('cTime', '')
                         
-                        logger.info(f"[{collector.get_collector_type()}] 发现新交易: {trader_unique_name} - {ord_id}")
-                    else:
+                        self.last_ord_ids[trader_unique_name] = latest_ord_id
+                        try:
+                            if latest_time_str:
+                                latest_time_ms = int(latest_time_str)
+                                self.last_trade_times[trader_unique_name] = latest_time_ms
+                        except (ValueError, TypeError):
+                            pass
+                        
+                        # 记录所有新交易到日志
+                        for trade in new_trades:
+                            self._log_new_trade(trader_unique_name, trade)
+                            trade_ord_id = trade.get('ordId', '')
+                            trade_time = trade.get('cTime', '')
+                            logger.info(f"[{collector.get_collector_type()}] 发现新交易: {trader_unique_name} - {trade_ord_id} (时间: {trade_time})")
+                    elif not is_new_order:
                         logger.debug(f"订单已处理: {trader_unique_name} - {ord_id}")
             
             if new_trades:
-                logger.info(f"发现 {len(new_trades)} 笔新交易")
+                logger.info(f"📊 准备处理 {len(new_trades)} 笔新交易（按时间顺序）")
+                # 按时间正序处理（从旧到新）
                 for trade in new_trades:
                     await self.process_new_trade(trader_unique_name, trade)
             else:
@@ -1909,18 +2047,49 @@ class LimitFollowExecutor:
                             )
                             await future
                         except RuntimeError:
-                            # 如果无法获取运行中的事件循环，使用标准的 sleep（作为后备）
-                            await asyncio.sleep(self.config['polling_interval'])
+                            # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
+                            import time
+                            logger.warning("无法获取运行中的事件循环，使用同步 sleep")
+                            time.sleep(self.config['polling_interval'])
                         continue
                     
                     logger.info(f"开始并发检查 {len(traders)} 个跟单员...")
                     
-                    # 创建所有跟单员的检查任务
+                    # 确保使用当前运行中的事件循环创建任务
+                    try:
+                        current_loop = asyncio.get_running_loop()
+                        # 验证事件循环是否有效
+                        if current_loop.is_closed():
+                            logger.error("事件循环已关闭，无法创建任务")
+                            raise RuntimeError("事件循环已关闭")
+                    except RuntimeError as loop_error:
+                        error_msg = str(loop_error).lower()
+                        if "attached to a different loop" in error_msg:
+                            logger.error(f"❌ 事件循环冲突: {loop_error}")
+                            logger.error("等待事件循环稳定...")
+                            import time
+                            time.sleep(2.0)
+                            # 重新获取事件循环
+                            current_loop = asyncio.get_running_loop()
+                        else:
+                            raise
+                    
+                    # 创建所有跟单员的检查任务（使用 create_task 确保任务附加到正确的事件循环）
                     tasks = []
                     for trader in traders:
-                        # 创建协程对象（稍后通过 gather 执行）
-                        coro = self.check_trader_async(session, trader)
-                        tasks.append(coro)
+                        try:
+                            # 创建协程对象
+                            coro = self.check_trader_async(session, trader)
+                            # 使用 create_task 确保任务被附加到当前事件循环
+                            task = current_loop.create_task(coro)
+                            tasks.append(task)
+                        except RuntimeError as task_error:
+                            error_msg = str(task_error).lower()
+                            if "attached to a different loop" in error_msg:
+                                logger.warning(f"创建任务时发生事件循环冲突，跳过跟单员 {trader}: {task_error}")
+                                continue
+                            else:
+                                raise
                     
                     # 并发执行所有任务
                     start_time = time.time()
@@ -1945,8 +2114,10 @@ class LimitFollowExecutor:
                         )
                         await future
                     except RuntimeError:
-                        # 如果无法获取运行中的事件循环，使用标准的 sleep（作为后备）
-                        await asyncio.sleep(interval)
+                        # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
+                        import time
+                        logger.warning("无法获取运行中的事件循环，使用同步 sleep")
+                        time.sleep(interval)
                     
                 except KeyboardInterrupt:
                     logger.info("监控已停止")
@@ -1967,9 +2138,9 @@ class LimitFollowExecutor:
                             if current_loop.is_closed():
                                 logger.error("当前事件循环已关闭，无法继续监控")
                                 break
-                            logger.warning(f"当前事件循环: {current_loop}，尝试继续...")
+                            logger.warning(f"当前事件循环: {current_loop} (ID={id(current_loop)})，尝试继续...")
                             # 等待一小段时间，让事件循环稳定（使用同步 sleep，避免事件循环问题）
-                            time.sleep(1.0)  # 增加等待时间
+                            time.sleep(2.0)  # 增加等待时间到2秒，让其他线程的事件循环操作完成
                             # 继续监控循环（跳过本次迭代）
                             logger.info("✅ 事件循环已恢复，继续监控")
                             continue

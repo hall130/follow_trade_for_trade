@@ -39,7 +39,8 @@ class BaseTraderCollector(ABC):
         self, 
         session: aiohttp.ClientSession, 
         trader_identifier: str, 
-        limit: int = 1
+        limit: int = 1,
+        start_time_ms: Optional[int] = None
     ) -> List[Dict]:
         """
         异步获取交易记录
@@ -48,6 +49,7 @@ class BaseTraderCollector(ABC):
             session: aiohttp会话对象
             trader_identifier: 带单员标识符（OKX为uniqueName，Binance为portfolioId等）
             limit: 获取的记录数量限制
+            start_time_ms: 起始时间（毫秒时间戳），可选，用于动态计算查询时间范围
             
         Returns:
             交易记录列表，每个记录为字典格式

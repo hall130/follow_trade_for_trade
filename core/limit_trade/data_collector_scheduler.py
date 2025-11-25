@@ -176,6 +176,10 @@ class DataCollectorScheduler:
                 new_loop = None
                 try:
                     # 在新线程中创建全新的事件循环（完全独立，不受 nest_asyncio 影响）
+                    # 先清除当前线程的事件循环（如果有）
+                    asyncio.set_event_loop(None)
+                    
+                    # 创建全新的事件循环
                     new_loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(new_loop)
                     
@@ -245,10 +249,10 @@ class DataCollectorScheduler:
                 daemon=True, 
                 name=f"PopularTradersCollector-{thread_id}"
             )
-            logger.info(f"[数据采集调度器] 启动热门带单员采集线程: {thread.name}")
+            logger.info(f"[数据采集调度器] 启动热门带单员采集线程: {thread.name} (线程ID: {thread.ident})")
             thread.start()
             
-            # 等待结果（设置超时，避免无限等待）
+            # 等待采集完成（最多5分钟超时）
             try:
                 result = future.result(timeout=300)  # 5分钟超时
                 
@@ -266,7 +270,6 @@ class DataCollectorScheduler:
                     f"Binance: {len(result.get('binance', []))}, "
                     f"总计: {total_count}"
                 )
-                
             except concurrent.futures.TimeoutError:
                 logger.error("[数据采集调度器] 热门带单员采集超时（5分钟）")
                 self.stats['popular_traders']['errors'] += 1

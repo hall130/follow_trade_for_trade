@@ -42,7 +42,8 @@ class HyperliquidTraderCollector(BaseTraderCollector):
         self, 
         session: aiohttp.ClientSession, 
         trader_identifier: str, 
-        limit: int = 1
+        limit: int = 1,
+        start_time_ms: Optional[int] = None
     ) -> List[Dict]:
         """
         异步获取Hyperliquid带单员交易记录
@@ -56,6 +57,7 @@ class HyperliquidTraderCollector(BaseTraderCollector):
             session: aiohttp会话对象
             trader_identifier: Hyperliquid带单员地址（0x开头的钱包地址）
             limit: 获取的记录数量限制
+            start_time_ms: 起始时间（毫秒时间戳），如果提供则使用此时间，否则使用默认的default_days
             
         Returns:
             交易记录列表
@@ -67,10 +69,18 @@ class HyperliquidTraderCollector(BaseTraderCollector):
             logger.error(f"[Hyperliquid] 无效的带单员地址: {address}")
             return []
         
-        # 计算时间范围（默认最近7天）
+        # 计算时间范围
         now = datetime.now()
         end_time = int(now.timestamp() * 1000)
-        start_time = int((now - timedelta(days=self.default_days)).timestamp() * 1000)
+        
+        # 如果提供了start_time_ms，使用它；否则使用默认的default_days
+        if start_time_ms is not None:
+            start_time = start_time_ms
+            # 确保时间范围不超过默认天数（避免查询过多历史数据）
+            min_start_time = int((now - timedelta(days=self.default_days)).timestamp() * 1000)
+            start_time = max(start_time, min_start_time)
+        else:
+            start_time = int((now - timedelta(days=self.default_days)).timestamp() * 1000)
         
         payload = {
             "type": "userFills",
@@ -100,9 +110,23 @@ class HyperliquidTraderCollector(BaseTraderCollector):
                     
                     # 按时间倒序排序（最新的在前），然后限制数量
                     if records:
-                        # 确保按时间戳排序（如果有time字段）
-                        records.sort(key=lambda x: x.get('time', 0), reverse=True)
-                        records = records[:limit]
+                        def get_sort_key(record):
+                            time_value = record.get('time', 0)
+                            # 确保是数字类型（Hyperliquid返回的是毫秒时间戳整数）
+                            if isinstance(time_value, (int, float)):
+                                return time_value
+                            elif isinstance(time_value, str):
+                                # 如果是字符串，尝试转换为数字
+                                try:
+                                    return float(time_value)
+                                except (ValueError, TypeError):
+                                    return 0
+                            return 0
+                        
+                        records.sort(key=get_sort_key, reverse=True)
+                        # 限制数量
+                        if limit and len(records) > limit:
+                            records = records[:limit]
                     
                     logger.debug(f"[Hyperliquid] 获取到 {len(records)} 条交易记录")
                     return records
@@ -119,31 +143,28 @@ class HyperliquidTraderCollector(BaseTraderCollector):
         """
         将Hyperliquid原始交易记录标准化为统一格式
         
-        根据 Hyperliquid L1 数据架构文档，交易记录格式：
+        实际 Hyperliquid API 返回格式：
         {
             "coin": "BTC",
-            "side": "B" (Buy) / "A" (Ask/Sell),
-            "time": "2024-07-26T08:26:25.899",
-            "px": "51.367",
-            "sz": "0.31",
-            "hash": "0x...",
-            "side_info": [
-                {
-                    "user": "0x...",
-                    "start_pos": "996.67",
-                    "oid": 12212201265,
-                    ...
-                },
-                ...
-            ]
+            "px": "87893.0",
+            "sz": "0.11358",
+            "side": "A" (Ask/Sell) / "B" (Buy),
+            "time": 1764005655887,  # 毫秒时间戳（整数）
+            "startPosition": "0.4557",  # 起始持仓（字符串）
+            "dir": "Close Long",  # 方向：Close Long, Open Short 等
+            "hash": "0x808c2e906e174b75820504301c9de102073c0076091a6a472454d9e32d1b2560",
+            "oid": 247407563348,
+            "closedPnl": "455.22864",
+            "fee": "1.497433",
+            ...
         }
         
         转换为标准格式：
         {
-            'ordId': '订单ID',
-            'instId': 'BTC' -> 'BTC-USDT-PERP' (需要根据实际情况调整),
+            'ordId': '订单ID（hash或oid）',
+            'instId': 'BTC' -> 'BTC-USDT-PERP',
             'side': 'buy'/'sell',
-            'posSide': 'long'/'short' (根据start_pos判断),
+            'posSide': 'long'/'short' (根据dir或startPosition判断),
             'sz': '数量',
             'avgPx': '价格',
             'cTime': '创建时间（毫秒）'
@@ -169,31 +190,67 @@ class HyperliquidTraderCollector(BaseTraderCollector):
             px = float(raw_record.get('px', '0'))
             
             # 提取时间并转换为毫秒时间戳
-            time_str = raw_record.get('time', '')
-            if time_str:
+            # Hyperliquid API 实际返回的 time 字段是毫秒时间戳（整数），不是 ISO 字符串
+            time_value = raw_record.get('time', '')
+            if time_value:
                 try:
-                    # 解析 ISO 格式时间: "2024-07-26T08:26:25.899"
-                    dt = datetime.fromisoformat(time_str)
-                    c_time = int(dt.timestamp() * 1000)
-                except:
-                    # 如果解析失败，使用当前时间
+                    # 如果是数字（整数或浮点数），直接使用
+                    if isinstance(time_value, (int, float)):
+                        c_time = int(time_value)
+                    elif isinstance(time_value, str):
+                        # 如果是字符串，先尝试转换为数字
+                        if time_value.isdigit() or ('.' in time_value and time_value.replace('.', '').isdigit()):
+                            c_time = int(float(time_value))
+                        else:
+                            # 如果是 ISO 格式字符串，尝试解析
+                            dt = datetime.fromisoformat(time_value.replace('Z', '+00:00'))
+                            c_time = int(dt.timestamp() * 1000)
+                    else:
+                        c_time = int(time.time() * 1000)
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.warning(f"[Hyperliquid] 解析时间字段失败: {e}, 使用当前时间")
                     c_time = int(time.time() * 1000)
             else:
                 c_time = int(time.time() * 1000)
             
-            # 提取持仓方向（从side_info中判断）
-            # 如果start_pos为正，可能是long；为负可能是short
+            # 提取持仓方向
+            # Hyperliquid 实际数据中有 startPosition 和 dir 字段
+            # dir 字段如 "Close Long", "Open Short" 等可以直接判断
             pos_side = 'long'  # 默认值
-            side_info = raw_record.get('side_info', [])
-            if side_info:
-                # 查找当前用户的side_info
-                for info in side_info:
-                    start_pos = float(info.get('start_pos', '0'))
-                    if start_pos > 0:
-                        pos_side = 'long'
-                    elif start_pos < 0:
-                        pos_side = 'short'
-                    break  # 使用第一个匹配的
+            
+            # 优先使用 dir 字段判断
+            dir_str = raw_record.get('dir', '').upper()
+            if 'LONG' in dir_str:
+                pos_side = 'long'
+            elif 'SHORT' in dir_str:
+                pos_side = 'short'
+            else:
+                # 如果没有 dir 字段，使用 startPosition 判断
+                start_pos = raw_record.get('startPosition', '')
+                if start_pos:
+                    try:
+                        start_pos_float = float(start_pos)
+                        if start_pos_float > 0:
+                            pos_side = 'long'
+                        elif start_pos_float < 0:
+                            pos_side = 'short'
+                    except (ValueError, TypeError):
+                        pass
+                
+                # 如果都没有，尝试从 side_info 中判断（兼容旧格式）
+                side_info = raw_record.get('side_info', [])
+                if side_info:
+                    for info in side_info:
+                        start_pos_info = info.get('start_pos', '0')
+                        try:
+                            start_pos_float = float(start_pos_info)
+                            if start_pos_float > 0:
+                                pos_side = 'long'
+                            elif start_pos_float < 0:
+                                pos_side = 'short'
+                            break
+                        except (ValueError, TypeError):
+                            continue
             
             return {
                 'ordId': order_id,

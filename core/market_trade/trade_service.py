@@ -621,8 +621,6 @@ class TradeService:
     def _ensure_dingtalk_initialized(self):
         """确保钉钉机器人已初始化"""
         try:
-            
-            
             # 检查是否已初始化
             bot = get_dingtalk_bot()
             if bot:
@@ -631,6 +629,10 @@ class TradeService:
             
             # 如果未初始化，尝试初始化
             config = get_dingtalk_config()
+            if config is None:
+                logger.debug("ℹ️ 交易服务检测到钉钉通知已禁用或配置不可用（get_dingtalk_config 返回 None）")
+                return
+            
             if config.get("enabled", False):
                 webhook_url = config.get("webhook_url")
                 secret = config.get("secret")
@@ -640,10 +642,12 @@ class TradeService:
                 else:
                     logger.warning("⚠️ 交易服务钉钉机器人配置不完整")
             else:
-                logger.info("ℹ️ 交易服务检测到钉钉通知已禁用")
+                logger.debug("ℹ️ 交易服务检测到钉钉通知已禁用（enabled=False）")
                 
         except Exception as e:
             logger.error(f"❌ 交易服务钉钉机器人初始化失败: {e}")
+            import traceback
+            logger.debug(f"错误堆栈:\n{traceback.format_exc()}")
     
     def _sync_clients_with_connection_manager(self):
         """同步clients和connection_manager，保持向后兼容"""

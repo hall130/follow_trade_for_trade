@@ -41,7 +41,8 @@ class BinanceTraderCollector(BaseTraderCollector):
         self, 
         session: aiohttp.ClientSession, 
         trader_identifier: str, 
-        limit: int = 1
+        limit: int = 1,
+        start_time_ms: Optional[int] = None
     ) -> List[Dict]:
         """
         异步获取Binance带单员交易记录
@@ -50,6 +51,7 @@ class BinanceTraderCollector(BaseTraderCollector):
             session: aiohttp会话对象
             trader_identifier: Binance带单员portfolioId（在数据库中，trader_unique_name存储的就是portfolioId）
             limit: 获取的记录数量限制（Binance使用pageSize）
+            start_time_ms: 起始时间（毫秒时间戳），如果提供则使用此时间，否则使用默认的default_days
             
         Returns:
             交易记录列表
@@ -61,10 +63,18 @@ class BinanceTraderCollector(BaseTraderCollector):
             logger.error(f"[Binance] 无效的带单员标识符: {portfolio_id}")
             return []
         
-        # 计算时间范围（默认最近7天）
+        # 计算时间范围
         now = datetime.now()
         end_time = int(now.timestamp() * 1000)
-        start_time = int((now - timedelta(days=self.default_days)).timestamp() * 1000)
+        
+        # 如果提供了start_time_ms，使用它；否则使用默认的default_days
+        if start_time_ms is not None:
+            start_time = start_time_ms
+            # 确保时间范围不超过默认天数（避免查询过多历史数据）
+            min_start_time = int((now - timedelta(days=self.default_days)).timestamp() * 1000)
+            start_time = max(start_time, min_start_time)
+        else:
+            start_time = int((now - timedelta(days=self.default_days)).timestamp() * 1000)
         
         payload = {
             "portfolioId": portfolio_id,
@@ -92,6 +102,24 @@ class BinanceTraderCollector(BaseTraderCollector):
                     # Binance API响应格式：{"code": "000000", "data": {"list": [...], ...}}
                     if data.get("code") == "000000" or data.get("success") is not False:
                         records = data.get("data", {}).get("list", [])
+                        
+                        # 按时间倒序排序（最新的在前），确保顺序正确
+                        if records:
+                            def get_sort_key(record):
+                                # 优先使用 orderTime，其次 orderUpdateTime
+                                time_value = record.get('orderTime') or record.get('orderUpdateTime') or 0
+                                # 确保是数字类型
+                                if isinstance(time_value, (int, float)):
+                                    return time_value
+                                elif isinstance(time_value, str) and time_value.isdigit():
+                                    return int(time_value)
+                                return 0
+                            
+                            records.sort(key=get_sort_key, reverse=True)
+                            # 限制数量
+                            if limit and len(records) > limit:
+                                records = records[:limit]
+                        
                         logger.debug(f"[Binance] 获取到 {len(records)} 条交易记录")
                         return records
                     else:
@@ -110,9 +138,22 @@ class BinanceTraderCollector(BaseTraderCollector):
         """
         将Binance原始交易记录标准化为OKX格式
         
-        Binance原始格式需要转换为：
+        Binance原始格式（可能没有orderId）：
         {
-            'ordId': '订单ID',
+            'symbol': 'BTCUSDT',
+            'side': 'BUY',
+            'positionSide': 'SHORT',
+            'executedQty': 0.534,
+            'avgPrice': 86099.9,
+            'orderTime': 1763998112892,
+            'orderUpdateTime': 1763998112892,
+            'type': 'MARKET',
+            ...
+        }
+        
+        转换为标准格式：
+        {
+            'ordId': '订单ID（如果没有则生成唯一标识符）',
             'instId': 'BTCUSDT' -> 'BTC-USDT-SWAP',
             'side': 'BUY'/'SELL' -> 'buy'/'sell',
             'posSide': 'LONG'/'SHORT' -> 'long'/'short',
@@ -122,8 +163,47 @@ class BinanceTraderCollector(BaseTraderCollector):
         }
         """
         try:
-            # 提取订单ID
+            # 提取时间（优先使用orderTime，其次orderUpdateTime，最后其他字段）
+            c_time = (
+                raw_record.get('orderTime') or 
+                raw_record.get('orderUpdateTime') or 
+                raw_record.get('createTime') or 
+                raw_record.get('time') or 
+                raw_record.get('cTime') or 
+                ''
+            )
+            
+            # 处理时间戳
+            if isinstance(c_time, (int, float)):
+                c_time_ms = int(c_time)
+            elif isinstance(c_time, str):
+                if c_time.isdigit():
+                    c_time_ms = int(c_time)
+                else:
+                    # 如果是字符串格式的时间，尝试转换
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(c_time.replace('Z', '+00:00'))
+                        c_time_ms = int(dt.timestamp() * 1000)
+                    except:
+                        c_time_ms = int(time.time() * 1000)
+            else:
+                c_time_ms = int(time.time() * 1000)
+            
+            # 提取订单ID（如果没有，则使用时间戳+交易对+方向+数量生成唯一标识符）
             ord_id = str(raw_record.get('orderId') or raw_record.get('id') or '')
+            
+            # 如果没有订单ID，生成唯一标识符
+            if not ord_id:
+                symbol = raw_record.get('symbol', '')
+                side = raw_record.get('side', '')
+                pos_side = raw_record.get('positionSide', '')
+                # 使用时间戳+交易对+方向+数量生成唯一标识符
+                sz = float(raw_record.get('executedQty') or raw_record.get('quantity') or raw_record.get('qty') or 0)
+                avg_px = float(raw_record.get('avgPrice') or raw_record.get('price') or raw_record.get('avgPx') or 0)
+                # 使用时间戳+交易对+方向+持仓方向+数量+价格生成唯一标识符，确保唯一性
+                ord_id = f"BINANCE_{c_time_ms}_{symbol}_{side}_{pos_side}_{sz}_{avg_px}"
+                logger.debug(f"[Binance] 订单没有orderId，生成唯一标识符: {ord_id}")
             
             # 提取交易对并转换格式（Binance: BTCUSDT -> OKX: BTC-USDT-SWAP）
             symbol = raw_record.get('symbol', '')
@@ -147,20 +227,19 @@ class BinanceTraderCollector(BaseTraderCollector):
             pos_side_raw = (raw_record.get('positionSide') or raw_record.get('posSide') or '').upper()
             pos_side = 'long' if pos_side_raw in ['LONG', 'L'] else 'short'
             
-            # 提取数量和价格
-            sz = float(raw_record.get('quantity') or raw_record.get('qty') or raw_record.get('executedQty') or 0)
-            avg_px = float(raw_record.get('price') or raw_record.get('avgPrice') or raw_record.get('avgPx') or 0)
-            
-            # 提取时间
-            c_time = raw_record.get('createTime') or raw_record.get('time') or raw_record.get('cTime') or ''
-            if isinstance(c_time, str) and not c_time.isdigit():
-                # 如果是字符串格式的时间，尝试转换
-                try:
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(c_time.replace('Z', '+00:00'))
-                    c_time = int(dt.timestamp() * 1000)
-                except:
-                    c_time = int(time.time() * 1000)
+            # 提取数量和价格（优先使用executedQty和avgPrice）
+            sz = float(
+                raw_record.get('executedQty') or 
+                raw_record.get('quantity') or 
+                raw_record.get('qty') or 
+                0
+            )
+            avg_px = float(
+                raw_record.get('avgPrice') or 
+                raw_record.get('price') or 
+                raw_record.get('avgPx') or 
+                0
+            )
             
             return {
                 'ordId': ord_id,
@@ -169,7 +248,7 @@ class BinanceTraderCollector(BaseTraderCollector):
                 'posSide': pos_side,
                 'sz': sz,
                 'avgPx': avg_px,
-                'cTime': str(c_time),
+                'cTime': str(c_time_ms),
                 'source': 'binance'  # 标记数据来源
             }
         except Exception as e:

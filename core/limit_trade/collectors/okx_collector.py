@@ -37,7 +37,8 @@ class OKXTraderCollector(BaseTraderCollector):
         self, 
         session: aiohttp.ClientSession, 
         trader_identifier: str, 
-        limit: int = 1
+        limit: int = 1,
+        start_time_ms: Optional[int] = None
     ) -> List[Dict]:
         """
         异步获取OKX带单员交易记录
@@ -46,6 +47,7 @@ class OKXTraderCollector(BaseTraderCollector):
             session: aiohttp会话对象
             trader_identifier: OKX带单员uniqueName
             limit: 获取的记录数量限制
+            start_time_ms: 起始时间（毫秒时间戳），可选，OKX API可能不支持此参数，但保留接口一致性
             
         Returns:
             交易记录列表

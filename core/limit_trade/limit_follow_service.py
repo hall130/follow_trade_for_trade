@@ -245,7 +245,7 @@ class EnhancedLimitFollowService:
                 'is_demo': get_global_is_demo(),
                 'exchange': customer.get('exchange', 'okx')
             }
-            okx_client = create_exchange_client(
+            exchange_client = create_exchange_client(
                 exchange=customer_data['exchange'],
                 client_type='rest',
                 api_key=customer_data['api_key'],
@@ -260,12 +260,36 @@ class EnhancedLimitFollowService:
             
             for attempt in range(max_retries):
                 try:
-                    # 查询订单状态
-                    response = await okx_client.get_order(order.symbol, order.exchange_order_id)
+                    # 查询订单状态（支持多交易所）
+                    response = await exchange_client.get_order(order.symbol, order.exchange_order_id)
                     
-                    if response and response.get('code') == '0' and response.get('data'):
-                        order_data = response['data'][0]
-                        exchange_status = order_data['state']
+                    # 处理不同交易所的响应格式
+                    order_data = None
+                    exchange_status = None
+                    exchange_type = customer_data['exchange'].lower()
+                    
+                    if exchange_type == 'okx':
+                        # OKX格式：{'code': '0', 'data': [{...}]}
+                        if response and response.get('code') == '0' and response.get('data'):
+                            order_data = response['data'][0]
+                            exchange_status = order_data.get('state')
+                    else:
+                        # 其他交易所：可能是统一格式或自定义格式
+                        if isinstance(response, dict):
+                            if 'data' in response:
+                                order_data = response['data'][0] if isinstance(response['data'], list) else response['data']
+                            elif 'order' in response:
+                                order_data = response['order']
+                            else:
+                                order_data = response
+                            
+                            # 尝试多种状态字段名
+                            exchange_status = order_data.get('state') or order_data.get('status') or order_data.get('order_status')
+                        elif hasattr(response, 'status'):
+                            # 统一接口返回OrderResponse对象
+                            exchange_status = response.status.value if hasattr(response.status, 'value') else str(response.status)
+                    
+                    if order_data and exchange_status:
                         
                         # 如果状态有变化，更新数据库
                         if exchange_status != order.status:
@@ -280,7 +304,7 @@ class EnhancedLimitFollowService:
                         # 成功获取状态，跳出重试循环
                         break
                         
-                    elif response and response.get('code') == '50011':
+                    elif isinstance(response, dict) and response.get('code') == '50011':
                         # 处理Too Many Requests错误
                         if attempt < max_retries - 1:
                             wait_time = retry_delay * (2 ** attempt)  # 指数退避
@@ -316,14 +340,41 @@ class EnhancedLimitFollowService:
             self.metrics.record_order_check(success=False)
 
     async def _update_order_status_from_exchange(self, order: LimitFollowOrder, order_data: dict):
-        """从交易所数据更新订单状态"""
+        """从交易所数据更新订单状态（支持多交易所）"""
         try:
-            exchange_status = order_data['state']
+            # 尝试多种状态字段名（兼容不同交易所）
+            exchange_status = (
+                order_data.get('state') or 
+                order_data.get('status') or 
+                order_data.get('order_status') or
+                order_data.get('orderState')
+            )
             
-            if exchange_status == 'filled':
+            if not exchange_status:
+                logger.warning(f"无法从订单数据中提取状态: {order.order_uid}, 数据: {order_data}")
+                return
+            
+            if exchange_status == 'filled' or exchange_status == 'FILLED' or exchange_status == 'completed':
                 # 订单已成交
-                filled_price = float(order_data['avgPx'])
-                filled_size = float(order_data['accFillSz'])
+                # 尝试多种价格字段名
+                filled_price = float(
+                    order_data.get('avgPx') or 
+                    order_data.get('avg_px') or 
+                    order_data.get('average_price') or
+                    order_data.get('filled_price') or
+                    order_data.get('price') or
+                    0
+                )
+                # 尝试多种数量字段名
+                filled_size = float(
+                    order_data.get('accFillSz') or 
+                    order_data.get('acc_fill_sz') or
+                    order_data.get('filled_size') or
+                    order_data.get('filled_quantity') or
+                    order_data.get('executed_qty') or
+                    order_data.get('quantity') or
+                    0
+                )
                 
                 success = self.db.update_order_status(
                         order.order_uid, 'filled',
@@ -737,7 +788,7 @@ class EnhancedLimitFollowService:
             
             # 先尝试从客户表查询（根据当前盘口模式）
             customers = self.db.db_pool.query(
-                "SELECT customer_uid, api_key, api_secret as secret_key, passphrase, enabled, is_demo FROM customers WHERE customer_uid = %s AND enabled = 1 AND is_demo = %s",
+                "SELECT customer_uid, api_key, api_secret as secret_key, passphrase, enabled, is_demo, COALESCE(exchange, 'okx') as exchange FROM customers WHERE customer_uid = %s AND enabled = 1 AND is_demo = %s",
                 (customer_uid, is_demo)
             )
             if customers:
@@ -745,7 +796,7 @@ class EnhancedLimitFollowService:
             
             # 如果客户表没有，尝试从信号源表查询（兼容旧数据，根据当前盘口模式）
             signal_sources = self.db.db_pool.query(
-                "SELECT source_uid as customer_uid, api_key, api_secret as secret_key, passphrase, enabled, is_demo FROM signal_sources WHERE source_uid = %s AND enabled = 1 AND is_demo = %s",
+                "SELECT source_uid as customer_uid, api_key, api_secret as secret_key, passphrase, enabled, is_demo, COALESCE(exchange, 'okx') as exchange FROM signal_sources WHERE source_uid = %s AND enabled = 1 AND is_demo = %s",
                 (customer_uid, is_demo)
             )
             if signal_sources:
@@ -835,7 +886,7 @@ class EnhancedLimitFollowService:
                 logger.error(f"客户配置不存在: {customer_uid}")
                 return []
             
-            # 获取统一交易所客户端
+            # 获取统一交易所客户端（支持多交易所）
             customer_data = {
                 'api_key': customer['api_key'],
                 'api_secret': customer.get('secret_key') or customer.get('api_secret'),
@@ -843,7 +894,7 @@ class EnhancedLimitFollowService:
                 'is_demo': get_global_is_demo(),
                 'exchange': customer.get('exchange', 'okx')
             }
-            okx_client = create_exchange_client(
+            exchange_client = create_exchange_client(
                 exchange=customer_data['exchange'],
                 client_type='rest',
                 api_key=customer_data['api_key'],
@@ -852,27 +903,62 @@ class EnhancedLimitFollowService:
                 is_demo=customer_data['is_demo']
             )
             
-            # 获取持仓信息（OKX REST API不支持instType参数）
-            positions_response = await okx_client.get_positions(instId=symbol)
+            # 获取持仓信息（支持多交易所）
+            exchange_type = customer_data['exchange'].lower()
+            positions_response = None
             
-            if not positions_response or 'data' not in positions_response:
-                logger.warning(f"获取持仓信息失败: {customer_uid} {symbol}")
+            if exchange_type == 'okx':
+                # OKX格式：使用instId参数
+                positions_response = await exchange_client.get_positions(instId=symbol)
+            else:
+                # 其他交易所：使用symbol参数
+                positions_response = await exchange_client.get_positions(symbol=symbol)
+            
+            if not positions_response:
+                logger.warning(f"获取持仓信息失败: {customer_uid} {symbol} (交易所: {exchange_type})")
                 return []
             
-            # 解析持仓数据
+            # 解析持仓数据（根据交易所类型处理不同格式）
             positions = []
-            for pos_data in positions_response['data']:
-                pos_size = float(pos_data.get('pos', '0'))
-                if pos_size > 0:  # 只返回有持仓的记录
-                    position = {
-                        'pos': pos_size,
-                        'pos_side': pos_data.get('posSide', 'long'),
-                        'avg_px': float(pos_data.get('avgPx', '0')),
-                        'upl': float(pos_data.get('upl', '0')),
-                        'margin': float(pos_data.get('margin', '0')),
-                        'status': 'open'
-                    }
-                    positions.append(position)
+            
+            if exchange_type == 'okx':
+                # OKX格式：{'data': [{...}]}
+                if 'data' in positions_response:
+                    for pos_data in positions_response['data']:
+                        pos_size = float(pos_data.get('pos', '0'))
+                        if pos_size > 0:  # 只返回有持仓的记录
+                            position = {
+                                'pos': pos_size,
+                                'pos_side': pos_data.get('posSide', 'long'),
+                                'avg_px': float(pos_data.get('avgPx', '0')),
+                                'upl': float(pos_data.get('upl', '0')),
+                                'margin': float(pos_data.get('margin', '0')),
+                                'status': 'open'
+                            }
+                            positions.append(position)
+            else:
+                # 其他交易所：可能是统一格式或列表格式
+                positions_data = positions_response
+                if isinstance(positions_response, dict):
+                    if 'positions' in positions_response:
+                        positions_data = positions_response['positions']
+                    elif 'data' in positions_response:
+                        positions_data = positions_response['data']
+                
+                if isinstance(positions_data, list):
+                    for pos_data in positions_data:
+                        # 尝试多种字段名（兼容不同交易所）
+                        pos_size = float(pos_data.get('size', pos_data.get('pos', pos_data.get('position', '0'))))
+                        if pos_size > 0:
+                            position = {
+                                'pos': pos_size,
+                                'pos_side': pos_data.get('pos_side', pos_data.get('posSide', 'long')),
+                                'avg_px': float(pos_data.get('entry_price', pos_data.get('avgPx', pos_data.get('avg_px', '0')))),
+                                'upl': float(pos_data.get('unrealized_pnl', pos_data.get('upl', '0'))),
+                                'margin': float(pos_data.get('margin', '0')),
+                                'status': 'open'
+                            }
+                            positions.append(position)
             
             logger.info(f"获取到客户 {customer_uid} 在 {symbol} 上的 {len(positions)} 个持仓")
             return positions
@@ -890,7 +976,7 @@ class EnhancedLimitFollowService:
                 logger.error(f"客户配置不存在: {customer_uid}")
                 return None
             
-            # 获取统一交易所客户端
+            # 获取统一交易所客户端（支持多交易所）
             customer_data = {
                 'api_key': customer['api_key'],
                 'api_secret': customer.get('secret_key') or customer.get('api_secret'),
@@ -898,7 +984,7 @@ class EnhancedLimitFollowService:
                 'is_demo': get_global_is_demo(),
                 'exchange': customer.get('exchange', 'okx')
             }
-            okx_client = create_exchange_client(
+            exchange_client = create_exchange_client(
                 exchange=customer_data['exchange'],
                 client_type='rest',
                 api_key=customer_data['api_key'],
@@ -907,23 +993,45 @@ class EnhancedLimitFollowService:
                 is_demo=customer_data['is_demo']
             )
             
-            # 获取账户余额
-            account_info = await okx_client.get_account_info()
+            # 获取账户余额（支持多交易所）
+            exchange_type = customer_data['exchange'].lower()
+            account_info = None
             
-            if not account_info or 'data' not in account_info:
-                logger.warning(f"获取账户余额失败: {customer_uid}")
-                return None
-            
-            # 解析账户信息
-            balance_data = account_info['data']
-            total_balance = 0.0
-            available_balance = 0.0
-            
-            for balance in balance_data:
-                if balance.get('ccy') == 'USDT':
-                    total_balance = float(balance.get('bal', 0))
-                    available_balance = float(balance.get('availBal', 0))
-                    break
+            # 使用统一接口获取余额
+            try:
+                balances = await exchange_client.get_balance()
+                
+                # 处理不同交易所的响应格式
+                total_balance = 0.0
+                available_balance = 0.0
+                
+                if isinstance(balances, list):
+                    # 统一接口返回Balance对象列表
+                    for balance in balances:
+                        if balance.asset == 'USDT':
+                            total_balance = balance.total
+                            available_balance = balance.free
+                            break
+                elif isinstance(balances, dict):
+                    # 兼容旧格式（OKX格式）
+                    if 'data' in balances:
+                        balance_data = balances['data']
+                        for balance in balance_data:
+                            if balance.get('ccy') == 'USDT':
+                                total_balance = float(balance.get('bal', 0))
+                                available_balance = float(balance.get('availBal', 0))
+                                break
+                    elif 'balances' in balances:
+                        # 其他交易所格式
+                        for balance in balances['balances']:
+                            if balance.get('asset') == 'USDT' or balance.get('currency') == 'USDT':
+                                total_balance = float(balance.get('total', balance.get('balance', 0)))
+                                available_balance = float(balance.get('free', balance.get('available', 0)))
+                                break
+                
+                if total_balance == 0 and available_balance == 0:
+                    logger.warning(f"未找到USDT余额: {customer_uid} (交易所: {exchange_type})")
+                    return None
             
             return {
                 'total_balance': total_balance,
@@ -1047,7 +1155,7 @@ class EnhancedLimitFollowService:
                     # 将科学计数法转换为普通小数格式
                     adjusted_price = float(f"{adjusted_price:.{price_precision}f}")
             
-            # 生成符合OKX要求的客户端订单ID
+            # 生成客户端订单ID（兼容多交易所）
             import time
             
             timestamp = str(int(time.time() * 1000))[-8:]
@@ -1056,52 +1164,83 @@ class EnhancedLimitFollowService:
             
             # 获取策略杠杆设置
             strategy_leverage = await self._get_strategy_leverage(order.strategy_id, order.customer_uid)
-            logger.info(f"开始设置杠杆: {order.symbol} {strategy_leverage}倍")
+            logger.info(f"开始设置杠杆: {order.symbol} {strategy_leverage}倍 (交易所: {customer_data['exchange']})")
 
+            # 设置杠杆（仅当交易所支持时，某些交易所可能不支持或使用不同接口）
             try:
-                leverage_data = await rest_client.set_leverage(strategy_leverage, "cross", order.symbol)
-                logger.info(f"🔧 杠杆设置响应: {leverage_data}")
-                
-                if leverage_data and leverage_data.get('code') == '0':
-                    logger.info(f"✅ 设置杠杆成功: {order.symbol} {strategy_leverage}倍")
+                # 检查交易所客户端是否支持set_leverage方法
+                if hasattr(rest_client, 'set_leverage'):
+                    leverage_data = await rest_client.set_leverage(strategy_leverage, "cross", order.symbol)
+                    logger.info(f"🔧 杠杆设置响应: {leverage_data}")
+                    
+                    # 处理不同交易所的响应格式
+                    leverage_success = False
+                    if isinstance(leverage_data, dict):
+                        if leverage_data.get('code') == '0':  # OKX格式
+                            leverage_success = True
+                        elif leverage_data.get('success'):  # 其他交易所统一格式
+                            leverage_success = True
+                    
+                    if leverage_success:
+                        logger.info(f"✅ 设置杠杆成功: {order.symbol} {strategy_leverage}倍")
+                    else:
+                        error_msg = leverage_data.get('msg', '未知错误') if isinstance(leverage_data, dict) else '请求失败'
+                        logger.warning(f"⚠️ 设置杠杆失败: {order.symbol} {strategy_leverage}倍 - {error_msg}，继续下单")
                 else:
-                    error_msg = leverage_data.get('msg', '未知错误') if leverage_data else '请求失败'
-                    logger.error(f"❌ 设置杠杆失败: {order.symbol} {strategy_leverage}倍 - {error_msg}")
+                    logger.info(f"交易所 {customer_data['exchange']} 不支持set_leverage方法，跳过杠杆设置")
                     
             except Exception as e:
-                logger.error(f"❌ 设置杠杆异常: {order.symbol} {strategy_leverage}倍 - {e}")
+                logger.warning(f"⚠️ 设置杠杆异常: {order.symbol} {strategy_leverage}倍 - {e}，继续下单")
 
 
-            # 构建订单参数
-            order_data = {
-                "instId": order.symbol,
-                "tdMode": "cross",
-                "side": "buy" if order.pos_side == "long" else "sell",
-                "posSide": order.pos_side,
-                "ordType": order.order_type,
-                "sz": str(adjusted_size),  # 使用调整后的数量
-                "clOrdId": client_order_id
-            }
+            # 构建订单参数（使用统一接口，支持多交易所）
+            from exchange.base_client import OrderRequest, OrderSide, OrderType
             
-            # 如果是限价单，添加调整后的价格
+            # 确定订单方向
+            order_side = OrderSide.BUY if order.pos_side == "long" else OrderSide.SELL
+            order_type_enum = OrderType.LIMIT if order.order_type == "limit" else OrderType.MARKET
+            
+            # 构建OrderRequest对象（统一接口）
+            order_request = OrderRequest(
+                symbol=order.symbol,
+                side=order_side,
+                order_type=order_type_enum,
+                quantity=adjusted_size,
+                price=adjusted_price if order.order_type == "limit" and adjusted_price else None,
+                client_order_id=client_order_id,
+                reduce_only=order.reduce_only if hasattr(order, 'reduce_only') else False,
+                # OKX特定参数（其他交易所可能忽略）
+                td_mode="cross",  # 全仓模式
+                pos_side=order.pos_side,  # 持仓方向
+                lever=str(strategy_leverage) if strategy_leverage else None  # 杠杆倍数
+            )
+            
+            logger.info(f"√ 提交限价跟单订单到交易所: {order.order_uid} (交易所: {customer_data['exchange']})")
             if order.order_type == "limit" and adjusted_price:
-                # 确保价格格式正确，避免科学计数法
                 price_str = f"{adjusted_price:.{price_precision}f}" if 'price_precision' in locals() else f"{adjusted_price:.8f}"
-                order_data["px"] = price_str
-            
-            logger.info(f"√ 提交限价跟单订单到交易所: {order.order_uid}")
-            if order.order_type == "limit" and adjusted_price:
                 logger.info(f"订单参数: 数量={adjusted_size}, 价格={price_str}, 合约={order.symbol}")
             else:
                 logger.info(f"订单参数: 数量={adjusted_size}, 合约={order.symbol}")
             
-            # 提交订单
-            result = await rest_client.place_order(**order_data)
-            
-            if result and result.get('code') == '0':
-                # 订单提交成功
-                order_info = result.get('data', [{}])[0]
-                exchange_order_id = order_info.get('ordId')
+            # 提交订单（使用统一接口）
+            try:
+                order_response = await rest_client.place_order(order_request)
+                
+                # 处理不同交易所的响应格式
+                exchange_order_id = None
+                if hasattr(order_response, 'order_id'):
+                    # 统一接口返回OrderResponse对象
+                    exchange_order_id = order_response.order_id
+                elif isinstance(order_response, dict):
+                    # 兼容旧格式（OKX legacy格式）
+                    if order_response.get('code') == '0':
+                        order_info = order_response.get('data', [{}])[0]
+                        exchange_order_id = order_info.get('ordId')
+                    elif order_response.get('success'):
+                        # 其他交易所的统一格式
+                        exchange_order_id = order_response.get('order_id')
+                
+                if exchange_order_id:
                 
                 if exchange_order_id:
                     # 更新数据库中的交易所订单ID
@@ -1113,7 +1252,7 @@ class EnhancedLimitFollowService:
                         """, (exchange_order_id, order.order_uid))
                         
                         if success:
-                            logger.info(f"✅ 限价跟单订单提交成功: {order.order_uid} -> {exchange_order_id}")
+                            logger.info(f"✅ 限价跟单订单提交成功: {order.order_uid} -> {exchange_order_id} (交易所: {customer_data['exchange']})")
                             return True
                         else:
                             logger.error(f"❌ 更新交易所订单ID失败: {order.order_uid}, exchange_order_id={exchange_order_id}")
@@ -1122,12 +1261,12 @@ class EnhancedLimitFollowService:
                         logger.error(f"❌ 更新交易所订单ID异常: {order.order_uid}, error={e}")
                         return False
                 else:
-                    logger.error(f"❌ 交易所未返回订单ID: {order.order_uid}")
+                    logger.error(f"❌ 交易所未返回订单ID: {order.order_uid}, 响应: {order_response}")
                     return False
-            else:
-                # 订单提交失败
-                error_msg = result.get('msg', '未知错误') if result else '请求失败'
-                logger.error(f"❌ 限价跟单订单提交失败: {order.order_uid} - {error_msg}")
+            except Exception as order_error:
+                # 订单提交异常
+                error_msg = str(order_error)
+                logger.error(f"❌ 限价跟单订单提交失败: {order.order_uid} (交易所: {customer_data['exchange']}) - {error_msg}")
                 
                 # 更新订单状态为失败
                 self.db.db_pool.execute("""
