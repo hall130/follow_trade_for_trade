@@ -11,7 +11,7 @@ import json
 import hmac
 import hashlib
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -49,6 +49,12 @@ class TradingViewAlertReceiver:
             'default_exchange': 'okx',   # 默认交易所
             'default_account_type': 'futures'  # 默认账户类型
         }
+        
+        # 缓存 TradingView 平台实例（使用 Redis，降级到内存）
+        self._tradingview_platforms_cache = None
+        self._cache_timestamp = None
+        self._cache_ttl = 300  # 缓存有效期（秒，5分钟）
+        self._redis_cache_ttl = 600  # Redis 缓存有效期（秒，10分钟）
     
     def _setup_routes(self):
         """设置路由"""
@@ -136,11 +142,12 @@ class TradingViewAlertReceiver:
                 logger.error(f"❌ TradingView交易执行失败: {trade_info}")
             
             # 发送通知
+            logger.info(f"📢 检查通知配置: enable_notifications={self.config.get('enable_notifications')}, message_manager={self.message_manager is not None}")
             if self.config['enable_notifications']:
                 logger.info(f"📢 准备发送交易通知，消息管理器: {self.message_manager is not None}")
                 await self._send_trade_notification(trade_info, success)
             else:
-                logger.warning("⚠️ 通知功能已禁用，不会转发消息")
+                logger.warning("⚠️ 通知功能已禁用，不会转发消息。请检查 alert_receiver 的配置。")
             
         except Exception as e:
             logger.error(f"处理TradingView Alert异常: {e}")
@@ -156,6 +163,7 @@ class TradingViewAlertReceiver:
             price = data.get('price') or data.get('close', 0)
             quantity = data.get('quantity') or data.get('size') or data.get('amount', 0)
             message = data.get('message', '')
+            interval = data.get('interval', '')  # 交易周期：3m, 5m, 15m, 30m, 1h, 2h, 4h, 1day
             
             # 方法2：如果标准字段为空，尝试从 Pine Script 变量提取
             if not symbol and 'ticker' in data:
@@ -264,7 +272,8 @@ class TradingViewAlertReceiver:
                 'timestamp': datetime.now(timezone.utc),  # 使用 UTC 时间，带时区信息
                 'original_data': data,
                 'direct': original_direct if original_direct else None,  # 保存原始方向信息（SHORT/LONG）
-                'original_action': original_action  # 保存原始 action（BUY/SELL）
+                'original_action': original_action,  # 保存原始 action（BUY/SELL）
+                'interval': interval  # 交易周期：3m, 5m, 15m, 30m, 1h, 2h, 4h, 1day
             }
             
             logger.info(f"Alert解析成功: {trade_info}")
@@ -418,185 +427,78 @@ class TradingViewAlertReceiver:
             original_data = trade_info.get('original_data', {})
             type_ = original_data.get('type_')
             
-            # 获取所有 TradingView 平台实例，检查策略过滤器
+            # 获取所有 TradingView 平台实例（使用缓存优化）
+            tradingview_platforms = self._get_tradingview_platforms()
+            
+            # 提取关键信息用于过滤
+            strategy = type_ or original_data.get('strategy') or original_data.get('indicator')
+            original_symbol = trade_info.get('symbol', '').upper()
+            
+            # 转换合约名称（提前计算，避免重复）
+            contract_name = self._convert_symbol_to_contract_name(original_symbol)
+            logger.info(f"📝 合约名称转换: {original_symbol} -> {contract_name}")
+            
+            # 过滤匹配的平台实例
+            matched_platforms = []
+            for platform_id, platform in tradingview_platforms:
+                if self._check_platform_filters(platform_id, platform, strategy, contract_name):
+                    matched_platforms.append((platform_id, platform))
+            
+            # 如果没有匹配的平台，记录日志并返回
+            if not matched_platforms:
+                logger.info(f"⚠️ 没有 TradingView 平台实例匹配过滤条件。策略: {strategy}, 合约: {contract_name}")
+                return
+            
+            logger.info(f"✅ 找到 {len(matched_platforms)} 个匹配的 TradingView 平台实例，将分别转发消息")
+            
+            # 创建消息内容（复用，避免重复格式化）
+            message_content = self._create_message_content(trade_info, contract_name)
+            
+            # 为每个匹配的平台实例创建消息并转发（并行处理，提高效率）
             from core.message_forward.models import PlatformType
-            tradingview_platforms = []
-            if self.message_manager and hasattr(self.message_manager, 'platforms'):
-                for platform_id, platform in self.message_manager.platforms.items():
-                    if hasattr(platform, 'platform_type') and platform.platform_type == PlatformType.TRADINGVIEW:
-                        tradingview_platforms.append(platform)
             
-            # 如果有策略过滤器配置，检查是否匹配
-            if tradingview_platforms:
-                # 检查所有 TradingView 平台实例的策略过滤器
-                should_forward = False
-                for platform in tradingview_platforms:
-                    if hasattr(platform, 'strategy_filter') and platform.strategy_filter:
-                        # 优先使用 type_ 字段
-                        strategy = type_ or original_data.get('strategy') or original_data.get('indicator')
-                        if strategy:
-                            if strategy in platform.strategy_filter:
-                                logger.info(f"✅ 策略过滤器匹配: '{strategy}' 在过滤器列表 {platform.strategy_filter} 中")
-                                should_forward = True
-                                break
-                            else:
-                                logger.info(f"❌ 策略过滤器不匹配: '{strategy}' 不在过滤器列表 {platform.strategy_filter} 中")
-                        else:
-                            # 如果没有 type_/strategy/indicator 字段，且策略过滤器不为空，则不转发
-                            logger.warning(f"⚠️ 消息没有策略标识（type_/strategy/indicator），但平台配置了策略过滤器 {platform.strategy_filter}，跳过转发")
-                    else:
-                        # 没有配置策略过滤器，允许转发
-                        should_forward = True
-                        logger.info("✅ 平台未配置策略过滤器，允许转发")
-                        break
+            forward_tasks = []
+            for platform_id, platform in matched_platforms:
+                # 创建消息对象（使用 Markdown 格式）
+                message = Message(
+                    content=message_content,
+                    message_type=MessageType.MARKDOWN,
+                    formatted_content=message_content,  # 钉钉 Markdown 使用 formatted_content
+                    source_platform=PlatformType.TRADINGVIEW,
+                    source_platform_id=platform_id,  # 使用匹配的平台实例ID
+                    source_chat_id="tradingview_webhook",
+                    source_user_id="tradingview",
+                    source_username="TradingView",
+                    extra_data={
+                        'trade_info': trade_info,
+                        'source': 'TradingView',
+                        'signal_received': True
+                    }
+                )
                 
-                if not should_forward:
-                    logger.warning(f"⚠️ 所有 TradingView 平台的策略过滤器都不匹配，跳过消息转发。type_={type_}, original_data={original_data}")
-                    return
+                # 创建转发任务（异步执行）
+                async def forward_to_platform(pid: int, msg: Message):
+                    """转发消息到指定平台"""
+                    try:
+                        logger.info(f"📤 开始转发 TradingView 信号到平台 {pid}")
+                        logger.debug(f"   消息内容: {msg.content[:100]}...")
+                        logger.debug(f"   源平台ID: {msg.source_platform_id}")
+                        await self.message_manager._on_message_received(msg)
+                        logger.info(f"✅ TradingView 信号已转发到平台 {pid}（_on_message_received 完成）")
+                        return {'platform_id': pid, 'success': True}
+                    except Exception as e:
+                        logger.error(f"❌ 转发 TradingView 信号到平台 {pid} 失败: {e}")
+                        import traceback
+                        logger.error(f"完整错误堆栈:\n{traceback.format_exc()}")
+                        return {'platform_id': pid, 'success': False, 'error': str(e)}
+                
+                forward_tasks.append(forward_to_platform(platform_id, message))
             
-            # 根据原始 action 和 direct 判断交易类型（用于显示）
-            original_action = trade_info.get('original_action', '').upper()
-            direct = trade_info.get('direct', '').upper()
-            
-            # 判断交易类型
-            trade_type = ""
-            if original_action == 'BUY' and direct == 'SHORT':
-                trade_type = "平空"
-            elif original_action == 'SELL' and direct == 'LONG':
-                trade_type = "平多"
-            elif original_action == 'BUY' and direct == 'LONG':
-                trade_type = "开多"
-            elif original_action == 'SELL' and direct == 'SHORT':
-                trade_type = "开空"
-            elif original_action == 'BUY':
-                trade_type = "买入"
-            elif original_action == 'SELL':
-                trade_type = "卖出"
-            elif original_action == 'CLOSE' or trade_info.get('action') == 'close':
-                if direct == 'SHORT':
-                    trade_type = "平空"
-                elif direct == 'LONG':
-                    trade_type = "平多"
-                else:
-                    trade_type = "平仓"
-            else:
-                trade_type = f"{original_action or trade_info.get('action', '')}"
-            
-            # 格式化价格（添加 $ 符号）
-            price = trade_info.get('price', 0)
-            price_str = f"${price:,.2f}" if price else "$0.00"
-            
-            # 格式化合约名称（从 BTCUSD 转为 BTC-USDT-SWAP）
-            symbol = trade_info.get('symbol', '').upper()
-            logger.info(f"🔍 原始合约符号: {symbol}")
-            
-            # 提取基础币种（移除交易对后缀）
-            base_symbol = symbol
-            
-            # 移除常见的交易对后缀（按长度从长到短排序，优先匹配更长的后缀）
-            # 例如：BTCUSDT 应该匹配 USDT 而不是 USD
-            suffixes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH']
-            matched = False
-            for suffix in suffixes:
-                if symbol.endswith(suffix) and len(symbol) > len(suffix):
-                    base_symbol = symbol[:-len(suffix)]
-                    logger.info(f"✅ 合约名称转换: {symbol} -> {base_symbol} (移除后缀: {suffix})")
-                    matched = True
-                    break
-            
-            # 如果移除后缀后为空或太短，尝试提取前3-4个字符作为基础币种
-            if not matched:
-                # 如果没有匹配到后缀，尝试提取前3-4个字符作为基础币种
-                if len(symbol) >= 3:
-                    # 对于 BTCUSD，提取前3个字符 BTC
-                    old_base = base_symbol
-                    base_symbol = symbol[:3]
-                    logger.info(f"✅ 合约名称转换: {symbol} -> {base_symbol} (提取前3个字符, 之前: {old_base})")
-                else:
-                    base_symbol = symbol
-                    logger.info(f"⚠️ 合约名称转换: {symbol} -> {base_symbol} (保持原样)")
-            elif not base_symbol or len(base_symbol) < 2:
-                # 如果匹配到后缀但结果为空或太短，也尝试提取前3个字符
-                if len(symbol) >= 3:
-                    base_symbol = symbol[:3]
-                    logger.info(f"✅ 合约名称转换: {symbol} -> {base_symbol} (匹配后缀后结果太短，提取前3个字符)")
-                else:
-                    base_symbol = symbol
-                    logger.info(f"⚠️ 合约名称转换: {symbol} -> {base_symbol} (保持原样)")
-            
-            # 构建合约名称
-            contract_name = f"{base_symbol.replace('USD', '')}-USDT-SWAP"
-            logger.info(f"📝 最终合约名称: {contract_name} (原始: {symbol}, 基础币种: {base_symbol})")
-            
-            # 获取消息内容
-            message_content_text = trade_info.get('message', '')
-            
-            # 格式化时间（使用中国时区）
-            from datetime import timezone, timedelta
-            china_tz = timezone(timedelta(hours=8))
-            timestamp = trade_info.get('timestamp')
-            
-            # 如果没有提供 timestamp，使用当前时间（中国时区）
-            if timestamp is None:
-                china_time = datetime.now(china_tz)
-            else:
-                # 如果 timestamp 没有时区信息，假设它是服务器本地时间（可能是 UTC+5 或其他）
-                # 但为了统一，我们假设它是 UTC 时间，然后转换为中国时区（UTC+8）
-                if timestamp.tzinfo is None:
-                    # 假设 timestamp 是 UTC 时间
-                    timestamp = timestamp.replace(tzinfo=timezone.utc)
-                # 转换为中国时区
-                china_time = timestamp.astimezone(china_tz)
-            
-            time_str = china_time.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # 构建通知消息（Markdown 格式，格式对齐）
-            # 钉钉 Markdown 需要使用 \n\n 来强制换行，每个字段之间使用双换行
-            message_content = f"""🔔 TradingView 交易信号
-
-📊 **交易类型**: {trade_type}
-
-💵 **价格**:     {price_str}
-
-📈 **合约**:     {contract_name}
-
-🆔 **消息内容**: {message_content_text}
-
-⏰ **时间**:     {time_str}
-
----
-
-*来自千里金交易平台*"""
-            
-            # 尝试获取 TradingView 平台ID（如果配置了多个 TradingView 平台实例）
-            # 注意：这里暂时不设置 source_platform_id，因为无法确定是哪个具体的平台实例
-            # 规则应该通过 source_platform 类型来匹配，而不是 source_platform_id
-            source_platform_id = None
-            # TODO: 如果将来需要支持多个 TradingView 平台实例，可以通过配置或参数传递 platform_id
-            
-            # 创建消息对象（使用 Markdown 格式）
-            # 钉钉 Markdown 需要使用 formatted_content 字段
-            message = Message(
-                content=message_content.strip(),
-                message_type=MessageType.MARKDOWN,  # 使用 Markdown 格式
-                formatted_content=message_content.strip(),  # 钉钉 Markdown 使用 formatted_content
-                source_platform=PlatformType.TRADINGVIEW,  # 使用 TradingView 平台类型
-                source_platform_id=source_platform_id,  # 暂时为 None，通过平台类型匹配
-                source_chat_id="tradingview_webhook",
-                source_user_id="tradingview",
-                source_username="TradingView",
-                extra_data={
-                    'trade_info': trade_info,
-                    'source': 'TradingView',
-                    'signal_received': True
-                }
-            )
-            
-            # 发送通知（转发消息）
-            # 使用 _on_message_received 方法，它会自动应用转发规则
-            logger.info(f"📤 准备转发 TradingView 信号到消息转发系统: {message.content[:100]}...")
-            await self.message_manager._on_message_received(message)
-            logger.info("✅ TradingView 信号已转发到消息转发系统")
+            # 并行执行所有转发任务
+            if forward_tasks:
+                results = await asyncio.gather(*forward_tasks, return_exceptions=True)
+                success_count = sum(1 for r in results if isinstance(r, dict) and r.get('success', False))
+                logger.info(f"📊 转发完成: {success_count}/{len(forward_tasks)} 个平台成功")
             
         except Exception as e:
             logger.error(f"发送 TradingView 信号通知失败: {e}")
@@ -625,6 +527,417 @@ class TradingViewAlertReceiver:
             'config': self.config,
             'timestamp': datetime.now().isoformat()
         }
+    
+    def _get_tradingview_platforms(self) -> List[tuple]:
+        """
+        获取所有 TradingView 平台实例（使用 Redis 缓存优化）
+        
+        Returns:
+            List[tuple]: (platform_id, platform) 元组列表
+        """
+        from core.message_forward.models import PlatformType
+        from typing import List
+        import time
+        import json
+        
+        # 尝试从 Redis 获取平台ID列表和配置
+        try:
+            from core.redis_manager import get_redis_manager
+            redis_manager = get_redis_manager()
+            
+            cache_key_platform_ids = "tradingview:platforms:ids"
+            cache_key_platform_configs = "tradingview:platforms:configs"
+            
+            # 从 Redis 获取平台ID列表和配置
+            cached_platform_ids = redis_manager.get(cache_key_platform_ids)
+            cached_configs = redis_manager.get(cache_key_platform_configs)
+            
+            if cached_platform_ids and cached_configs:
+                logger.debug(f"✅ 从 Redis 缓存获取 TradingView 平台配置")
+                # 从缓存中恢复平台实例
+                tradingview_platforms = []
+                for platform_id in cached_platform_ids:
+                    if str(platform_id) in cached_configs:
+                        # 动态创建平台实例
+                        if self.message_manager:
+                            platform = self.message_manager._get_or_create_platform_instance(platform_id)
+                            if platform:
+                                tradingview_platforms.append((platform_id, platform))
+                
+                if tradingview_platforms:
+                    logger.info(f"✅ 从 Redis 缓存恢复 {len(tradingview_platforms)} 个 TradingView 平台实例")
+                    # 同时更新内存缓存
+                    self._tradingview_platforms_cache = tradingview_platforms
+                    self._cache_timestamp = time.time()
+                    return tradingview_platforms
+        except Exception as e:
+            logger.debug(f"从 Redis 获取缓存失败，使用数据库查询: {e}")
+        
+        # 检查内存缓存是否有效（降级方案）
+        current_time = time.time()
+        if (self._tradingview_platforms_cache is not None and 
+            self._cache_timestamp is not None and 
+            current_time - self._cache_timestamp < self._cache_ttl):
+            logger.debug(f"✅ 使用内存缓存的 TradingView 平台实例（缓存时间: {current_time - self._cache_timestamp:.1f}秒）")
+            return self._tradingview_platforms_cache
+        
+        # 缓存失效或不存在，从数据库重新获取
+        tradingview_platforms = []
+        platform_ids_set = set()  # 用于去重
+        platform_configs = {}  # 保存配置信息用于缓存
+        
+        if not self.message_manager:
+            logger.warning("⚠️ message_manager 未设置，无法获取 TradingView 平台实例")
+            return tradingview_platforms
+        
+        # 来源1: 从 platforms 字典获取
+        if hasattr(self.message_manager, 'platforms'):
+            for platform_id, platform in self.message_manager.platforms.items():
+                if (hasattr(platform, 'platform_type') and 
+                    platform.platform_type == PlatformType.TRADINGVIEW and
+                    platform_id not in platform_ids_set):
+                    tradingview_platforms.append((platform_id, platform))
+                    platform_ids_set.add(platform_id)
+                    # 保存配置信息
+                    if hasattr(platform, 'config'):
+                        platform_configs[platform_id] = platform.config
+        
+        # 来源2: 从监听服务获取
+        if hasattr(self.message_manager, '_listener_service') and self.message_manager._listener_service:
+            if hasattr(self.message_manager._listener_service, 'listening_platforms'):
+                for platform_id, platform in self.message_manager._listener_service.listening_platforms.items():
+                    if (hasattr(platform, 'platform_type') and 
+                        platform.platform_type == PlatformType.TRADINGVIEW and
+                        platform_id not in platform_ids_set):
+                        tradingview_platforms.append((platform_id, platform))
+                        platform_ids_set.add(platform_id)
+                        # 保存配置信息
+                        if hasattr(platform, 'config'):
+                            platform_configs[platform_id] = platform.config
+        
+        # 来源3: 从数据库动态查询所有 TradingView 平台实例
+        if hasattr(self.message_manager, '_db') and self.message_manager._db:
+            try:
+                db_pool = None
+                if hasattr(self.message_manager._db, 'db_pool'):
+                    db_pool = self.message_manager._db.db_pool
+                elif hasattr(self.message_manager._db, '_db_pool'):
+                    db_pool = self.message_manager._db._db_pool
+                elif hasattr(self.message_manager._db, 'query'):
+                    db_pool = self.message_manager._db
+                
+                if db_pool:
+                    sql = "SELECT id, config FROM message_platforms WHERE platform_type = 'tradingview' AND enabled = 1"
+                    rows = db_pool.query(sql)
+                    for row in rows:
+                        platform_id = row['id']
+                        if platform_id not in platform_ids_set:
+                            # 解析配置
+                            config_str = row.get('config', '{}')
+                            try:
+                                if isinstance(config_str, str):
+                                    config = json.loads(config_str)
+                                else:
+                                    config = config_str
+                                platform_configs[platform_id] = config
+                            except:
+                                platform_configs[platform_id] = {}
+                            
+                            # 动态创建平台实例
+                            platform = self.message_manager._get_or_create_platform_instance(platform_id)
+                            if platform:
+                                tradingview_platforms.append((platform_id, platform))
+                                platform_ids_set.add(platform_id)
+            except Exception as e:
+                logger.warning(f"从数据库查询 TradingView 平台实例失败: {e}")
+        
+        # 更新内存缓存
+        self._tradingview_platforms_cache = tradingview_platforms
+        self._cache_timestamp = current_time
+        
+        # 更新 Redis 缓存（异步，不阻塞）
+        try:
+            from core.redis_manager import get_redis_manager
+            redis_manager = get_redis_manager()
+            
+            cache_key_platform_ids = "tradingview:platforms:ids"
+            cache_key_platform_configs = "tradingview:platforms:configs"
+            
+            # 缓存平台ID列表
+            platform_ids_list = list(platform_ids_set)
+            redis_manager.set(cache_key_platform_ids, platform_ids_list, ttl=self._redis_cache_ttl)
+            
+            # 缓存平台配置信息（转换为字符串键）
+            configs_dict = {str(k): v for k, v in platform_configs.items()}
+            redis_manager.set(cache_key_platform_configs, configs_dict, ttl=self._redis_cache_ttl)
+            
+            logger.debug(f"✅ TradingView 平台配置已缓存到 Redis（{len(platform_ids_list)} 个平台，TTL: {self._redis_cache_ttl}秒）")
+        except Exception as e:
+            logger.debug(f"更新 Redis 缓存失败（不影响功能）: {e}")
+        
+        logger.info(f"✅ 获取到 {len(tradingview_platforms)} 个 TradingView 平台实例（已缓存）")
+        return tradingview_platforms
+    
+    def _clear_platforms_cache(self):
+        """清除平台实例缓存（当平台配置更新时调用）"""
+        # 清除内存缓存
+        self._tradingview_platforms_cache = None
+        self._cache_timestamp = None
+        
+        # 清除 Redis 缓存
+        try:
+            from core.redis_manager import get_redis_manager
+            redis_manager = get_redis_manager()
+            
+            cache_key_platform_ids = "tradingview:platforms:ids"
+            cache_key_platform_configs = "tradingview:platforms:configs"
+            
+            redis_manager.delete(cache_key_platform_ids)
+            redis_manager.delete(cache_key_platform_configs)
+            
+            logger.debug("✅ TradingView 平台实例缓存已清除（内存 + Redis）")
+        except Exception as e:
+            logger.debug(f"清除 Redis 缓存失败（不影响功能）: {e}")
+            logger.debug("✅ TradingView 平台实例内存缓存已清除")
+    
+    def _convert_symbol_to_contract_name(self, symbol: str) -> str:
+        """
+        将交易对符号转换为标准合约名称
+        
+        Args:
+            symbol: 原始交易对符号（如 BTCUSDT, BTCUSDT28X2025）
+        
+        Returns:
+            标准合约名称（如 BTC-USDT-SWAP）
+        """
+        if not symbol:
+            return "UNKNOWN-USDT-SWAP"
+        
+        symbol = symbol.upper()
+        logger.debug(f"🔍 转换合约名称: {symbol}")
+        
+        base_symbol = None
+        import re
+        
+        # 方法1: 处理期货合约格式（如 BTCUSDT28X2025, ETHUSDT241229）
+        futures_pattern = r'^([A-Z]{2,5})(USDT|USDC|USD)([0-9A-Z]+)$'
+        futures_match = re.match(futures_pattern, symbol)
+        if futures_match:
+            base_symbol = futures_match.group(1)
+            logger.debug(f"✅ 识别为期货合约格式: {symbol} -> {base_symbol}")
+        
+        # 方法2: 处理标准交易对格式（如 BTCUSDT, ETHUSD）
+        if not base_symbol:
+            suffixes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH']
+            for suffix in suffixes:
+                if symbol.endswith(suffix) and len(symbol) > len(suffix):
+                    base_symbol = symbol[:-len(suffix)]
+                    logger.debug(f"✅ 移除后缀: {symbol} -> {base_symbol} (后缀: {suffix})")
+                    break
+        
+        # 方法3: 提取前3个字符
+        if not base_symbol:
+            if len(symbol) >= 3:
+                base_symbol = symbol[:3]
+                logger.debug(f"✅ 提取前3个字符: {symbol} -> {base_symbol}")
+            else:
+                base_symbol = symbol
+                logger.debug(f"⚠️ 保持原样: {symbol}")
+        
+        # 清理基础币种
+        base_symbol = base_symbol.replace('USD', '').replace('USDT', '').replace('USDC', '')
+        
+        # 如果清理后为空或太短，重新提取
+        if not base_symbol or len(base_symbol) < 2:
+            if len(symbol) >= 3:
+                base_symbol = symbol[:3]
+            else:
+                base_symbol = symbol
+        
+        contract_name = f"{base_symbol}-USDT-SWAP"
+        logger.debug(f"📝 最终合约名称: {contract_name}")
+        return contract_name
+    
+    def _check_platform_filters(
+        self, 
+        platform_id: int, 
+        platform: Any, 
+        strategy: Optional[str], 
+        contract_name: str
+    ) -> bool:
+        """
+        检查平台过滤条件是否匹配
+        
+        Args:
+            platform_id: 平台ID
+            platform: 平台实例
+            strategy: 策略类型（type_ 字段）
+            contract_name: 转换后的合约名称
+        
+        Returns:
+            是否匹配
+        """
+        # 检查策略过滤器
+        strategy_filter = getattr(platform, 'strategy_filter', [])
+        if strategy_filter:  # 如果配置了策略过滤器
+            if not strategy:
+                logger.debug(f"❌ 平台 {platform_id}: 配置了策略过滤器 {strategy_filter}，但消息没有策略标识")
+                return False
+            if strategy not in strategy_filter:
+                logger.debug(f"❌ 平台 {platform_id}: 策略 '{strategy}' 不在过滤器 {strategy_filter} 中")
+                return False
+            logger.debug(f"✅ 平台 {platform_id}: 策略 '{strategy}' 匹配过滤器 {strategy_filter}")
+        else:
+            logger.debug(f"✅ 平台 {platform_id}: 未配置策略过滤器，允许所有策略")
+        
+        # 检查交易对过滤器
+        symbol_filter = getattr(platform, 'symbol_filter', [])
+        if symbol_filter:  # 如果配置了交易对过滤器
+            if contract_name not in symbol_filter:
+                logger.debug(f"❌ 平台 {platform_id}: 合约 '{contract_name}' 不在过滤器 {symbol_filter} 中")
+                return False
+            logger.debug(f"✅ 平台 {platform_id}: 合约 '{contract_name}' 匹配过滤器 {symbol_filter}")
+        else:
+            logger.debug(f"✅ 平台 {platform_id}: 未配置交易对过滤器，允许所有交易对")
+        
+        return True
+    
+    def _format_trade_type(self, action: str, direct: str) -> str:
+        """
+        格式化交易类型显示
+        
+        Args:
+            action: 交易动作（BUY/SELL）
+            direct: 方向（LONG/SHORT）
+        
+        Returns:
+            格式化后的交易类型
+        """
+        action = action.upper() if action else ''
+        direct = direct.upper() if direct else ''
+        
+        if action == 'BUY' and direct == 'SHORT':
+            return "平空"
+        elif action == 'SELL' and direct == 'LONG':
+            return "平多"
+        elif action == 'BUY' and direct == 'LONG':
+            return "开多"
+        elif action == 'SELL' and direct == 'SHORT':
+            return "开空"
+        elif action == 'BUY':
+            return "买入"
+        elif action == 'SELL':
+            return "卖出"
+        elif action == 'CLOSE':
+            if direct == 'SHORT':
+                return "平空"
+            elif direct == 'LONG':
+                return "平多"
+            else:
+                return "平仓"
+        else:
+            return action or "未知"
+    
+    def _format_interval_display(self, interval: str) -> str:
+        """
+        格式化周期显示
+        
+        Args:
+            interval: 周期字符串（如 15M, 1H, 1DAY）
+        
+        Returns:
+            格式化后的周期显示（如 15分钟, 1小时, 1天）
+        """
+        if not interval:
+            return ''
+        
+        interval_upper = interval.upper()
+        
+        if interval_upper.endswith('M'):
+            minutes = interval_upper.replace('M', '')
+            try:
+                minutes_int = int(minutes)
+                return f"{minutes_int}分钟"
+            except ValueError:
+                return interval
+        elif interval_upper.endswith('H'):
+            hours = interval_upper.replace('H', '')
+            try:
+                hours_int = int(hours)
+                return f"{hours_int}小时"
+            except ValueError:
+                return interval
+        elif interval_upper in ['1DAY', '1D', 'DAY', 'D']:
+            return "1天"
+        else:
+            return interval
+    
+    def _create_message_content(self, trade_info: Dict[str, Any], contract_name: str) -> str:
+        """
+        创建消息内容
+        
+        Args:
+            trade_info: 交易信息字典
+            contract_name: 合约名称
+        
+        Returns:
+            格式化的消息内容
+        """
+        # 获取交易类型
+        original_action = trade_info.get('original_action', '').upper()
+        direct = trade_info.get('direct', '').upper()
+        trade_type = self._format_trade_type(original_action, direct)
+        
+        # 格式化价格
+        price = trade_info.get('price', 0)
+        price_str = f"${price:,.2f}" if price else "$0.00"
+        
+        # 格式化时间
+        from datetime import timezone, timedelta
+        china_tz = timezone(timedelta(hours=8))
+        timestamp = trade_info.get('timestamp')
+        
+        if timestamp is None:
+            china_time = datetime.now(china_tz)
+        else:
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            china_time = timestamp.astimezone(china_tz)
+        
+        time_str = china_time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 格式化周期
+        interval = trade_info.get('interval', '')
+        interval_display = self._format_interval_display(interval)
+        
+        # 获取消息内容
+        message_content_text = trade_info.get('message', '')
+        
+        # 构建消息
+        message_content = f"""🔔 TradingView 交易信号
+
+📊 **交易类型**: {trade_type}
+
+💵 **价格**:     {price_str}
+
+📈 **合约**:     {contract_name}"""
+        
+        if interval_display:
+            message_content += f"""
+
+⏱️ **周期**:     {interval_display}"""
+        
+        message_content += f"""
+
+🆔 **消息内容**: {message_content_text}
+
+⏰ **时间**:     {time_str}
+
+---
+
+*来自千里金交易平台*"""
+        
+        return message_content.strip()
     
     def run(self, host: str = '0.0.0.0', port: int = 5001, debug: bool = False):
         """启动Webhook服务器"""

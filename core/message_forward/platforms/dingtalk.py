@@ -301,10 +301,12 @@ class DingTalkPlatform(MessagePlatform):
                     result = await response.json()
                     
                     if result.get('errcode') == 0:
-                        logger.debug(f"✅ 消息已发送到钉钉")
+                        logger.info(f"✅ 钉钉消息发送成功: chat_id={chat_id}")
                         return True
                     else:
-                        logger.error(f"钉钉发送消息失败: {result}")
+                        error_msg = result.get('errmsg', '未知错误')
+                        logger.error(f"❌ 钉钉消息发送失败: chat_id={chat_id}, errcode={result.get('errcode')}, errmsg={error_msg}")
+                        logger.error(f"   请求URL: {url[:100]}...")
                         return False
             except (RuntimeError, Exception) as e:
                 error_msg = str(e).lower()
@@ -319,7 +321,8 @@ class DingTalkPlatform(MessagePlatform):
             
             # 如果需要使用线程池，执行线程池发送逻辑
             if use_thread_pool:
-                logger.warning(f"检测到需要线程池发送的错误，使用全局线程池发送消息")
+                logger.warning(f"⚠️ 检测到事件循环问题，使用全局线程池发送消息到钉钉: chat_id={chat_id}")
+                logger.info(f"📤 线程池发送详情: webhook_url={self.webhook_url[:50] if self.webhook_url else None}..., payload长度={len(str(payload))}")
                 # 清空 session，避免后续再次使用
                 if self.session:
                     try:
@@ -334,55 +337,85 @@ class DingTalkPlatform(MessagePlatform):
                         """在新线程中创建新的事件循环并发送消息"""
                         new_loop = None
                         try:
+                            import threading
+                            thread_id = threading.current_thread().ident
+                            thread_name = threading.current_thread().name
+                            logger.info(f"🔄 [线程 {thread_id}:{thread_name}] 线程池任务开始: chat_id={chat_id}, url={url[:80]}...")
                             # 创建新的事件循环（不使用 nest_asyncio）
                             new_loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(new_loop)
+                            logger.info(f"✅ [线程 {thread_id}] 事件循环创建成功")
                             
                             # 发送消息（在新的事件循环中）
                             async def send():
-                                # 在新的事件循环中创建 session（确保使用正确的事件循环和 timeout）
-                                timeout = aiohttp.ClientTimeout(total=30, connect=10)
-                                session = aiohttp.ClientSession(timeout=timeout, loop=new_loop)
+                                """在新的事件循环中发送消息"""
                                 try:
-                                    async with session.post(url, json=payload) as response:
-                                        result = await response.json()
-                                        return result
-                                finally:
-                                    await session.close()
+                                    logger.info(f"🔄 [线程 {thread_id}] 异步发送函数开始: 创建 session...")
+                                    # 在新的事件循环中创建 session（确保使用正确的事件循环和 timeout）
+                                    timeout = aiohttp.ClientTimeout(total=30, connect=10)
+                                    session = aiohttp.ClientSession(timeout=timeout, loop=new_loop)
+                                    logger.info(f"✅ [线程 {thread_id}] Session 创建成功")
+                                    try:
+                                        logger.info(f"🔄 [线程 {thread_id}] 发送 HTTP POST 请求: url={url[:80]}...")
+                                        async with session.post(url, json=payload) as response:
+                                            logger.info(f"✅ [线程 {thread_id}] 收到 HTTP 响应: status={response.status}")
+                                            result = await response.json()
+                                            logger.info(f"✅ [线程 {thread_id}] JSON 解析成功: errcode={result.get('errcode')}, errmsg={result.get('errmsg', 'N/A')}")
+                                            return result
+                                    finally:
+                                        logger.info(f"🔄 [线程 {thread_id}] 关闭 session...")
+                                        await session.close()
+                                        logger.info(f"✅ [线程 {thread_id}] Session 已关闭")
+                                except Exception as send_error:
+                                    logger.error(f"❌ [线程 {thread_id}] 异步发送函数内部错误: {send_error}")
+                                    import traceback
+                                    logger.error(f"[线程 {thread_id}] 错误堆栈:\n{traceback.format_exc()}")
+                                    raise
                             
                             # 直接运行，不使用 nest_asyncio
+                            logger.info(f"🔄 [线程 {thread_id}] 运行异步函数...")
                             result = new_loop.run_until_complete(send())
+                            logger.info(f"✅ [线程 {thread_id}] 异步函数执行完成，结果: {result}")
                             
                             if result.get('errcode') == 0:
-                                logger.debug(f"✅ 消息已发送到钉钉（全局线程池中重试成功）")
+                                logger.info(f"✅ 钉钉消息发送成功（线程池）: chat_id={chat_id}")
                                 return True
                             else:
-                                logger.error(f"钉钉发送消息失败: {result}")
+                                error_msg = result.get('errmsg', '未知错误')
+                                logger.error(f"❌ 钉钉消息发送失败（线程池）: chat_id={chat_id}, errcode={result.get('errcode')}, errmsg={error_msg}")
+                                logger.error(f"   完整响应: {result}")
                                 return False
                         except Exception as thread_error:
-                            logger.error(f"在全局线程池中发送钉钉消息失败: {thread_error}")
+                            import threading
+                            thread_id = threading.current_thread().ident
+                            logger.error(f"❌ [线程 {thread_id}] 在全局线程池中发送钉钉消息失败: {thread_error}")
                             import traceback
-                            logger.error(traceback.format_exc())
+                            logger.error(f"[线程 {thread_id}] 完整错误堆栈:\n{traceback.format_exc()}")
                             return False
                         finally:
                             # 清理事件循环
+                            import threading
+                            thread_id = threading.current_thread().ident
+                            logger.info(f"🔄 [线程 {thread_id}] 开始清理事件循环...")
                             if new_loop:
                                 try:
                                     # 取消所有待处理的任务
                                     try:
                                         pending = asyncio.all_tasks(new_loop)
                                         if pending:
+                                            logger.debug(f"   取消 {len(pending)} 个待处理任务")
                                             for task in pending:
                                                 task.cancel()
                                             # 等待任务取消完成
                                             new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                                    except:
-                                        pass
+                                    except Exception as cleanup_error:
+                                        logger.warning(f"清理待处理任务时出错: {cleanup_error}")
                                 finally:
                                     try:
                                         new_loop.close()
-                                    except:
-                                        pass
+                                        logger.debug(f"✅ 事件循环已关闭")
+                                    except Exception as close_error:
+                                        logger.warning(f"关闭事件循环时出错: {close_error}")
                                     finally:
                                         try:
                                             asyncio.set_event_loop(None)
@@ -390,15 +423,30 @@ class DingTalkPlatform(MessagePlatform):
                                             pass
                     
                     # 使用全局线程池执行（复用线程，避免频繁创建和销毁）
+                    logger.info(f"🔄 提交任务到全局线程池: chat_id={chat_id}")
                     thread_pool = get_global_thread_pool()
                     future = thread_pool.submit(run_in_thread)
-                    result = future.result(timeout=30)  # 30秒超时
-                    return result
+                    logger.info(f"⏳ 等待线程池任务完成（最多30秒）...")
+                    try:
+                        result = future.result(timeout=30)  # 30秒超时
+                        logger.info(f"✅ 线程池任务完成，结果: {result}")
+                        return result
+                    except Exception as timeout_error:
+                        logger.error(f"❌ 线程池任务超时或异常: {timeout_error}")
+                        import traceback
+                        logger.error(f"完整错误堆栈:\n{traceback.format_exc()}")
+                        # 尝试取消任务
+                        try:
+                            future.cancel()
+                            logger.warning(f"⚠️ 已尝试取消超时的线程池任务")
+                        except:
+                            pass
+                        return False
                         
                 except Exception as retry_error:
-                    logger.error(f"重试发送钉钉消息失败: {retry_error}")
+                    logger.error(f"❌ 线程池重试发送钉钉消息失败: {retry_error}")
                     import traceback
-                    logger.error(traceback.format_exc())
+                    logger.error(f"完整错误堆栈:\n{traceback.format_exc()}")
                     return False
                     
         except Exception as e:
