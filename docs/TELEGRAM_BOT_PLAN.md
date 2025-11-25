@@ -31,6 +31,8 @@
 - 查看平台连接状态
 - 查看消息转发统计
 - 查看系统运行状态
+- 查看限价跟单监控状态
+- 查看带单员交易统计
 
 ### 2. 命令列表
 
@@ -44,6 +46,9 @@
 /enable_rule <rule_id> - 启用转发规则
 /disable_rule <rule_id> - 禁用转发规则
 /stats - 查看统计信息
+/follow_status - 查看限价跟单监控状态
+/follow_traders - 查看监控的带单员列表
+/follow_trades <trader_name> - 查看指定带单员的交易记录
 ```
 
 ### 3. 交互式菜单
@@ -140,6 +145,14 @@ CREATE TABLE telegram_bot_chats (
 - 复用 `MessageForwardManager` 和 `SubscriptionService`
 - 使用现有的数据库连接和配置管理
 - 集成到 `UnifiedListenerService`（如果需要）
+- 集成限价跟单系统，支持查询监控状态和交易记录
+
+#### 4.4 限价跟单功能集成
+- 查询限价跟单监控状态
+- 查看监控的带单员列表（支持多交易所：OKX、Binance、Hyperliquid）
+- 查看指定带单员的交易记录
+- 查看限价跟单订单状态
+- 支持通过 Bot 管理限价跟单策略（未来扩展）
 
 ## 🔧 实现步骤
 
@@ -205,6 +218,22 @@ pip install python-telegram-bot==20.7
 - 消息转发统计
 - 订阅统计
 - 平台状态统计
+- 限价跟单统计（带单员数量、交易数量、订单状态等）
+
+#### 4.4 限价跟单查询
+- `/follow_status`：查看限价跟单监控状态
+  - 监控的带单员数量
+  - 各交易所带单员分布
+  - 最近处理的交易数量
+  - 系统运行状态
+- `/follow_traders`：查看监控的带单员列表
+  - 支持分页浏览
+  - 显示交易所类型（OKX/Binance/Hyperliquid）
+  - 显示最后处理时间
+- `/follow_trades <trader_name>`：查看指定带单员的交易记录
+  - 显示最近的交易记录
+  - 支持分页浏览
+  - 显示交易详情（交易对、方向、数量、价格等）
 
 ### 阶段 5：测试和优化（2-3天）
 
@@ -414,4 +443,7 @@ class TelegramBotPlatform(MessagePlatform):
 - [ ] 支持消息模板
 - [ ] 支持数据分析报告
 - [ ] 支持 Webhook 模式部署
+- [ ] 支持通过 Bot 管理限价跟单策略（启用/禁用、添加/删除带单员）
+- [ ] 支持限价跟单交易通知（新交易、订单状态变化等）
+- [ ] 支持限价跟单统计报告（每日/每周/每月）
 

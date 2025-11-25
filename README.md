@@ -387,11 +387,13 @@ docker run -d -p 5001:5001 -p 8080:8080 follow-trade
 
 ```bash
 # 1. 系统服务化
-sudo nano /etc/systemd/system/follow-trade.service
+sudo chmod +x ./scripts/deploy_services.sh
+- 按照指令配置服务
 
 # 2. 启动服务
-sudo systemctl start follow-trade
-sudo systemctl enable follow-trade
+- 服务启动有两种方式
+- 首先 sudo chmod +x ./scripts/switch_trade_mode.sh
+./scripts/switch_trade_mode.sh demo/real # 执行模拟环境还是实盘环境
 ```
 
 ## ❓ 常见问题
@@ -440,7 +442,17 @@ A:
 
 查看详细的更新日志和版本历史：[CHANGELOG.md](CHANGELOG.md)
 
-### 最新版本 [v1.1.0] - 2025-11-19
+### 最新更新 [v1.1.5] - 2025-11-19
+#### 🎯 主要更新
+- ✨ **消息转发**：支持消息转发直接跟单交易
+- ✨ **会员服务**：优化会员服务UI, 修复跳转bug
+- 🔧 **telegrambot与订阅码**：支持telegrambot实现订阅功能,并且在web端生成对应的订阅码
+- 🔧 **hyperliquid接口优化**：现在可以直接执行跟单交易
+- 🐛 **热门带单员新增更多带单员**
+- 🐛 **限价跟单服务支持多交易所响应**
+
+
+### 上一次版本 [v1.1.0] - 2025-11-19
 
 #### 🎯 主要更新
 - ✨ **TradingView策略过滤器**：支持为每个平台实例配置独立的策略过滤器
