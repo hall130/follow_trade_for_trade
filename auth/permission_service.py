@@ -58,14 +58,24 @@ class PermissionService:
         
         # 系统模块定义
         self.system_modules = {
+            'dashboard': '仪表板',
             'signal_sources': '信号源管理',
+            'signal_trades': '信号源交易',
             'customers': '客户管理',
             'strategies': '策略管理',
             'rules': '规则管理',
-            'market_follow': '现价跟单',
+            'positions': '当前持仓',
+            'trades': '交易记录',
+            'market_follow': '市价跟单',
             'limit_follow': '限价跟单',
+            'popular_traders': '热门带单员',
+            'whale_traders': '巨鲸交易员',
+            'hyperliquid': 'Hyperliquid跟单',
             'backtest': '策略回测',
             'strategy_live': '策略实盘',
+            'forward_trade': '转发交易',
+            'market_maker': '刷单做市',
+            'risk_control': '风险管理',
             'message_forward': '消息转发',
             'system_settings': '系统设置',
             'users': '用户管理'
@@ -104,7 +114,7 @@ class PermissionService:
             
             permissions = {}
             
-            # 1. 优先获取用户级别的权限（user_permissions表）
+            # 1. 优先获取用户级别的权限（user_permissions表，包括手动授予和自动同步的）
             user_perms = conn.query("""
                 SELECT module_code, permission_level
                 FROM user_permissions
@@ -116,7 +126,26 @@ class PermissionService:
             for row in user_perms:
                 permissions[row['module_code']] = row['permission_level']
             
-            # 2. 获取角色权限（作为默认权限，如果没有用户级别权限）
+            # 2. 获取会员等级权限（如果用户有有效会员且模块权限不在用户权限中）
+            membership_perms = conn.query("""
+                SELECT DISTINCT mlp.module_code, mlp.permission_level
+                FROM user_memberships um
+                JOIN membership_level_permissions mlp ON um.level_id = mlp.level_id
+                WHERE um.user_id = %s 
+                AND um.status = 'active'
+                AND (um.expires_at IS NULL OR um.expires_at > NOW())
+                AND mlp.module_code NOT IN (
+                    SELECT module_code FROM user_permissions 
+                    WHERE user_id = %s AND (expires_at IS NULL OR expires_at > NOW())
+                )
+                ORDER BY mlp.module_code
+            """, (user_id, user_id))
+            
+            for row in membership_perms:
+                if row['module_code'] not in permissions:  # 只添加用户权限中没有的
+                    permissions[row['module_code']] = row['permission_level']
+            
+            # 3. 获取角色权限（作为默认权限，如果没有用户级别权限和会员权限）
             role_perms = conn.query("""
                 SELECT m.module_code, p.permission_level
                 FROM users u
@@ -125,12 +154,20 @@ class PermissionService:
                 JOIN permissions p ON rp.permission_id = p.id
                 JOIN modules m ON p.module_id = m.id
                 WHERE u.id = %s
-                AND m.module_code NOT IN (SELECT module_code FROM user_permissions WHERE user_id = %s)
+                AND m.module_code NOT IN (
+                    SELECT module_code FROM user_permissions WHERE user_id = %s
+                    UNION
+                    SELECT DISTINCT mlp.module_code 
+                    FROM user_memberships um
+                    JOIN membership_level_permissions mlp ON um.level_id = mlp.level_id
+                    WHERE um.user_id = %s AND um.status = 'active'
+                    AND (um.expires_at IS NULL OR um.expires_at > NOW())
+                )
                 ORDER BY m.module_code
-            """, (user_id, user_id))
+            """, (user_id, user_id, user_id))
             
             for row in role_perms:
-                if row['module_code'] not in permissions:  # 只添加用户权限中没有的
+                if row['module_code'] not in permissions:  # 只添加用户权限和会员权限中没有的
                     permissions[row['module_code']] = row['permission_level']
             
             # 更新缓存
@@ -138,7 +175,7 @@ class PermissionService:
                 import time
                 self._permission_cache[cache_key] = (permissions, time.time())
             
-            logger.debug(f"用户ID {user_id} 权限: {permissions} (用户权限: {len(user_perms)}, 角色权限: {len(role_perms)})")
+            logger.debug(f"用户ID {user_id} 权限: {permissions} (用户权限: {len(user_perms)}, 会员权限: {len(membership_perms)}, 角色权限: {len(role_perms)})")
             return permissions
             
         except Exception as e:
@@ -162,7 +199,14 @@ class PermissionService:
             logger.debug("清除所有权限缓存")
     
     def check_permission(self, user_id: int, module_code: str, required_level: str = 'read') -> bool:
-        """检查用户是否有指定模块的权限"""
+        """
+        检查用户是否有指定模块的权限
+        
+        优先级：
+        1. 管理员角色（拥有所有权限）
+        2. 用户直接权限（user_permissions表，手动授予的权限）
+        3. 会员等级权限（user_memberships + membership_level_permissions）
+        """
         try:
             # 获取用户信息
             conn = get_db_pool()
@@ -177,34 +221,85 @@ class PermissionService:
                 return False
             
             user_role = result[0]['role']
-            logger.info(f"用户ID {user_id} 角色: {user_role}")
+            logger.debug(f"用户ID {user_id} 角色: {user_role}")
             
             # 管理员拥有所有权限
             if user_role == 'admin':
-                logger.info(f"管理员用户 {user_id} 拥有所有权限")
+                logger.debug(f"管理员用户 {user_id} 拥有所有权限")
                 return True
             
-            # 检查具体权限
-            permissions = self.get_user_permissions(user_id)
-            logger.info(f"用户ID {user_id} 权限: {permissions}")
+            # 1. 检查用户直接权限（手动授予的权限，优先级最高）
+            user_permission_result = conn.query("""
+                SELECT permission_level
+                FROM user_permissions
+                WHERE user_id = %s AND module_code = %s
+                AND (expires_at IS NULL OR expires_at > NOW())
+                AND granted_by IS NOT NULL
+            """, (user_id, module_code))
             
-            user_permission = permissions.get(module_code)
+            if user_permission_result and len(user_permission_result) > 0:
+                user_permission = user_permission_result[0]['permission_level']
+                required_weight = self.permission_weights.get(required_level, 0)
+                user_weight = self.permission_weights.get(user_permission, 0)
+                
+                has_permission = user_weight >= required_weight
+                logger.debug(f"用户ID {user_id} {module_code}:{required_level} 权限检查: {has_permission} (用户直接权限:{user_permission})")
+                
+                if has_permission:
+                    return True
             
-            if not user_permission:
-                logger.warning(f"用户ID {user_id} 没有 {module_code} 模块权限")
-                return False
+            # 2. 检查会员等级权限
+            membership_result = conn.query("""
+                SELECT mlp.permission_level
+                FROM user_memberships um
+                JOIN membership_level_permissions mlp ON um.level_id = mlp.level_id
+                WHERE um.user_id = %s 
+                AND um.status = 'active'
+                AND mlp.module_code = %s
+                AND (um.expires_at IS NULL OR um.expires_at > NOW())
+                ORDER BY um.started_at DESC
+                LIMIT 1
+            """, (user_id, module_code))
             
-            # 比较权限级别
-            required_weight = self.permission_weights.get(required_level, 0)
-            user_weight = self.permission_weights.get(user_permission, 0)
+            if membership_result and len(membership_result) > 0:
+                membership_permission = membership_result[0]['permission_level']
+                required_weight = self.permission_weights.get(required_level, 0)
+                membership_weight = self.permission_weights.get(membership_permission, 0)
+                
+                has_permission = membership_weight >= required_weight
+                logger.debug(f"用户ID {user_id} {module_code}:{required_level} 权限检查: {has_permission} (会员权限:{membership_permission})")
+                
+                if has_permission:
+                    return True
             
-            has_permission = user_weight >= required_weight
-            logger.info(f"用户ID {user_id} {module_code}:{required_level} 权限检查: {has_permission} (用户权限:{user_permission}, 需要权限:{required_level})")
+            # 3. 检查自动同步的会员权限（granted_by IS NULL 表示自动同步的权限）
+            auto_permission_result = conn.query("""
+                SELECT permission_level
+                FROM user_permissions
+                WHERE user_id = %s AND module_code = %s
+                AND (expires_at IS NULL OR expires_at > NOW())
+                AND granted_by IS NULL
+            """, (user_id, module_code))
             
-            return has_permission
+            if auto_permission_result and len(auto_permission_result) > 0:
+                auto_permission = auto_permission_result[0]['permission_level']
+                required_weight = self.permission_weights.get(required_level, 0)
+                auto_weight = self.permission_weights.get(auto_permission, 0)
+                
+                has_permission = auto_weight >= required_weight
+                logger.debug(f"用户ID {user_id} {module_code}:{required_level} 权限检查: {has_permission} (自动同步权限:{auto_permission})")
+                
+                if has_permission:
+                    return True
+            
+            # 4. 没有找到权限，返回 False
+            logger.debug(f"用户ID {user_id} 没有 {module_code} 模块的权限")
+            return False
             
         except Exception as e:
             logger.error(f"权限检查失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def has_permission(self, user_id: int, module_code: str, required_level: str = 'read') -> bool:
@@ -325,10 +420,14 @@ class PermissionService:
                 logger.error(f"用户 {user_id} 不存在")
                 return False
             
-            # 先删除该用户的所有自定义权限
-            conn.execute("DELETE FROM user_permissions WHERE user_id = %s", (user_id,))
+            # 先删除该用户的所有手动授予的权限（保留自动同步的会员权限）
+            # 只删除 granted_by IS NOT NULL 的权限，保留 granted_by IS NULL 的自动同步权限
+            conn.execute("""
+                DELETE FROM user_permissions 
+                WHERE user_id = %s AND granted_by IS NOT NULL
+            """, (user_id,))
             
-            # 批量插入新权限
+            # 批量插入/更新新权限（使用 ON DUPLICATE KEY UPDATE 避免重复键错误）
             if permissions:
                 valid_permissions = []
                 for perm in permissions:
@@ -352,12 +451,16 @@ class PermissionService:
                             
                             valid_permissions.append((user_id, module_code, permission_level, granted_by))
                 
-                # 批量插入有效权限
+                # 批量插入/更新有效权限（使用 ON DUPLICATE KEY UPDATE）
                 if valid_permissions:
                     for perm in valid_permissions:
                         conn.execute("""
                             INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by)
                             VALUES (%s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE 
+                                permission_level = VALUES(permission_level),
+                                granted_by = VALUES(granted_by),
+                                granted_at = NOW()
                         """, perm)
             
             # 清除缓存
@@ -381,7 +484,7 @@ class PermissionService:
                 'user_id': int,
                 'username': str,
                 'role': str,
-                'permissions': [{'module_code': str, 'permission_level': str, 'source': 'user'|'role'}]
+                'permissions': [{'module_code': str, 'permission_level': str, 'source': 'custom'|'membership'|'role'}]
             }
         """
         try:
@@ -394,12 +497,24 @@ class PermissionService:
             
             user = user_info[0]
             
-            # 获取用户级别的权限
+            # 获取用户级别的权限（区分手动授予和自动同步的会员权限）
             user_perms = conn.query("""
-                SELECT module_code, permission_level
+                SELECT module_code, permission_level, granted_by
                 FROM user_permissions
                 WHERE user_id = %s
                 AND (expires_at IS NULL OR expires_at > NOW())
+            """, (user_id,))
+            
+            # 获取会员信息
+            membership_info = conn.query("""
+                SELECT ml.level_code, ml.level_name, um.expires_at
+                FROM user_memberships um
+                JOIN membership_levels ml ON um.level_id = ml.id
+                WHERE um.user_id = %s 
+                AND um.status = 'active'
+                AND (um.expires_at IS NULL OR um.expires_at > NOW())
+                ORDER BY um.started_at DESC
+                LIMIT 1
             """, (user_id,))
             
             # 获取角色权限
@@ -413,32 +528,47 @@ class PermissionService:
                 WHERE u.id = %s
             """, (user_id,))
             
-            # 合并权限
+            # 合并权限，明确标识权限来源
             permissions = {}
-            for row in user_perms:
-                permissions[row['module_code']] = {
-                    'module_code': row['module_code'],
-                    'permission_level': row['permission_level'],
-                    'source': 'user'
-                }
             
+            # 1. 用户级别的权限（手动授予的）
+            for row in user_perms:
+                if row['granted_by'] is not None:
+                    # 手动授予的权限
+                    permissions[row['module_code']] = {
+                        'module_code': row['module_code'],
+                        'permission_level': row['permission_level'],
+                        'source': 'custom'  # 自定义权限
+                    }
+                else:
+                    # 自动同步的会员权限
+                    permissions[row['module_code']] = {
+                        'module_code': row['module_code'],
+                        'permission_level': row['permission_level'],
+                        'source': 'membership'  # 会员权限
+                    }
+            
+            # 2. 角色权限（如果模块还没有权限）
             for row in role_perms:
                 if row['module_code'] not in permissions:
                     permissions[row['module_code']] = {
                         'module_code': row['module_code'],
                         'permission_level': row['permission_level'],
-                        'source': 'role'
+                        'source': 'role'  # 角色权限
                     }
             
             return {
                 'user_id': user['id'],
                 'username': user['username'],
                 'role': user['role'],
+                'membership': membership_info[0] if membership_info else None,
                 'permissions': list(permissions.values())
             }
             
         except Exception as e:
             logger.error(f"获取用户权限详情失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {}
     
     def get_all_modules(self) -> List[Dict[str, str]]:
@@ -453,40 +583,76 @@ class PermissionService:
         return modules
     
     def get_users_with_permissions(self) -> List[Dict[str, Any]]:
-        """获取所有用户及其权限"""
+        """获取所有用户及其权限（区分权限来源：custom/membership/role）"""
         try:
             users_dict = {}
             conn = get_db_pool()
-            conn.execute("""
+            
+            # 获取所有用户及其权限（包括权限来源和会员信息）
+            results = conn.query("""
                 SELECT 
                     u.id, u.username, u.full_name, u.role, u.status,
-                    up.module_code, up.permission_level, up.granted_at
+                    up.module_code, up.permission_level, up.granted_at, up.granted_by,
+                    ml.level_code, ml.level_name
                 FROM users u
                 LEFT JOIN user_permissions up ON u.id = up.user_id
+                    AND (up.expires_at IS NULL OR up.expires_at > NOW())
+                LEFT JOIN user_memberships um ON u.id = um.user_id 
+                    AND um.status = 'active'
+                    AND (um.expires_at IS NULL OR um.expires_at > NOW())
+                LEFT JOIN membership_levels ml ON um.level_id = ml.id
                 WHERE u.status = 'active'
                 ORDER BY u.username, up.module_code
             """)
             
-            results = conn.query("""
-                SELECT 
-                    u.id, u.username, u.full_name, u.role, u.status,
-                    up.module_code, up.permission_level, up.granted_at
-                FROM users u
-                LEFT JOIN user_permissions up ON u.id = up.user_id
-                WHERE u.status = 'active'
-                ORDER BY u.username, up.module_code""")
-                
             for row in results:
-                if row['module_code']:  # module_code
-                    users_dict[row['id']]['permissions'][row['module_code']] = {
-                        'permission_level': row['permission_level'],
-                        'granted_at': row['granted_at']
+                user_id = row['id']
+                if user_id not in users_dict:
+                    users_dict[user_id] = {
+                        'id': user_id,
+                        'username': row['username'],
+                        'full_name': row['full_name'],
+                        'role': row['role'],
+                        'status': row['status'],
+                        'membership': {
+                            'level_code': row['level_code'],
+                            'level_name': row['level_name']
+                        } if row['level_code'] else None,
+                        'permissions': {},
+                        'permission_count': 0,
+                        'permission_source': 'role'  # 默认来源
                     }
+                
+                # 统计权限
+                if row['module_code']:
+                    if row['module_code'] not in users_dict[user_id]['permissions']:
+                        users_dict[user_id]['permissions'][row['module_code']] = {
+                            'permission_level': row['permission_level'],
+                            'granted_at': row['granted_at'],
+                            'source': 'custom' if row['granted_by'] is not None else 'membership'
+                        }
+                        users_dict[user_id]['permission_count'] += 1
+                        
+                        # 确定权限来源（优先级：custom > membership > role）
+                        if row['granted_by'] is not None:
+                            users_dict[user_id]['permission_source'] = 'custom'
+                        elif row['level_code'] and users_dict[user_id]['permission_source'] == 'role':
+                            users_dict[user_id]['permission_source'] = 'membership'
             
-            return list(users_dict.values())
+            # 转换为列表并添加权限来源标签
+            users_list = []
+            for user in users_dict.values():
+                # 如果没有自定义权限或会员权限，使用角色权限
+                if user['permission_count'] == 0:
+                    user['permission_source'] = 'role'
+                users_list.append(user)
+            
+            return users_list
             
         except Exception as e:
             logger.error(f"获取用户权限列表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     def filter_data_by_owner(self, user_id: int, table_name: str, owner_field: str = 'owner_user_id') -> str:

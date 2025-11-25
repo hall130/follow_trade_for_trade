@@ -288,6 +288,11 @@ class MessageForwardAPIService:
     async def add_platform(self, platform_data: Dict[str, Any]) -> Dict[str, Any]:
         """添加平台"""
         try:
+            # 对于 Telegram Bot 平台，如果 webhook_url 包含 {platform_id}，需要先保存获取 platform_id 后再替换
+            config = platform_data.get('config', {})
+            webhook_url = config.get('webhook_url', '')
+            needs_platform_id_replacement = '{platform_id}' in webhook_url if webhook_url else False
+            
             # 保存到数据库
             platform_id = self.db.add_platform(platform_data)
             
@@ -296,6 +301,25 @@ class MessageForwardAPIService:
                     'success': False,
                     'message': '添加平台失败，可能平台名称已存在'
                 }
+            
+            # 如果 webhook_url 包含 {platform_id}，替换为实际的 platform_id
+            if needs_platform_id_replacement and webhook_url:
+                try:
+                    updated_webhook_url = webhook_url.replace('{platform_id}', str(platform_id))
+                    config['webhook_url'] = updated_webhook_url
+                    
+                    # 更新数据库中的配置
+                    import json
+                    config_json = json.dumps(config, ensure_ascii=False)
+                    update_sql = """
+                        UPDATE message_platforms 
+                        SET config = %s 
+                        WHERE id = %s
+                    """
+                    self.db.db_pool.execute(update_sql, (config_json, platform_id))
+                    logger.info(f"✅ 已更新 webhook_url: {updated_webhook_url}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 更新 webhook_url 失败: {e}")
             
             # 平台添加成功，监听服务会在有规则需要时自动连接此平台
             # 不需要手动添加到管理器，UnifiedListenerService 会根据规则自动管理
@@ -314,10 +338,18 @@ class MessageForwardAPIService:
                 'message': f'添加失败: {str(e)}'
             }
     
-    def get_platforms(self, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
-        """获取平台列表（包含实时连接状态，支持分页）"""
+    def get_platforms(self, page: int = 1, page_size: int = 20, platform_type: str = '') -> Dict[str, Any]:
+        """获取平台列表（包含实时连接状态，支持分页和按平台类型过滤）"""
         try:
             all_platforms = self.db.get_platforms()
+            
+            # 如果指定了 platform_type，进行过滤
+            if platform_type:
+                platform_type_lower = platform_type.lower()
+                all_platforms = [
+                    p for p in all_platforms 
+                    if p.get('platform_type', '').lower() == platform_type_lower
+                ]
             
             # 分页处理
             total = len(all_platforms)

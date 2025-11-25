@@ -1287,7 +1287,28 @@ class OKXTradingApp {
         }
 
         this.currentPage = pageName;
-        this.loadPageData(pageName);
+        
+        // 对于会员服务页面，确保页面激活后再加载数据
+        if (pageName === 'membership-service') {
+            // 等待DOM更新，确保页面已激活
+            setTimeout(() => {
+                const membershipPage = document.getElementById('membership-service-page');
+                if (membershipPage && membershipPage.classList.contains('active')) {
+                    this.loadPageData(pageName);
+                } else {
+                    console.warn('会员服务页面未激活，重试加载...');
+                    // 如果页面未激活，强制激活并重试
+                    if (membershipPage) {
+                        membershipPage.classList.add('active');
+                    }
+                    setTimeout(() => {
+                        this.loadPageData(pageName);
+                    }, 50);
+                }
+            }, 100);
+        } else {
+            this.loadPageData(pageName);
+        }
         
         // 启动新页面的自动刷新
         this.startAutoRefresh(pageName);
@@ -1343,6 +1364,12 @@ class OKXTradingApp {
                 break;
             case 'message-forward':
                 this.loadMessageForwardData();
+                break;
+            case 'membership-service':
+                this.loadMembershipServiceData();
+                break;
+            case 'redemption-codes':
+                this.loadRedemptionCodesData();
                 break;
             case 'user-management':
                 this.loadUserManagementData();
@@ -7821,11 +7848,34 @@ class OKXTradingApp {
         // 热门带单员筛选变化事件
         const exchangeSelect = document.getElementById('popularTradersExchange');
         const sortBySelect = document.getElementById('popularTradersSortBy');
+        
+        // 当筛选条件改变时，重置页码
+        if (exchangeSelect) {
+            exchangeSelect.addEventListener('change', () => {
+                this.popularTradersCurrentPage = 1;
+                this.loadPopularTraders(1);
+            });
+        }
+        if (sortBySelect) {
+            sortBySelect.addEventListener('change', () => {
+                this.popularTradersCurrentPage = 1;
+                this.loadPopularTraders(1);
+            });
+        }
         const limitSelect = document.getElementById('popularTradersLimit');
         const fetchAllCheckbox = document.getElementById('popularTradersFetchAll');
         
         if (exchangeSelect) {
-            exchangeSelect.addEventListener('change', () => self.loadPopularTraders());
+            exchangeSelect.addEventListener('change', () => {
+                self.popularTradersCurrentPage = 1;
+                self.loadPopularTraders(1);
+            });
+        }
+        if (sortBySelect) {
+            sortBySelect.addEventListener('change', () => {
+                self.popularTradersCurrentPage = 1;
+                self.loadPopularTraders(1);
+            });
         }
         if (sortBySelect) {
             sortBySelect.addEventListener('change', () => self.loadPopularTraders());
@@ -9656,7 +9706,7 @@ class OKXTradingApp {
     
     // ==================== 热门带单员模块 ====================
     
-    async loadPopularTraders() {
+    async loadPopularTraders(page = 1) {
         try {
             const container = document.getElementById('popularTradersContainer');
             if (!container) return;
@@ -9672,6 +9722,12 @@ class OKXTradingApp {
                     </div>
                 </div>
             `;
+            
+            // 隐藏分页控件
+            const paginationEl = document.getElementById('popularTradersPagination');
+            if (paginationEl) {
+                paginationEl.style.display = 'none';
+            }
             
             // 获取筛选参数
             const exchange = document.getElementById('popularTradersExchange')?.value || 'all';
@@ -9702,7 +9758,7 @@ class OKXTradingApp {
                 fetch_all: fetchAll ? 'true' : 'false'
             });
             
-            // 只有当limit有值时才添加limit参数
+            // 只有当limit有值时才添加limit参数（不使用limit时启用分页）
             if (limit && limit > 0) {
                 params.append('limit', limit);
             }
@@ -9744,7 +9800,17 @@ class OKXTradingApp {
                     }
                 }
                 
-                this.renderPopularTraders(tradersList);
+                // 保存所有数据用于分页
+                this.popularTradersAllData = tradersList;
+                this.popularTradersCurrentPage = page;
+                
+                // 如果没有设置limit，启用分页
+                if (!limit || limit <= 0) {
+                    this.renderPopularTradersWithPagination(tradersList, page);
+                } else {
+                    // 如果设置了limit，直接显示所有数据（不分页）
+                    this.renderPopularTraders(tradersList);
+                }
             } else {
                 throw new Error(result.message || '获取热门带单员失败');
             }
@@ -9762,6 +9828,127 @@ class OKXTradingApp {
                 `;
             }
             this.showToast('错误', '加载热门带单员失败', 'error');
+        }
+    }
+    
+    renderPopularTradersWithPagination(traders, page = 1) {
+        const pageSize = this.popularTradersPageSize;
+        const totalPages = Math.ceil(traders.length / pageSize);
+        const startIndex = (page - 1) * pageSize;
+        const endIndex = startIndex + pageSize;
+        const pageData = traders.slice(startIndex, endIndex);
+        
+        // 渲染当前页数据
+        this.renderPopularTraders(pageData);
+        
+        // 渲染分页控件
+        if (totalPages > 1) {
+            const paginationEl = document.getElementById('popularTradersPagination');
+            const paginationList = document.getElementById('popularTradersPaginationList');
+            
+            if (paginationEl && paginationList) {
+                paginationEl.style.display = 'block';
+                paginationList.innerHTML = '';
+                
+                // 上一页按钮
+                const prevLi = document.createElement('li');
+                prevLi.className = `page-item ${page === 1 ? 'disabled' : ''}`;
+                prevLi.innerHTML = `
+                    <a class="page-link" href="#" data-page="${page - 1}" ${page === 1 ? 'tabindex="-1" aria-disabled="true"' : ''}>
+                        <i class="bi bi-chevron-left"></i> 上一页
+                    </a>
+                `;
+                if (page > 1) {
+                    prevLi.querySelector('a').addEventListener('click', (e) => {
+                        e.preventDefault();
+                        this.loadPopularTraders(page - 1);
+                    });
+                }
+                paginationList.appendChild(prevLi);
+                
+                // 页码按钮
+                const maxVisiblePages = 7;
+                let startPage = Math.max(1, page - Math.floor(maxVisiblePages / 2));
+                let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+                
+                if (endPage - startPage < maxVisiblePages - 1) {
+                    startPage = Math.max(1, endPage - maxVisiblePages + 1);
+                }
+                
+                // 第一页
+                if (startPage > 1) {
+                    const firstLi = document.createElement('li');
+                    firstLi.className = 'page-item';
+                    firstLi.innerHTML = `<a class="page-link" href="#" data-page="1">1</a>`;
+                    firstLi.querySelector('a').addEventListener('click', (e) => {
+                        e.preventDefault();
+                        this.loadPopularTraders(1);
+                    });
+                    paginationList.appendChild(firstLi);
+                    
+                    if (startPage > 2) {
+                        const ellipsisLi = document.createElement('li');
+                        ellipsisLi.className = 'page-item disabled';
+                        ellipsisLi.innerHTML = '<span class="page-link">...</span>';
+                        paginationList.appendChild(ellipsisLi);
+                    }
+                }
+                
+                // 中间页码
+                for (let i = startPage; i <= endPage; i++) {
+                    const pageLi = document.createElement('li');
+                    pageLi.className = `page-item ${i === page ? 'active' : ''}`;
+                    pageLi.innerHTML = `<a class="page-link" href="#" data-page="${i}">${i}</a>`;
+                    if (i !== page) {
+                        pageLi.querySelector('a').addEventListener('click', (e) => {
+                            e.preventDefault();
+                            this.loadPopularTraders(i);
+                        });
+                    }
+                    paginationList.appendChild(pageLi);
+                }
+                
+                // 最后一页
+                if (endPage < totalPages) {
+                    if (endPage < totalPages - 1) {
+                        const ellipsisLi = document.createElement('li');
+                        ellipsisLi.className = 'page-item disabled';
+                        ellipsisLi.innerHTML = '<span class="page-link">...</span>';
+                        paginationList.appendChild(ellipsisLi);
+                    }
+                    
+                    const lastLi = document.createElement('li');
+                    lastLi.className = 'page-item';
+                    lastLi.innerHTML = `<a class="page-link" href="#" data-page="${totalPages}">${totalPages}</a>`;
+                    lastLi.querySelector('a').addEventListener('click', (e) => {
+                        e.preventDefault();
+                        this.loadPopularTraders(totalPages);
+                    });
+                    paginationList.appendChild(lastLi);
+                }
+                
+                // 下一页按钮
+                const nextLi = document.createElement('li');
+                nextLi.className = `page-item ${page === totalPages ? 'disabled' : ''}`;
+                nextLi.innerHTML = `
+                    <a class="page-link" href="#" data-page="${page + 1}" ${page === totalPages ? 'tabindex="-1" aria-disabled="true"' : ''}>
+                        下一页 <i class="bi bi-chevron-right"></i>
+                    </a>
+                `;
+                if (page < totalPages) {
+                    nextLi.querySelector('a').addEventListener('click', (e) => {
+                        e.preventDefault();
+                        this.loadPopularTraders(page + 1);
+                    });
+                }
+                paginationList.appendChild(nextLi);
+            }
+        } else {
+            // 如果只有一页，隐藏分页控件
+            const paginationEl = document.getElementById('popularTradersPagination');
+            if (paginationEl) {
+                paginationEl.style.display = 'none';
+            }
         }
     }
     
@@ -13082,6 +13269,1039 @@ class OKXTradingApp {
         }
     }
     
+    // ==================== 兑换码管理模块 ====================
+    
+    // 兑换码管理相关变量
+    redemptionCodesCurrentPage = 1;
+    redemptionCodesPageSize = 20;
+    redemptionCodesFilters = {
+        exchange: '',
+        status: '',
+        search: ''
+    };
+    
+    // ==================== 会员服务模块 ====================
+    
+    // 加载会员服务数据
+    async loadMembershipServiceData() {
+        try {
+            console.log('开始加载会员服务数据...');
+            const response = await this.apiRequest(`${this.apiBaseUrl}/membership/service`);
+            if (response && response.ok) {
+                const data = await response.json();
+                console.log('会员服务数据:', data);
+                if (data.success) {
+                    this.membershipLevels = data.data.levels || [];
+                    this.currentMembership = data.data.current_membership || null;
+                    this.daysRemaining = data.data.days_remaining || null;
+                    
+                    console.log('会员等级数量:', this.membershipLevels.length);
+                    console.log('会员等级列表:', this.membershipLevels);
+                    
+                    // 确保页面已激活后再渲染
+                    console.log('准备延迟渲染，等待页面激活...');
+                    const renderWithRetry = (retryCount = 0) => {
+                        console.log(`\n=== renderWithRetry 调用 (重试次数: ${retryCount}) ===`);
+                        const membershipPage = document.getElementById('membership-service-page');
+                        const container = document.getElementById('membershipLevelsContainer');
+                        
+                        console.log('查找页面元素...');
+                        if (!membershipPage) {
+                            console.error('❌ 找不到会员服务页面元素');
+                            return;
+                        }
+                        console.log('✅ 找到页面元素');
+                        console.log('页面是否激活:', membershipPage.classList.contains('active'));
+                        
+                        if (!membershipPage.classList.contains('active')) {
+                            console.warn(`页面未激活，重试 ${retryCount + 1}/3...`);
+                            if (retryCount < 3) {
+                                setTimeout(() => renderWithRetry(retryCount + 1), 100);
+                                return;
+                            } else {
+                                // 强制激活页面
+                                membershipPage.classList.add('active');
+                                console.log('🔧 强制激活会员服务页面');
+                            }
+                        }
+                        
+                        console.log('查找容器元素...');
+                        if (!container) {
+                            console.error('❌ 找不到会员等级容器元素 membershipLevelsContainer');
+                            console.log('尝试在页面中查找所有包含membership的元素...');
+                            const allElements = membershipPage.querySelectorAll('[id*="membership"]');
+                            console.log('找到的元素:', Array.from(allElements).map(el => el.id));
+                            return;
+                        }
+                        console.log('✅ 找到容器元素');
+                        console.log('容器当前子元素数量:', container.children.length);
+                        
+                        try {
+                            // 渲染会员等级卡片
+                            console.log('准备调用 renderMembershipLevels()...');
+                            this.renderMembershipLevels();
+                            console.log('renderMembershipLevels() 调用完成');
+                            
+                            // 验证渲染结果
+                            console.log('验证渲染结果...');
+                            console.log('容器子元素数量:', container.children.length);
+                            console.log('容器HTML长度:', container.innerHTML.length);
+                            
+                            // 绑定支付周期切换事件
+                            console.log('调用 bindMembershipEvents()...');
+                            this.bindMembershipEvents();
+                            console.log('bindMembershipEvents() 调用完成');
+                        } catch (error) {
+                            console.error('❌ 渲染过程中出错:', error);
+                            console.error('错误堆栈:', error.stack);
+                        }
+                    };
+                    
+                    setTimeout(() => {
+                        console.log('延迟时间到，开始渲染...');
+                        renderWithRetry();
+                    }, 150);
+                } else {
+                    console.error('API返回失败:', data);
+                    this.showToast('错误', data.message || '加载会员服务信息失败', 'danger');
+                }
+            } else {
+                console.error('HTTP请求失败:', response.status, response.statusText);
+                this.showToast('错误', '加载会员服务信息失败', 'danger');
+            }
+        } catch (error) {
+            console.error('加载会员服务数据失败:', error);
+            this.showToast('错误', '加载会员服务信息失败', 'danger');
+        }
+    }
+    
+    // 渲染会员等级卡片
+    renderMembershipLevels() {
+        console.log('🎨 开始渲染会员等级卡片...');
+        console.log('当前会员等级数据:', this.membershipLevels);
+        console.log('会员等级数量:', this.membershipLevels?.length || 0);
+        
+        // 先检查页面是否存在
+        const membershipPage = document.getElementById('membership-service-page');
+        if (!membershipPage) {
+            console.error('❌ 找不到会员服务页面元素 membership-service-page');
+            return;
+        }
+        console.log('✅ 找到会员服务页面');
+        
+        // 确保页面已激活
+        if (!membershipPage.classList.contains('active')) {
+            console.warn('⚠️ 页面未激活，强制激活...');
+            membershipPage.classList.add('active');
+        }
+        
+        console.log('页面是否激活:', membershipPage.classList.contains('active'));
+        console.log('页面可见性:', window.getComputedStyle(membershipPage).display);
+        
+        // 再查找容器元素
+        const container = document.getElementById('membershipLevelsContainer');
+        if (!container) {
+            console.error('❌ 找不到会员等级容器元素 membershipLevelsContainer');
+            return;
+        }
+        
+        const billingPeriod = document.querySelector('input[name="billingPeriod"]:checked')?.value || 'monthly';
+
+        const paidLevels = (this.membershipLevels || []).filter(level => {
+            const isNotFree = level.level_code !== 'free';
+            return isNotFree;
+        });
+        
+        if (paidLevels.length === 0) {
+            container.innerHTML = '<div class="col-12 text-center text-muted"><p>暂无会员等级信息</p></div>';
+            return;
+        }
+        
+        container.innerHTML = '';
+        
+        paidLevels.forEach((level, index) => {
+            const isCurrent = this.currentMembership && 
+                             this.currentMembership.level_code === level.level_code &&
+                             this.currentMembership.membership_status_display === 'active';
+            
+            // 价格可能是字符串，需要转换为数字
+            const priceMonthly = parseFloat(level.price_monthly) || 0;
+            const priceYearly = parseFloat(level.price_yearly) || 0;
+            
+            const price = billingPeriod === 'yearly' ? priceYearly : priceMonthly;
+            const originalPrice = billingPeriod === 'yearly' ? 
+                (priceMonthly * 12) : priceMonthly;
+            const hasDiscount = billingPeriod === 'yearly' && priceYearly > 0 && priceYearly < (priceMonthly * 12);
+            
+            // 构建功能列表
+            const features = this.buildMembershipFeatures(level);
+            
+            // 确定卡片样式和布局（3个卡片，每个占4列）
+            let cardClass = 'col-lg-4 col-md-6 mb-4';
+            let cardStyle = '';
+            let headerClass = 'bg-primary text-white';
+            
+            if (level.level_code === 'vip') {
+                cardStyle = 'border: 2px solid #ffc107; box-shadow: 0 0 20px rgba(255, 193, 7, 0.3);';
+                headerClass = 'bg-warning text-dark';
+            } else if (level.level_code === 'premium') {
+                headerClass = 'bg-info text-white';
+            } else if (level.level_code === 'basic') {
+                headerClass = 'bg-success text-white';
+            }
+            
+            const card = document.createElement('div');
+            card.className = cardClass;
+            card.innerHTML = `
+                <div class="card h-100 ${isCurrent ? 'border-primary shadow-lg' : 'shadow'}" style="${cardStyle}">
+                    <div class="card-header text-center ${headerClass}">
+                        <h4 class="mb-0">
+                            ${level.level_code === 'vip' ? '<i class="bi bi-star-fill"></i> ' : ''}
+                            ${level.level_code === 'premium' ? '<i class="bi bi-gem"></i> ' : ''}
+                            ${level.level_code === 'basic' ? '<i class="bi bi-award"></i> ' : ''}
+                            ${level.level_name}
+                            ${isCurrent ? '<span class="badge bg-light text-dark ms-2">当前会员</span>' : ''}
+                        </h4>
+                    </div>
+                    <div class="card-body d-flex flex-column">
+                        <div class="text-center mb-4">
+                            <div class="display-4 fw-bold text-primary mb-2">
+                                ${price === 0 ? '免费' : `¥${price.toFixed(2)}`}
+                            </div>
+                            ${price > 0 ? `
+                                <div class="text-muted small mb-2">
+                                    ${billingPeriod === 'monthly' ? '月付' : '年付'}
+                                    ${billingPeriod === 'yearly' && hasDiscount ? '（9折优惠）' : ''}
+                                </div>
+                            ` : ''}
+                            ${hasDiscount && originalPrice > price ? `
+                                <div class="text-muted mt-2">
+                                    <del class="text-muted small">原价 ¥${originalPrice.toFixed(2)}</del>
+                                    <span class="badge bg-success ms-2">省¥${(originalPrice - price).toFixed(2)}</span>
+                                </div>
+                            ` : ''}
+                            ${level.level_code === 'vip' && billingPeriod === 'yearly' && priceYearly === 0 ? `
+                                <div class="text-muted mt-2">
+                                    <i class="bi bi-info-circle"></i> 年付需联系客服定制
+                                </div>
+                            ` : ''}
+                            ${level.description ? `
+                                <div class="text-muted mt-2 small px-3">
+                                    <i class="bi bi-info-circle"></i> ${level.description}
+                                </div>
+                            ` : ''}
+                        </div>
+                        
+                        <ul class="list-unstyled flex-grow-1 mb-4">
+                            ${features.map(feature => `
+                                <li class="mb-2">
+                                    ${feature.enabled ? 
+                                        '<i class="bi bi-check-circle-fill text-success me-2"></i>' : 
+                                        '<i class="bi bi-circle text-muted me-2"></i>'
+                                    }
+                                    <span class="${feature.enabled ? '' : 'text-muted'}">${feature.text}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                        
+                        <div class="mt-auto">
+                            ${isCurrent ? `
+                                <button class="btn btn-primary w-100" disabled>
+                                    <i class="bi bi-check-circle"></i> 当前会员
+                                    ${this.daysRemaining !== null ? ` (剩余 ${this.daysRemaining} 天)` : ''}
+                                </button>
+                            ` : level.level_code === 'vip' ? `
+                                <button class="btn btn-dark w-100" onclick="app.contactServiceForVIP()">
+                                    <i class="bi bi-chat-dots"></i> 联系客服
+                                </button>
+                            ` : `
+                                <button class="btn btn-primary w-100" onclick="app.subscribeMembership(${level.id}, '${billingPeriod}')">
+                                    <i class="bi bi-cart-plus"></i> 立即订阅
+                                </button>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(card);
+        });
+        
+        // 确保容器和页面可见
+        if (container.children.length > 0) {
+            // 确保容器使用正确的布局
+            if (!container.classList.contains('row')) {
+                container.classList.add('row', 'g-4');
+            }
+            console.log('🔧 容器已包含', container.children.length, '个卡片');
+            
+            // 确保页面激活
+            if (membershipPageCheck && !membershipPageCheck.classList.contains('active')) {
+                membershipPageCheck.classList.add('active');
+                console.log('🔧 已激活会员服务页面');
+            }
+        } else {
+            console.error('❌ 容器中没有卡片元素！');
+        }
+    }
+    
+    // 构建会员功能列表（只显示特有限制和高级功能，不显示通用基础功能）
+    buildMembershipFeatures(level) {
+        const features = [];
+        
+        // 根据等级构建详细的权益特点
+        if (level.level_code === 'free') {
+            // 免费会员 - 只显示限制
+            features.push({ enabled: true, text: `客户账户数: ${level.max_customers}个` });
+            features.push({ enabled: true, text: `策略数: ${level.max_strategies}个` });
+            features.push({ enabled: true, text: `每日回测次数: ${level.max_backtests_per_day}次` });
+            features.push({ enabled: false, text: '转发规则数: 0个' });
+            features.push({ enabled: false, text: '热门带单员跟单' });
+            features.push({ enabled: false, text: '消息转发功能' });
+        } else if (level.level_code === 'basic') {
+            // 基础会员 - 显示限制和特有功能
+            features.push({ enabled: true, text: `客户账户数: ${level.max_customers}个` });
+            features.push({ enabled: true, text: `策略数: ${level.max_strategies}个` });
+            features.push({ enabled: true, text: `每日回测次数: ${level.max_backtests_per_day}次` });
+            features.push({ enabled: true, text: '热门带单员跟单' });
+            features.push({ enabled: true, text: 'Hyperliquid' });
+            features.push({ enabled: true, text: '跟单交易自定义配置' });
+            features.push({ enabled: true, text: '信号源市价跟单交易策略' });
+            features.push({ enabled: true, text: '消息转发（每月50条）' });
+            features.push({ enabled: false, text: '刷单做市模块' });
+            features.push({ enabled: false, text: 'Telegram Bot 使用' });
+            features.push({ enabled: false, text: '策略交易模块' });
+        } else if (level.level_code === 'premium') {
+            // 高级会员 - 显示限制和高级功能
+            features.push({ enabled: true, text: `客户账户数: ${level.max_customers}个` });
+            features.push({ enabled: true, text: `策略数: ${level.max_strategies}个` });
+            features.push({ enabled: true, text: `每日回测次数: ${level.max_backtests_per_day}次` });
+            features.push({ enabled: true, text: `转发规则数: ${level.max_forward_rules}个` });
+            features.push({ enabled: true, text: '热门带单员跟单' });
+            features.push({ enabled: true, text: 'Hyperliquid 跟单' });
+            features.push({ enabled: true, text: '策略交易（完整权限）' });
+            features.push({ enabled: true, text: '跟单交易自定义配置' });
+            features.push({ enabled: true, text: '信号源市价跟单交易策略' });
+            features.push({ enabled: true, text: '消息转发（每月500条）' });
+            features.push({ enabled: false, text: '刷单做市模块' });
+            features.push({ enabled: false, text: 'Telegram Bot 使用' });
+            features.push({ enabled: false, text: '专属客服' });
+        } else if (level.level_code === 'vip') {
+            // VIP会员 - 显示无限制和所有高级功能
+            features.push({ enabled: true, text: '所有高级会员功能' });
+            features.push({ enabled: true, text: `客户账户数: 无限制` });
+            features.push({ enabled: true, text: `策略数: 无限制` });
+            features.push({ enabled: true, text: `每日回测次数: 无限制` });
+            features.push({ enabled: true, text: `转发规则数: 无限制` });
+            features.push({ enabled: true, text: '热门带单员跟单' });
+            features.push({ enabled: true, text: 'Hyperliquid 跟单' });
+            features.push({ enabled: true, text: '刷单做市模块' });
+            features.push({ enabled: true, text: 'Telegram Bot 使用' });
+            features.push({ enabled: true, text: '消息转发（每月500条）' });
+            features.push({ enabled: true, text: '专属客服支持' });
+        }
+        
+        return features;
+    }
+    
+    // 绑定会员服务事件
+    bindMembershipEvents() {
+        // 支付周期切换
+        const billingPeriodInputs = document.querySelectorAll('input[name="billingPeriod"]');
+        billingPeriodInputs.forEach(input => {
+            input.addEventListener('change', () => {
+                this.renderMembershipLevels();
+            });
+        });
+    }
+    
+    // 订阅会员
+    async subscribeMembership(levelId, billingPeriod) {
+        try {
+            // TODO: 实现订阅逻辑（跳转到支付页面或创建订单）
+            this.showToast('提示', '订阅功能开发中，请联系客服', 'info');
+        } catch (error) {
+            console.error('订阅会员失败:', error);
+            this.showToast('错误', '订阅失败', 'danger');
+        }
+    }
+    
+    // 联系客服（VIP）
+    contactServiceForVIP() {
+        // TODO: 跳转到客服页面或打开客服对话框
+        this.showToast('提示', '打开telegram搜索 @Hongniugegege 进行联系', 'info');
+    }
+    
+    // 加载兑换码数据
+    async loadRedemptionCodesData() {
+        try {
+            // 检查用户权限并显示/隐藏管理功能
+            const isAdmin = this.currentUser && this.currentUser.role === 'admin';
+            const adminActions = document.getElementById('redemptionCodesAdminActions');
+            const userActions = document.getElementById('redemptionCodesUserActions');
+            const pageTitle = document.getElementById('redemptionCodesPageTitle');
+            const adminColumns = document.querySelectorAll('.admin-only-column');
+            const statsCards = document.getElementById('redemptionCodesStatsCards');
+            
+            if (isAdmin) {
+                if (adminActions) adminActions.style.display = 'flex';
+                if (userActions) userActions.style.display = 'none';
+                if (pageTitle) pageTitle.textContent = '兑换码管理';
+                if (statsCards) statsCards.style.display = 'flex';
+                adminColumns.forEach(col => col.style.display = 'table-cell');
+                // 加载统计信息（仅管理员）
+                await this.loadRedemptionCodesStatistics();
+            } else {
+                if (adminActions) adminActions.style.display = 'none';
+                if (userActions) userActions.style.display = 'flex';
+                if (pageTitle) pageTitle.textContent = '兑换码';
+                if (statsCards) statsCards.style.display = 'none';
+                adminColumns.forEach(col => col.style.display = 'none');
+            }
+            
+            // 加载兑换码列表
+            await this.loadRedemptionCodesList();
+            
+            // 绑定事件
+            this.bindRedemptionCodesEvents();
+            
+        } catch (error) {
+            console.error('加载兑换码数据失败:', error);
+            this.showToast('错误', '加载兑换码数据失败', 'danger');
+        }
+    }
+    
+    // 加载兑换码统计信息
+    async loadRedemptionCodesStatistics() {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes/statistics`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    document.getElementById('rc-total').textContent = data.total || 0;
+                    document.getElementById('rc-used').textContent = data.used || 0;
+                    document.getElementById('rc-unused').textContent = data.unused || 0;
+                    
+                    // 计算已过期数量（从 exchange_stats 中获取）
+                    let expired = 0;
+                    if (data.exchange_stats) {
+                        Object.values(data.exchange_stats).forEach(stat => {
+                            expired += (stat.total - stat.used - stat.unused) || 0;
+                        });
+                    }
+                    document.getElementById('rc-expired').textContent = expired;
+                }
+            }
+        } catch (error) {
+            console.error('加载兑换码统计失败:', error);
+        }
+    }
+    
+    // 加载兑换码列表
+    async loadRedemptionCodesList(page = 1) {
+        try {
+            this.redemptionCodesCurrentPage = page;
+            
+            const params = new URLSearchParams({
+                page: page,
+                page_size: this.redemptionCodesPageSize
+            });
+            
+            if (this.redemptionCodesFilters.exchange) {
+                params.append('exchange', this.redemptionCodesFilters.exchange);
+            }
+            
+            if (this.redemptionCodesFilters.status) {
+                if (this.redemptionCodesFilters.status === 'disabled') {
+                    params.append('is_active', '0');
+                } else if (this.redemptionCodesFilters.status === 'unused') {
+                    params.append('is_active', '1');
+                }
+            }
+            
+            if (this.redemptionCodesFilters.search) {
+                params.append('search', this.redemptionCodesFilters.search);
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes?${params.toString()}`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.renderRedemptionCodes(data.data, data);
+                    this.renderRedemptionCodesPagination(data);
+                } else {
+                    this.showToast('错误', data.message || '加载兑换码列表失败', 'danger');
+                }
+            }
+        } catch (error) {
+            console.error('加载兑换码列表失败:', error);
+            this.showToast('错误', '加载兑换码列表失败', 'danger');
+        }
+    }
+    
+    // 渲染兑换码列表
+    renderRedemptionCodes(codes, pagination) {
+        const tbody = document.getElementById('redemptionCodesTableBody');
+        if (!tbody) return;
+        
+        if (!codes || codes.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无兑换码</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = codes.map(code => {
+            const statusBadge = this.getRedemptionCodeStatusBadge(code);
+            const usedBy = code.used_by_username ? 
+                `<span class="text-muted">${this.escapeHtml(code.used_by_username)}</span>` : 
+                '<span class="text-muted">-</span>';
+            const expiresAt = code.expires_at ? 
+                new Date(code.expires_at).toLocaleString('zh-CN') : 
+                '<span class="text-muted">永不过期</span>';
+            const createdAt = code.created_at ? 
+                new Date(code.created_at).toLocaleString('zh-CN') : 
+                '-';
+            const description = code.description ? 
+                this.escapeHtml(code.description) : 
+                '<span class="text-muted">-</span>';
+            
+            return `
+                <tr>
+                    <td><code>${this.escapeHtml(code.code)}</code></td>
+                    <td><span class="badge bg-info">${code.exchange.toUpperCase()}</span></td>
+                    <td>${description}</td>
+                    <td>${statusBadge}</td>
+                    <td>${usedBy}</td>
+                    <td>${createdAt}</td>
+                    <td>${expiresAt}</td>
+                    <td>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" onclick="window.app.editRedemptionCode(${code.id})" title="编辑">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            ${!code.user_id ? `
+                            <button class="btn btn-outline-danger" onclick="window.app.deleteRedemptionCode(${code.id})" title="删除">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                            ` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+    
+    // 获取兑换码状态徽章
+    getRedemptionCodeStatusBadge(code) {
+        if (code.user_id) {
+            return '<span class="badge bg-success">已使用</span>';
+        } else if (!code.is_active) {
+            return '<span class="badge bg-secondary">已禁用</span>';
+        } else if (code.expires_at) {
+            try {
+                const expiresAt = new Date(code.expires_at);
+                if (expiresAt < new Date()) {
+                    return '<span class="badge bg-danger">已过期</span>';
+                }
+            } catch (e) {
+                // 忽略日期解析错误
+            }
+        }
+        return '<span class="badge bg-primary">未使用</span>';
+    }
+    
+    // 渲染分页
+    renderRedemptionCodesPagination(pagination) {
+        const paginationEl = document.getElementById('redemptionCodesPagination');
+        if (!paginationEl) return;
+        
+        if (!pagination || pagination.total_pages <= 1) {
+            paginationEl.innerHTML = '';
+            return;
+        }
+        
+        const currentPage = pagination.page || 1;
+        const totalPages = pagination.total_pages || 1;
+        
+        let html = '';
+        
+        // 上一页
+        html += `
+            <li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
+                <a class="page-link" href="#" onclick="window.app.loadRedemptionCodesList(${currentPage - 1}); return false;">上一页</a>
+            </li>
+        `;
+        
+        // 页码
+        for (let i = 1; i <= totalPages; i++) {
+            if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {
+                html += `
+                    <li class="page-item ${i === currentPage ? 'active' : ''}">
+                        <a class="page-link" href="#" onclick="window.app.loadRedemptionCodesList(${i}); return false;">${i}</a>
+                    </li>
+                `;
+            } else if (i === currentPage - 3 || i === currentPage + 3) {
+                html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+            }
+        }
+        
+        // 下一页
+        html += `
+            <li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
+                <a class="page-link" href="#" onclick="window.app.loadRedemptionCodesList(${currentPage + 1}); return false;">下一页</a>
+            </li>
+        `;
+        
+        paginationEl.innerHTML = html;
+    }
+    
+    // 绑定兑换码事件
+    bindRedemptionCodesEvents() {
+        // 创建兑换码
+        const createBtn = document.getElementById('createRedemptionCodeBtn');
+        if (createBtn) {
+            createBtn.addEventListener('click', () => this.createRedemptionCode());
+        }
+        
+        // 批量创建兑换码
+        const batchCreateBtn = document.getElementById('batchCreateRedemptionCodeBtn');
+        if (batchCreateBtn) {
+            batchCreateBtn.addEventListener('click', () => this.batchCreateRedemptionCode());
+        }
+        
+        // 更新兑换码
+        const updateBtn = document.getElementById('updateRedemptionCodeBtn');
+        if (updateBtn) {
+            updateBtn.addEventListener('click', () => this.updateRedemptionCode());
+        }
+        
+        // 筛选按钮
+        const filterBtn = document.getElementById('rcFilterBtn');
+        if (filterBtn) {
+            filterBtn.addEventListener('click', () => {
+                this.redemptionCodesFilters.exchange = document.getElementById('rcExchangeFilter')?.value || '';
+                this.redemptionCodesFilters.status = document.getElementById('rcStatusFilter')?.value || '';
+                this.redemptionCodesFilters.search = document.getElementById('rcSearch')?.value || '';
+                this.loadRedemptionCodesList(1);
+            });
+        }
+        
+        // 刷新按钮
+        const refreshBtn = document.getElementById('refreshRedemptionCodesBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                this.loadRedemptionCodesData();
+            });
+        }
+        
+        // 普通用户的刷新按钮
+        const refreshBtnUser = document.getElementById('refreshRedemptionCodesBtnUser');
+        if (refreshBtnUser) {
+            refreshBtnUser.addEventListener('click', () => {
+                this.loadRedemptionCodesData();
+            });
+        }
+    }
+    
+    // 创建兑换码
+    async createRedemptionCode() {
+        try {
+            const exchange = document.getElementById('rcExchange')?.value;
+            const description = document.getElementById('rcDescription')?.value;
+            const expiresAt = document.getElementById('rcExpiresAt')?.value;
+            
+            if (!exchange) {
+                this.showToast('提示', '请选择交易所', 'warning');
+                return;
+            }
+            
+            const data = {
+                exchange: exchange,
+                description: description || null,
+                expires_at: expiresAt || null
+            };
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '兑换码创建成功', 'success');
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('createRedemptionCodeModal'));
+                    if (modal) modal.hide();
+                    // 重置表单
+                    document.getElementById('createRedemptionCodeForm')?.reset();
+                    // 刷新列表
+                    await this.loadRedemptionCodesData();
+                } else {
+                    this.showToast('错误', result.message || '创建失败', 'danger');
+                }
+            }
+        } catch (error) {
+            console.error('创建兑换码失败:', error);
+            this.showToast('错误', '创建兑换码失败', 'danger');
+        }
+    }
+    
+    // 批量创建兑换码
+    async batchCreateRedemptionCode() {
+        try {
+            const exchange = document.getElementById('batchRcExchange')?.value;
+            const count = parseInt(document.getElementById('batchRcCount')?.value || '1');
+            const description = document.getElementById('batchRcDescription')?.value;
+            const expiresAt = document.getElementById('batchRcExpiresAt')?.value;
+            
+            if (!exchange) {
+                this.showToast('提示', '请选择交易所', 'warning');
+                return;
+            }
+            
+            if (count < 1 || count > 100) {
+                this.showToast('提示', '创建数量必须在 1-100 之间', 'warning');
+                return;
+            }
+            
+            const data = {
+                exchange: exchange,
+                count: count,
+                description: description || null,
+                expires_at: expiresAt || null
+            };
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes/batch`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', `成功创建 ${result.created_count} 个兑换码`, 'success');
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('batchCreateRedemptionCodeModal'));
+                    if (modal) modal.hide();
+                    // 重置表单
+                    document.getElementById('batchCreateRedemptionCodeForm')?.reset();
+                    // 刷新列表
+                    await this.loadRedemptionCodesData();
+                } else {
+                    this.showToast('错误', result.message || '批量创建失败', 'danger');
+                }
+            }
+        } catch (error) {
+            console.error('批量创建兑换码失败:', error);
+            this.showToast('错误', '批量创建兑换码失败', 'danger');
+        }
+    }
+    
+    // 编辑兑换码
+    async editRedemptionCode(codeId) {
+        try {
+            // 从列表中获取兑换码信息（简化实现，实际应该从 API 获取）
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes?page=1&page_size=1000`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    const code = data.data.find(c => c.id === codeId);
+                    if (code) {
+                        document.getElementById('editRcId').value = code.id;
+                        document.getElementById('editRcCode').value = code.code;
+                        document.getElementById('editRcExchange').value = code.exchange.toUpperCase();
+                        document.getElementById('editRcDescription').value = code.description || '';
+                        document.getElementById('editRcIsActive').value = code.is_active ? '1' : '0';
+                        if (code.expires_at) {
+                            const expiresAt = new Date(code.expires_at);
+                            document.getElementById('editRcExpiresAt').value = expiresAt.toISOString().slice(0, 16);
+                        } else {
+                            document.getElementById('editRcExpiresAt').value = '';
+                        }
+                        
+                        const modal = new bootstrap.Modal(document.getElementById('editRedemptionCodeModal'));
+                        modal.show();
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('编辑兑换码失败:', error);
+            this.showToast('错误', '加载兑换码信息失败', 'danger');
+        }
+    }
+    
+    // 更新兑换码
+    async updateRedemptionCode() {
+        try {
+            const codeId = document.getElementById('editRcId')?.value;
+            const description = document.getElementById('editRcDescription')?.value;
+            const isActive = document.getElementById('editRcIsActive')?.value;
+            const expiresAt = document.getElementById('editRcExpiresAt')?.value;
+            
+            if (!codeId) {
+                this.showToast('提示', '兑换码ID无效', 'warning');
+                return;
+            }
+            
+            const data = {
+                description: description || null,
+                is_active: parseInt(isActive),
+                expires_at: expiresAt || null
+            };
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes/${codeId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '兑换码更新成功', 'success');
+                    // 关闭模态框
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editRedemptionCodeModal'));
+                    if (modal) modal.hide();
+                    // 刷新列表
+                    await this.loadRedemptionCodesData();
+                } else {
+                    this.showToast('错误', result.message || '更新失败', 'danger');
+                }
+            }
+        } catch (error) {
+            console.error('更新兑换码失败:', error);
+            this.showToast('错误', '更新兑换码失败', 'danger');
+        }
+    }
+    
+    // 删除兑换码
+    async deleteRedemptionCode(codeId) {
+        try {
+            if (!confirm('确定要删除这个兑换码吗？已使用的兑换码无法删除。')) {
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes/${codeId}`, {
+                method: 'DELETE'
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', '兑换码删除成功', 'success');
+                    // 刷新列表
+                    await this.loadRedemptionCodesData();
+                } else {
+                    this.showToast('错误', result.message || '删除失败', 'danger');
+                }
+            }
+        } catch (error) {
+            console.error('删除兑换码失败:', error);
+            this.showToast('错误', '删除兑换码失败', 'danger');
+        }
+    }
+    
+    // ==================== Telegram Bot 管理模块 ====================
+    
+    // 加载 Telegram Bot 平台列表
+    async loadTelegramBotPlatforms() {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/message-forward/platforms?page=1&page_size=100&platform_type=telegram_bot`);
+            if (response && response.ok) {
+                const data = await response.json();
+                const select = document.getElementById('telegramBotPlatformSelect');
+                if (select) {
+                    // 后端返回的数据结构是 data.data（平台数组），不是 data.data.platforms
+                    let telegramBotPlatforms = [];
+                    if (data.success && data.data) {
+                        // 如果 data.data 是数组，直接使用；如果是对象且有 platforms 属性，使用 platforms
+                        if (Array.isArray(data.data)) {
+                            telegramBotPlatforms = data.data.filter(p => p.platform_type === 'telegram_bot');
+                        } else if (data.data.platforms && Array.isArray(data.data.platforms)) {
+                            telegramBotPlatforms = data.data.platforms.filter(p => p.platform_type === 'telegram_bot');
+                        }
+                    }
+                    
+                    if (telegramBotPlatforms.length > 0) {
+                        select.innerHTML = '<option value="">请选择 Telegram Bot 平台...</option>' +
+                            telegramBotPlatforms.map(platform => 
+                                `<option value="${platform.id}">${this.escapeHtml(platform.platform_name || `Telegram Bot-${platform.id}`)}</option>`
+                            ).join('');
+                        
+                        // 如果只有一个平台，自动选择
+                        if (telegramBotPlatforms.length === 1) {
+                            select.value = telegramBotPlatforms[0].id;
+                            await this.loadTelegramBotSubscriptions(telegramBotPlatforms[0].id);
+                        }
+                    } else {
+                        select.innerHTML = '<option value="">暂无 Telegram Bot 平台</option>';
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('加载 Telegram Bot 平台列表失败:', error);
+        }
+    }
+    
+    // 加载 Telegram Bot 订阅用户列表
+    async loadTelegramBotSubscriptions(platformId, page = 1, pageSize = 20) {
+        try {
+            if (!platformId) {
+                const tbody = document.getElementById('telegramBotSubscriptionsTableBody');
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">请先选择 Bot 平台</td></tr>';
+                }
+                return;
+            }
+            
+            // 加载订阅列表
+            const response = await this.apiRequest(`${this.apiBaseUrl}/telegram-bot/${platformId}/subscriptions?page=${page}&page_size=${pageSize}`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.renderTelegramBotSubscriptions(data.data.subscriptions, data.data.pagination);
+                } else {
+                    this.renderTelegramBotSubscriptions([], {});
+                }
+            } else {
+                this.renderTelegramBotSubscriptions([], {});
+            }
+            
+            // 加载统计信息
+            await this.loadTelegramBotStats(platformId);
+            
+        } catch (error) {
+            console.error('加载 Telegram Bot 订阅用户列表失败:', error);
+            this.showToast('错误', '加载订阅用户列表失败', 'danger');
+            const tbody = document.getElementById('telegramBotSubscriptionsTableBody');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger">加载失败: ' + error.message + '</td></tr>';
+            }
+        }
+    }
+    
+    // 渲染 Telegram Bot 订阅用户列表
+    renderTelegramBotSubscriptions(subscriptions, pagination) {
+        const tbody = document.getElementById('telegramBotSubscriptionsTableBody');
+        if (!tbody) return;
+        
+        if (!subscriptions || subscriptions.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无订阅用户</td></tr>';
+            this.renderPagination('telegramBotSubscriptionsPagination', pagination, (page) => {
+                const platformId = document.getElementById('telegramBotPlatformSelect')?.value;
+                if (platformId) {
+                    this.loadTelegramBotSubscriptions(platformId, page, pagination.page_size || 20);
+                }
+            });
+            return;
+        }
+        
+        tbody.innerHTML = subscriptions.map(sub => {
+            // 格式化订阅周期
+            const intervals = sub.intervals || [];
+            const intervalsDisplay = intervals.length > 0 ? intervals.join(', ') : '全部';
+            
+            // 格式化策略
+            const strategies = sub.strategies || [];
+            const strategiesDisplay = strategies.length > 0 ? strategies.join(', ') : '全部';
+            
+            // 格式化状态
+            let statusBadge = '';
+            const status = sub.subscription_status || 'active';
+            if (status === 'active') {
+                // 检查是否过期
+                const expireDate = sub.expire_date ? new Date(sub.expire_date) : null;
+                if (expireDate && expireDate < new Date()) {
+                    statusBadge = '<span class="badge bg-warning">已过期</span>';
+                } else {
+                    statusBadge = '<span class="badge bg-success">活跃</span>';
+                }
+            } else if (status === 'expired') {
+                statusBadge = '<span class="badge bg-warning">已过期</span>';
+            } else if (status === 'cancelled') {
+                statusBadge = '<span class="badge bg-secondary">已取消</span>';
+            } else {
+                statusBadge = '<span class="badge bg-secondary">' + status + '</span>';
+            }
+            
+            // 格式化过期时间
+            let expireDateDisplay = '-';
+            if (sub.expire_date) {
+                const expireDate = new Date(sub.expire_date);
+                expireDateDisplay = expireDate.toLocaleString('zh-CN');
+            }
+            
+            // 格式化最后消息时间
+            let lastMessageDisplay = '-';
+            if (sub.last_message_at) {
+                const lastMessage = new Date(sub.last_message_at);
+                lastMessageDisplay = lastMessage.toLocaleString('zh-CN');
+            }
+            
+            return `
+                <tr>
+                    <td>${sub.user_id}</td>
+                    <td>${this.escapeHtml(sub.username || '-')}</td>
+                    <td>${this.escapeHtml(intervalsDisplay)}</td>
+                    <td>${this.escapeHtml(strategiesDisplay)}</td>
+                    <td>${statusBadge}</td>
+                    <td>${expireDateDisplay}</td>
+                    <td>${sub.messages_received || 0}</td>
+                    <td>${lastMessageDisplay}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" onclick="window.app.viewTelegramBotSubscription(${sub.user_id}, '${sub.rule_id}')" title="查看详情">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+        
+        // 渲染分页
+        this.renderPagination('telegramBotSubscriptionsPagination', pagination, (page) => {
+            const platformId = document.getElementById('telegramBotPlatformSelect')?.value;
+            if (platformId) {
+                this.loadTelegramBotSubscriptions(platformId, page, pagination.page_size || 20);
+            }
+        });
+    }
+    
+    // 加载 Telegram Bot 统计信息
+    async loadTelegramBotStats(platformId) {
+        try {
+            if (!platformId) {
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/telegram-bot/${platformId}/stats`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data && data.data.stats) {
+                    const stats = data.data.stats;
+                    document.getElementById('telegramBotTotalSubscriptions').textContent = stats.total_subscriptions || 0;
+                    document.getElementById('telegramBotActiveSubscriptions').textContent = stats.active_subscriptions || 0;
+                    document.getElementById('telegramBotTodayMessages').textContent = stats.today_messages || 0;
+                    document.getElementById('telegramBotTotalMessages').textContent = stats.total_messages || 0;
+                }
+            }
+        } catch (error) {
+            console.error('加载 Telegram Bot 统计信息失败:', error);
+        }
+    }
+    
+    // 查看订阅详情（占位方法）
+    viewTelegramBotSubscription(userId, ruleId) {
+        this.showToast('提示', '订阅详情功能待实现', 'info');
+    }
+    
     // 启动消息转发服务
     async startMessageForwardService() {
         try {
@@ -13234,10 +14454,17 @@ class OKXTradingApp {
 
     // 绑定用户管理事件
     bindUserManagementEvents() {
-        // 添加用户按钮
+        // 添加用户按钮（使用事件委托，避免重复绑定）
         const addUserBtn = document.getElementById('addUserBtn');
         if (addUserBtn) {
-            addUserBtn.addEventListener('click', () => this.showAddUserModal());
+            // 先移除可能存在的旧事件监听器
+            addUserBtn.replaceWith(addUserBtn.cloneNode(true));
+            const newAddUserBtn = document.getElementById('addUserBtn');
+            newAddUserBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.showAddUserModal();
+            });
         }
 
         // 编辑用户按钮
@@ -13284,8 +14511,28 @@ class OKXTradingApp {
 
     // 显示添加用户模态框
     showAddUserModal() {
+        // 检查是否已经有模态框存在
+        const existingModal = document.querySelector('.modal.show, .modal[style*="display"]');
+        if (existingModal) {
+            // 如果已有模态框，先关闭它
+            const bsModal = bootstrap.Modal.getInstance(existingModal);
+            if (bsModal) {
+                bsModal.hide();
+            }
+            // 等待模态框完全关闭后再创建新的
+            setTimeout(() => {
+                this._createAddUserModal();
+            }, 300);
+            return;
+        }
+        
+        this._createAddUserModal();
+    }
+    
+    _createAddUserModal() {
         const modal = document.createElement('div');
         modal.className = 'modal fade';
+        modal.setAttribute('id', 'addUserModal');
         modal.innerHTML = `
             <div class="modal-dialog modal-lg">
                 <div class="modal-content">
@@ -13326,6 +14573,14 @@ class OKXTradingApp {
                                         </select>
                                     </div>
                                 </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">会员等级</label>
+                                        <select class="form-select" name="membership_level_id" id="membershipLevelSelect">
+                                            <option value="">请选择会员等级（可选）</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
                             <div class="row">
                                 <div class="col-md-6">
@@ -13351,19 +14606,77 @@ class OKXTradingApp {
             </div>
         `;
         
+        // 检查是否已经有添加用户模态框存在
+        const existingAddModal = document.getElementById('addUserModal');
+        if (existingAddModal && existingAddModal.parentNode) {
+            // 如果已存在，先移除旧的
+            try {
+                const oldBsModal = bootstrap.Modal.getInstance(existingAddModal);
+                if (oldBsModal) {
+                    oldBsModal.dispose();
+                }
+                document.body.removeChild(existingAddModal);
+            } catch (e) {
+                console.warn('移除旧模态框失败:', e);
+            }
+        }
+        
         document.body.appendChild(modal);
         const bsModal = new bootstrap.Modal(modal);
         bsModal.show();
         
-        // 保存按钮事件
-        document.getElementById('saveUserBtn').addEventListener('click', () => {
-            this.saveUser();
-        });
+        // 延迟加载会员等级列表，确保DOM已渲染
+        setTimeout(() => {
+            this.loadMembershipLevelsForSelect();
+        }, 100);
         
-        // 模态框关闭后移除DOM元素
+        // 保存按钮事件（使用 once 选项，确保只绑定一次）
+        const saveBtn = document.getElementById('saveUserBtn');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.saveUser();
+            }, { once: false }); // 允许多次点击，但每次点击只执行一次
+        }
+        
+        // 模态框关闭后移除DOM元素（确保只执行一次）
+        let removed = false;
         modal.addEventListener('hidden.bs.modal', () => {
-            document.body.removeChild(modal);
-        });
+            if (!removed && modal.parentNode) {
+                removed = true;
+                try {
+                    const bsModalInstance = bootstrap.Modal.getInstance(modal);
+                    if (bsModalInstance) {
+                        bsModalInstance.dispose();
+                    }
+                    document.body.removeChild(modal);
+                } catch (e) {
+                    console.warn('移除模态框失败:', e);
+                }
+            }
+        }, { once: true });
+    }
+    
+    // 加载会员等级列表到选择框
+    async loadMembershipLevelsForSelect() {
+        try {
+            const select = document.getElementById('membershipLevelSelect');
+            if (!select) return;
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/membership/levels`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    select.innerHTML = '<option value="">请选择会员等级（可选）</option>' +
+                        data.data.map(level => 
+                            `<option value="${level.id}">${level.level_name} (¥${level.price_monthly}/月)</option>`
+                        ).join('');
+                }
+            }
+        } catch (error) {
+            console.error('加载会员等级列表失败:', error);
+        }
     }
 
     // 显示编辑用户模态框
@@ -13575,8 +14888,20 @@ class OKXTradingApp {
                 const result = await response.json();
                 if (result.success) {
                     this.showToast('成功', '用户创建成功', 'success');
-                    this.loadUsersList(); // 重新加载用户列表
-                    bootstrap.Modal.getInstance(document.querySelector('.modal')).hide();
+                    
+                    // 关闭添加用户模态框
+                    const addUserModal = document.getElementById('addUserModal');
+                    if (addUserModal) {
+                        const bsModal = bootstrap.Modal.getInstance(addUserModal);
+                        if (bsModal) {
+                            bsModal.hide();
+                        }
+                    }
+                    
+                    // 等待模态框关闭后再重新加载用户列表
+                    setTimeout(() => {
+                        this.loadUsersList(); // 重新加载用户列表
+                    }, 300);
                 } else {
                     this.showToast('错误', result.message || '创建用户失败', 'danger');
                 }
@@ -13785,58 +15110,73 @@ class OKXTradingApp {
     // 加载权限模板
     async loadPermissionTemplates() {
         try {
-            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/permissions/templates`);
+            // 改为加载会员等级列表
+            const response = await this.apiRequest(`${this.apiBaseUrl}/membership/levels`);
             if (response && response.ok) {
                 const data = await response.json();
                 if (data.success && data.data) {
-                    this.renderPermissionTemplates(data.data);
+                    this.renderMembershipLevelsForPermissions(data.data);
                 } else {
-                    this.renderPermissionTemplates([]);
+                    this.renderMembershipLevelsForPermissions([]);
                 }
             } else {
-                this.renderPermissionTemplates([]);
+                this.renderMembershipLevelsForPermissions([]);
             }
         } catch (error) {
-            console.error('加载权限模板失败:', error);
-            this.renderPermissionTemplates([]);
+            console.error('加载会员等级失败:', error);
+            this.renderMembershipLevelsForPermissions([]);
         }
+    }
+    
+    // 渲染会员等级列表（替代原来的权限模板）- 用于权限管理页面
+    renderMembershipLevelsForPermissions(levels) {
+        const permissionsList = document.getElementById('permissionsList');
+        if (!permissionsList) return;
+
+        if (!levels || levels.length === 0) {
+            permissionsList.innerHTML = '<div class="list-group-item text-center text-muted">暂无会员等级</div>';
+            return;
+        }
+
+        const membershipBadgeClass = {
+            '免费会员': 'bg-secondary',
+            '基础会员': 'bg-info',
+            '高级会员': 'bg-success',
+            'VIP会员': 'bg-warning text-dark'
+        };
+
+        permissionsList.innerHTML = levels.map(level => {
+            const badgeClass = membershipBadgeClass[level.level_name] || 'bg-secondary';
+            return `
+                <div class="list-group-item d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>${level.level_name}</strong>
+                        <small class="text-muted d-block">${level.description || ''}</small>
+                        <small class="text-muted d-block">
+                            权限数: ${level.permission_count || 0} | 
+                            月费: ¥${level.price_monthly || 0} | 
+                            年费: ¥${level.price_yearly || 0}
+                        </small>
+                    </div>
+                    <div>
+                        <span class="badge ${badgeClass}">
+                            ${level.level_name}
+                        </span>
+                    </div>
+                </div>
+            `;
+        }).join('');
     }
 
     // 加载用户列表用于权限管理
     async loadUsersForPermissionManagement() {
         try {
-            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users`);
+            // 使用新的 API 端点，一次性获取所有用户及其权限和会员信息
+            const response = await this.apiRequest(`${this.apiBaseUrl}/auth/users/with-permissions`);
             if (response && response.ok) {
                 const data = await response.json();
                 if (data.success && data.data && data.data.users) {
-                    // 获取每个用户的权限信息
-                    const usersWithPermissions = await Promise.all(
-                        data.data.users.map(async (user) => {
-                            try {
-                                const permResponse = await this.apiRequest(`${this.apiBaseUrl}/auth/users/${user.id}/permissions`);
-                                if (permResponse && permResponse.ok) {
-                                    const permData = await permResponse.json();
-                                    return {
-                                        ...user,
-                                        permissions: permData.success && permData.data && permData.data.permissions 
-                                            ? permData.data.permissions 
-                                            : [],
-                                        hasCustomPermissions: permData.success && permData.data && permData.data.permissions
-                                            ? permData.data.permissions.some(p => p.source === 'user')
-                                            : false
-                                    };
-                                }
-                            } catch (error) {
-                                console.error(`获取用户 ${user.id} 权限失败:`, error);
-                            }
-                            return {
-                                ...user,
-                                permissions: [],
-                                hasCustomPermissions: false
-                            };
-                        })
-                    );
-                    this.renderUsersPermissionTable(usersWithPermissions);
+                    this.renderUsersPermissionTable(data.data.users);
                 } else {
                     this.renderUsersPermissionTable([]);
                 }
@@ -13861,23 +15201,39 @@ class OKXTradingApp {
 
         tbody.innerHTML = users.map(user => {
             // 统计权限数量
-            const permissionCount = user.permissions ? user.permissions.length : 0;
+            const permissionCount = user.permission_count || (user.permissions ? Object.keys(user.permissions).length : 0);
             
-            // 权限来源
-            const permissionSource = user.hasCustomPermissions 
-                ? '<span class="badge bg-warning text-dark">自定义</span>' 
-                : '<span class="badge bg-secondary">角色</span>';
+            // 权限来源（根据 permission_source 字段）
+            let permissionSource = '';
+            if (user.permission_source === 'custom') {
+                permissionSource = '<span class="badge bg-warning text-dark">自定义</span>';
+            } else if (user.permission_source === 'membership') {
+                permissionSource = '<span class="badge bg-success">会员</span>';
+            } else {
+                permissionSource = '<span class="badge bg-secondary">角色</span>';
+            }
             
             // 状态
             const statusBadge = user.status === 'active' 
                 ? '<span class="badge bg-success">启用</span>' 
                 : '<span class="badge bg-danger">禁用</span>';
             
-            // 角色
-            const roleName = user.role === 'admin' ? '管理员' : '普通用户';
-            const roleBadge = user.role === 'admin' 
-                ? '<span class="badge bg-primary">管理员</span>' 
-                : '<span class="badge bg-info">普通用户</span>';
+            // 角色和会员等级
+            let roleAndMembership = '';
+            if (user.role === 'admin') {
+                roleAndMembership = '<span class="badge bg-primary">管理员</span>';
+            } else if (user.membership && user.membership.level_name) {
+                // 显示会员等级
+                const membershipBadgeClass = {
+                    '免费会员': 'bg-secondary',
+                    '基础会员': 'bg-info',
+                    '高级会员': 'bg-success',
+                    'VIP会员': 'bg-warning text-dark'
+                }[user.membership.level_name] || 'bg-secondary';
+                roleAndMembership = `<span class="badge ${membershipBadgeClass}">${user.membership.level_name}</span>`;
+            } else {
+                roleAndMembership = '<span class="badge bg-secondary">普通用户</span>';
+            }
             
             // 关联客户
             const customerInfo = user.customer_uid 
@@ -13888,7 +15244,7 @@ class OKXTradingApp {
                 <tr>
                     <td>${user.id}</td>
                     <td>${user.username || '-'}</td>
-                    <td>${roleBadge}</td>
+                    <td>${roleAndMembership}</td>
                     <td>${customerInfo}</td>
                     <td>${permissionSource}</td>
                     <td>
@@ -15407,6 +16763,22 @@ class OKXTradingApp {
                     const symbolFilterStr = document.getElementById('tradingviewSymbolFilter').value.trim();
                     config.symbol_filter = symbolFilterStr ? symbolFilterStr.split(',').map(s => s.trim()) : [];
                     break;
+                
+                case 'telegram_bot':
+                    config.bot_token = document.getElementById('telegramBotToken').value;
+                    config.webhook_url = document.getElementById('telegramBotWebhookUrl').value || '';
+                    config.webhook_secret = document.getElementById('telegramBotWebhookSecret').value || '';
+                    config.default_rule_id = document.getElementById('telegramBotDefaultRuleId').value.trim() || '';
+                    // 不再需要 source_platform_id，Telegram Bot 会接收所有 TradingView 消息
+                    
+                    if (!config.bot_token) {
+                        this.showToast('错误', '请填写 Bot Token', 'warning');
+                        return;
+                    }
+                    
+                    // 如果配置了 webhook_url，但包含 {platform_id}，需要在保存后替换
+                    // 这里先保存，后端会在保存时自动替换
+                    break;
             }
             
             // 发送请求
@@ -15533,6 +16905,9 @@ class OKXTradingApp {
                 p.enabled && sendablePlatformTypes.includes(p.platform_type)
             );
             
+            // 🔧 保存原始平台列表用于搜索过滤
+            this._allTargetPlatforms = targetPlatforms;
+            
             this.renderTargetPlatforms(targetPlatforms);
             
         } catch (error) {
@@ -15540,7 +16915,7 @@ class OKXTradingApp {
         }
     }
     
-    // 渲染目标平台复选框
+    // 渲染目标平台复选框（优化：按类型分组，支持折叠）
     renderTargetPlatforms(platforms) {
         const container = document.getElementById('targetPlatformsContainer');
         if (!container) return;
@@ -15568,31 +16943,80 @@ class OKXTradingApp {
             'tradingview': 'TradingView'
         };
         
+        // 平台类型图标
+        const platformTypeIcons = {
+            'telegram': 'bi-telegram',
+            'dingtalk': 'bi-chat-dots',
+            'wechat': 'bi-wechat',
+            'bicoin': 'bi-coin',
+            'tradingview': 'bi-graph-up'
+        };
+        
         let html = '';
         
-        // 渲染每个平台类型
-        Object.keys(platformsByType).forEach(platformType => {
+        // 🔧 添加展开/折叠全部按钮
+        html += `
+            <div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom">
+                <small class="text-muted">共 ${platforms.length} 个平台</small>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="window.app.expandAllPlatformGroups()" title="展开全部">
+                        <i class="bi bi-chevron-down"></i> 展开全部
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="window.app.collapseAllPlatformGroups()" title="折叠全部">
+                        <i class="bi bi-chevron-up"></i> 折叠全部
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        // 渲染每个平台类型（分组折叠）
+        Object.keys(platformsByType).forEach((platformType, typeIndex) => {
             const typePlatforms = platformsByType[platformType];
             const typeName = platformTypeNames[platformType] || platformType;
+            const typeIcon = platformTypeIcons[platformType] || 'bi-circle';
+            const groupId = `platform-group-${platformType}`;
+            const isExpanded = typeIndex < 2; // 默认展开前2个分组
+            
+            html += `
+                <div class="platform-type-group mb-2" data-platform-type="${platformType}">
+                    <div class="d-flex align-items-center justify-content-between p-2 bg-light rounded cursor-pointer" 
+                         onclick="window.app.togglePlatformGroup('${groupId}')"
+                         style="cursor: pointer;">
+                        <div class="d-flex align-items-center">
+                            <i class="bi ${typeIcon} me-2"></i>
+                            <strong>${typeName}</strong>
+                            <span class="badge bg-secondary ms-2">${typePlatforms.length}</span>
+                        </div>
+                        <i class="bi bi-chevron-${isExpanded ? 'down' : 'right'}" id="${groupId}-icon"></i>
+                    </div>
+                    <div class="platform-group-items ${isExpanded ? '' : 'd-none'}" id="${groupId}" style="padding-left: 20px; margin-top: 5px;">
+            `;
             
             typePlatforms.forEach(platform => {
                 const platformId = `target_${platform.platform_type}_${platform.id}`;
-                // 总是显示实例名称，让用户知道选择的是哪个具体实例
                 const displayName = `${typeName} - ${platform.platform_name}`;
                 
                 html += `
-                    <div class="form-check">
+                    <div class="form-check target-platform-item mb-1" 
+                         data-platform-type="${platform.platform_type}"
+                         data-platform-name="${platform.platform_name.toLowerCase()}"
+                         data-display-name="${displayName.toLowerCase()}">
                         <input class="form-check-input target-platform" type="checkbox" 
                                id="${platformId}" 
                                value="${platform.id}" 
                                data-platform-type="${platform.platform_type}"
                                data-platform-name="${platform.platform_name}">
                         <label class="form-check-label" for="${platformId}">
-                            ${displayName}
+                            ${platform.platform_name}
                         </label>
                     </div>
                 `;
             });
+            
+            html += `
+                    </div>
+                </div>
+            `;
         });
         
         container.innerHTML = html;
@@ -15609,6 +17033,141 @@ class OKXTradingApp {
                 }
             });
         });
+    }
+    
+    // 🔧 切换平台分组展开/折叠
+    togglePlatformGroup(groupId) {
+        const groupItems = document.getElementById(groupId);
+        const groupIcon = document.getElementById(`${groupId}-icon`);
+        
+        if (groupItems && groupIcon) {
+            const isExpanded = !groupItems.classList.contains('d-none');
+            if (isExpanded) {
+                groupItems.classList.add('d-none');
+                groupIcon.classList.remove('bi-chevron-down');
+                groupIcon.classList.add('bi-chevron-right');
+            } else {
+                groupItems.classList.remove('d-none');
+                groupIcon.classList.remove('bi-chevron-right');
+                groupIcon.classList.add('bi-chevron-down');
+            }
+        }
+    }
+    
+    // 🔧 展开所有平台分组
+    expandAllPlatformGroups() {
+        document.querySelectorAll('.platform-group-items').forEach(group => {
+            group.classList.remove('d-none');
+        });
+        document.querySelectorAll('[id$="-icon"]').forEach(icon => {
+            if (icon.id.endsWith('-icon')) {
+                icon.classList.remove('bi-chevron-right');
+                icon.classList.add('bi-chevron-down');
+            }
+        });
+    }
+    
+    // 🔧 折叠所有平台分组
+    collapseAllPlatformGroups() {
+        document.querySelectorAll('.platform-group-items').forEach(group => {
+            group.classList.add('d-none');
+        });
+        document.querySelectorAll('[id$="-icon"]').forEach(icon => {
+            if (icon.id.endsWith('-icon')) {
+                icon.classList.remove('bi-chevron-down');
+                icon.classList.add('bi-chevron-right');
+            }
+        });
+    }
+    
+    // 🔧 过滤目标平台（搜索功能，优化：搜索时自动展开匹配的分组）
+    filterTargetPlatforms() {
+        const searchInput = document.getElementById('targetPlatformSearchInput');
+        if (!searchInput) return;
+        
+        const searchTerm = searchInput.value.toLowerCase().trim();
+        const container = document.getElementById('targetPlatformsContainer');
+        if (!container) return;
+        
+        const items = container.querySelectorAll('.target-platform-item');
+        const groups = container.querySelectorAll('.platform-type-group');
+        
+        if (!searchTerm) {
+            // 如果没有搜索词，显示所有，恢复默认折叠状态
+            items.forEach(item => {
+                item.style.display = '';
+            });
+            // 恢复默认展开前2个分组
+            groups.forEach((group, index) => {
+                const groupId = group.querySelector('.platform-group-items')?.id;
+                if (groupId) {
+                    const groupItems = document.getElementById(groupId);
+                    const groupIcon = document.getElementById(`${groupId}-icon`);
+                    if (groupItems && groupIcon) {
+                        if (index < 2) {
+                            groupItems.classList.remove('d-none');
+                            groupIcon.classList.remove('bi-chevron-right');
+                            groupIcon.classList.add('bi-chevron-down');
+                        } else {
+                            groupItems.classList.add('d-none');
+                            groupIcon.classList.remove('bi-chevron-down');
+                            groupIcon.classList.add('bi-chevron-right');
+                        }
+                    }
+                }
+            });
+            return;
+        }
+        
+        // 🔧 搜索时：展开所有分组，然后过滤显示
+        groups.forEach(group => {
+            const groupItems = group.querySelector('.platform-group-items');
+            const groupIcon = group.querySelector('[id$="-icon"]');
+            if (groupItems && groupIcon) {
+                groupItems.classList.remove('d-none');
+                groupIcon.classList.remove('bi-chevron-right');
+                groupIcon.classList.add('bi-chevron-down');
+            }
+        });
+        
+        // 过滤显示匹配的平台项
+        const matchedGroups = new Set();
+        items.forEach(item => {
+            const platformType = item.getAttribute('data-platform-type') || '';
+            const platformName = item.getAttribute('data-platform-name') || '';
+            const displayName = item.getAttribute('data-display-name') || '';
+            
+            // 搜索平台类型、平台名称或显示名称
+            const matches = platformType.toLowerCase().includes(searchTerm) ||
+                          platformName.includes(searchTerm) ||
+                          displayName.includes(searchTerm);
+            
+            item.style.display = matches ? '' : 'none';
+            
+            // 记录有匹配项的分组
+            if (matches) {
+                matchedGroups.add(platformType);
+            }
+        });
+        
+        // 🔧 隐藏没有匹配项的分组标题
+        groups.forEach(group => {
+            const platformType = group.getAttribute('data-platform-type');
+            if (platformType && !matchedGroups.has(platformType)) {
+                group.style.display = 'none';
+            } else {
+                group.style.display = '';
+            }
+        });
+    }
+    
+    // 🔧 清除目标平台搜索
+    clearTargetPlatformSearch() {
+        const searchInput = document.getElementById('targetPlatformSearchInput');
+        if (searchInput) {
+            searchInput.value = '';
+            this.filterTargetPlatforms();
+        }
     }
 
     // 保存转发规则
@@ -15913,6 +17472,9 @@ class OKXTradingApp {
                                 <button class="btn btn-sm btn-success" onclick="window.app.renewSubscription('${sub.rule_id}', ${sub.target_platform_id}, '${sub.target_chat_id}')" title="续订30天">
                                     <i class="bi bi-arrow-repeat"></i> 续订
                                 </button>
+                                <button class="btn btn-sm btn-danger" onclick="window.app.deleteSubscription('${sub.rule_id}', ${sub.target_platform_id}, '${sub.target_chat_id}')" title="删除订阅">
+                                    <i class="bi bi-trash"></i> 删除
+                                </button>
                             </div>
                         </td>
                     </tr>
@@ -16071,6 +17633,41 @@ class OKXTradingApp {
         } catch (error) {
             console.error('续订订阅失败:', error);
             this.showToast('错误', '续订订阅失败: ' + error.message, 'danger');
+        }
+    }
+
+    // 删除订阅
+    async deleteSubscription(ruleId, targetPlatformId, targetChatId) {
+        const platformName = this._subscriptionsPlatforms.find(p => p.id === targetPlatformId)?.platform_name || `平台ID: ${targetPlatformId}`;
+        if (!confirm(`确定要删除订阅吗？\n规则: ${document.getElementById('subscriptionRuleName').textContent}\n平台: ${platformName}\n群组: ${targetChatId}\n\n删除后，该平台将不再接收转发消息。`)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/message-forward/subscriptions/delete`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    rule_id: ruleId,
+                    target_platform_id: targetPlatformId,
+                    target_chat_id: targetChatId
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showToast('成功', data.message || '订阅删除成功', 'success');
+                // 刷新订阅列表
+                await this.loadSubscriptionsList(ruleId);
+            } else {
+                this.showToast('错误', data.message || '删除失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除订阅失败:', error);
+            this.showToast('错误', '删除订阅失败: ' + error.message, 'danger');
         }
     }
 
@@ -16543,17 +18140,38 @@ class OKXTradingApp {
             await waitForTargetPlatforms();
             
             // 设置目标平台
-            const targetPlatformIds = rule.target_platform_ids || [];
+            // 🔧 确保 target_platform_ids 是数组格式（可能是字符串或null）
+            let targetPlatformIds = [];
+            if (rule.target_platform_ids) {
+                if (typeof rule.target_platform_ids === 'string') {
+                    try {
+                        targetPlatformIds = JSON.parse(rule.target_platform_ids);
+                    } catch (e) {
+                        console.warn('解析 target_platform_ids 失败:', e);
+                        targetPlatformIds = [];
+                    }
+                } else if (Array.isArray(rule.target_platform_ids)) {
+                    targetPlatformIds = rule.target_platform_ids;
+                }
+            }
+            
+            // 🔧 确保所有复选框先取消选中
+            document.querySelectorAll('.target-platform').forEach(checkbox => {
+                checkbox.checked = false;
+            });
+            
             if (targetPlatformIds.length > 0) {
                 // 选中对应的平台实例
                 targetPlatformIds.forEach(platformId => {
-                    const checkbox = document.querySelector(`.target-platform[value="${platformId}"]`);
+                    // 🔧 确保 platformId 是数字或字符串
+                    const platformIdStr = String(platformId);
+                    const checkbox = document.querySelector(`.target-platform[value="${platformIdStr}"]`);
                     if (checkbox) {
                         checkbox.checked = true;
                         // 触发change事件以显示对应的配置
                         checkbox.dispatchEvent(new Event('change'));
-                } else {
-                        console.warn(`未找到平台实例复选框 (ID: ${platformId})`);
+                    } else {
+                        console.warn(`未找到平台实例复选框 (ID: ${platformIdStr})`);
                     }
                 });
             } else {
@@ -16562,18 +18180,20 @@ class OKXTradingApp {
                     rule.target_platforms : 
                     (rule.target_platforms ? [rule.target_platforms] : []);
                 
-                targetPlatforms.forEach(platformType => {
-                    // 选中该类型的所有平台实例
-                    const checkboxes = document.querySelectorAll(`.target-platform[data-platform-type="${platformType}"]`);
-                    if (checkboxes.length > 0) {
-                        checkboxes.forEach(checkbox => {
-                            checkbox.checked = true;
-                            checkbox.dispatchEvent(new Event('change'));
-                        });
-                    } else {
-                        console.warn(`未找到平台类型复选框 (类型: ${platformType})`);
-                    }
-                });
+                if (targetPlatforms.length > 0) {
+                    targetPlatforms.forEach(platformType => {
+                        // 选中该类型的所有平台实例
+                        const checkboxes = document.querySelectorAll(`.target-platform[data-platform-type="${platformType}"]`);
+                        if (checkboxes.length > 0) {
+                            checkboxes.forEach(checkbox => {
+                                checkbox.checked = true;
+                                checkbox.dispatchEvent(new Event('change'));
+                            });
+                        } else {
+                            console.warn(`未找到平台类型复选框 (类型: ${platformType})`);
+                        }
+                    });
+                }
             }
             
             // 设置目标聊天ID
@@ -19983,6 +21603,47 @@ document.addEventListener('DOMContentLoaded', function() {
                     await window.app.loadForwardRulesList();
                 } catch (error) {
                     console.error('加载转发规则列表失败:', error);
+                }
+            }
+        });
+    }
+    
+    // Telegram Bot 管理标签页切换事件
+    const telegramBotTab = document.getElementById('telegram-bot-tab');
+    if (telegramBotTab) {
+        telegramBotTab.addEventListener('shown.bs.tab', async () => {
+            // 确保数据已加载
+            if (window.app) {
+                try {
+                    await window.app.loadTelegramBotPlatforms();
+                } catch (error) {
+                    console.error('加载 Telegram Bot 平台列表失败:', error);
+                }
+            }
+        });
+    }
+    
+    // Telegram Bot 平台选择变化事件
+    const telegramBotPlatformSelect = document.getElementById('telegramBotPlatformSelect');
+    if (telegramBotPlatformSelect) {
+        telegramBotPlatformSelect.addEventListener('change', async (e) => {
+            const platformId = e.target.value;
+            if (platformId && window.app) {
+                await window.app.loadTelegramBotSubscriptions(platformId);
+            }
+        });
+    }
+    
+    // Telegram Bot 订阅刷新按钮
+    const refreshTelegramBotSubscriptionsBtn = document.getElementById('refreshTelegramBotSubscriptionsBtn');
+    if (refreshTelegramBotSubscriptionsBtn) {
+        refreshTelegramBotSubscriptionsBtn.addEventListener('click', async () => {
+            if (window.app) {
+                const platformId = document.getElementById('telegramBotPlatformSelect')?.value;
+                if (platformId) {
+                    await window.app.loadTelegramBotSubscriptions(platformId);
+                } else {
+                    window.app.showToast('提示', '请先选择 Bot 平台', 'warning');
                 }
             }
         });

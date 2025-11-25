@@ -6004,7 +6004,7 @@ def get_popular_traders():
         exchange = request.args.get('exchange', 'all')  # okx, binance, all
         limit = request.args.get('limit', type=int)  # 限制返回数量
         sort_by = request.args.get('sort_by', 'yield_ratio')  # 排序字段
-        fetch_all = request.args.get('fetch_all', 'true').lower() == 'true'  # 是否获取所有页面（默认true，但实际最多4页）
+        fetch_all = request.args.get('fetch_all', 'true').lower() == 'true'  # 是否获取所有页面（默认true，但实际最多10页）
         use_cache = request.args.get('use_cache', 'true').lower() == 'true'  # 是否使用缓存（默认true）
         
         # OKX参数
@@ -9646,6 +9646,10 @@ def start_follow_monitor_in_background():
             try:
                 # 在新线程中创建全新的事件循环（完全独立，不受 nest_asyncio 影响）
                 # 注意：nest_asyncio 只影响主线程，独立线程的事件循环应该是干净的
+                # 先清除当前线程的事件循环（如果有）
+                asyncio.set_event_loop(None)
+                
+                # 创建全新的事件循环
                 new_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(new_loop)
                 
@@ -9653,7 +9657,9 @@ def start_follow_monitor_in_background():
                 if hasattr(new_loop, '_nest_patched'):
                     logger.warning("⚠️ 事件循环被 nest_asyncio 补丁影响，这可能导致问题")
                 
-                logger.info(f"✅ 限价跟单监控器已在独立线程和事件循环中启动: {new_loop}")
+                thread_id = threading.current_thread().ident
+                thread_name = threading.current_thread().name
+                logger.info(f"✅ 限价跟单监控器已在独立线程和事件循环中启动: 线程ID={thread_id}, 线程名={thread_name}, 事件循环={new_loop} (ID={id(new_loop)})")
                 
                 # 直接运行异步函数（不使用 create_task，避免任务管理问题）
                 try:
@@ -12388,7 +12394,7 @@ def stop_message_forward_service():
 # 获取平台列表
 @app.route('/api/v1/message-forward/platforms', methods=['GET'])
 def get_message_platforms():
-    """获取所有平台（支持分页）"""
+    """获取所有平台（支持分页和按平台类型过滤）"""
     if not MESSAGE_FORWARD_AVAILABLE:
         return jsonify({
             'success': False,
@@ -12399,6 +12405,7 @@ def get_message_platforms():
         # 获取分页参数
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 20, type=int)
+        platform_type = request.args.get('platform_type', '').strip()  # 获取平台类型过滤参数
         
         # 参数验证
         if page < 1:
@@ -12409,7 +12416,7 @@ def get_message_platforms():
             page_size = 100
         
         service = get_message_forward_service()
-        result = service.get_platforms(page=page, page_size=page_size)
+        result = service.get_platforms(page=page, page_size=page_size, platform_type=platform_type)
         return jsonify(result), 200 if result['success'] else 500
     except Exception as e:
         logger.error(f"获取平台列表失败: {e}")
@@ -13252,6 +13259,440 @@ def renew_subscription():
             'message': str(e)
         }), 500
 
+@app.route('/api/v1/message-forward/subscriptions/delete', methods=['POST'])
+def delete_subscription():
+    """删除订阅"""
+    if not MESSAGE_FORWARD_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': '消息转发模块未启用'
+        }), 503
+    
+    try:
+        from database.global_db_manager import get_global_db_pool
+        
+        data = request.get_json()
+        if not data or not all(k in data for k in ['rule_id', 'target_platform_id', 'target_chat_id']):
+            return jsonify({
+                'success': False,
+                'message': '缺少必填字段: rule_id, target_platform_id, target_chat_id'
+            }), 400
+        
+        db_pool = get_global_db_pool()
+        
+        # 删除订阅记录
+        deleted_count = db_pool.execute(
+            "DELETE FROM forward_rule_subscriptions WHERE rule_id = %s AND target_platform_id = %s AND target_chat_id = %s",
+            (data['rule_id'], data['target_platform_id'], data['target_chat_id'])
+        )
+        
+        if deleted_count > 0:
+            # 🔧 检查该平台是否还有其他订阅，如果没有，从规则的 target_platform_ids 中移除
+            remaining_subscriptions = db_pool.query(
+                "SELECT DISTINCT target_platform_id FROM forward_rule_subscriptions WHERE rule_id = %s AND target_platform_id = %s",
+                (data['rule_id'], data['target_platform_id'])
+            )
+            
+            if not remaining_subscriptions:
+                # 该平台已没有任何订阅，需要从规则的 target_platform_ids 中移除
+                rule = db_pool.query_one(
+                    "SELECT target_platform_ids FROM message_forward_rules WHERE rule_id = %s",
+                    (data['rule_id'],)
+                )
+                if rule and rule.get('target_platform_ids'):
+                    import json
+                    try:
+                        target_platform_ids = json.loads(rule['target_platform_ids']) if isinstance(rule['target_platform_ids'], str) else rule['target_platform_ids']
+                        if isinstance(target_platform_ids, list) and data['target_platform_id'] in target_platform_ids:
+                            target_platform_ids.remove(data['target_platform_id'])
+                            db_pool.execute(
+                                "UPDATE message_forward_rules SET target_platform_ids = %s, updated_at = NOW() WHERE rule_id = %s",
+                                (json.dumps(target_platform_ids), data['rule_id'])
+                            )
+                            logger.info(f"✅ 已从规则 {data['rule_id']} 的 target_platform_ids 中移除平台 {data['target_platform_id']}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ 更新规则的 target_platform_ids 失败: {e}")
+            
+            return jsonify({
+                'success': True,
+                'message': '订阅删除成功'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': '订阅不存在或已删除'
+            }), 404
+    except Exception as e:
+        logger.error(f"删除订阅失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+# ==================== 兑换码管理 API ====================
+
+@app.route('/api/v1/redemption-codes', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def get_redemption_codes():
+    """获取兑换码列表（支持分页和筛选）
+    普通用户只能查看未使用的兑换码，管理员可以查看所有兑换码
+    """
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        # 获取参数
+        page = request.args.get('page', 1, type=int)
+        page_size = request.args.get('page_size', 20, type=int)
+        exchange = request.args.get('exchange', type=str)
+        is_active = request.args.get('is_active', type=int)
+        search = request.args.get('search', type=str)
+        
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 20
+        if page_size > 100:
+            page_size = 100
+        
+        # 如果不是管理员，只允许查看未使用的兑换码
+        if not is_admin:
+            is_active = 1  # 只显示激活的
+            # 普通用户只能查看未使用的兑换码（user_id为NULL）
+            # 这个逻辑需要在服务层处理
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务
+        from core.message_forward.telegram_bot.redemption_code_service import RedemptionCodeService
+        service = RedemptionCodeService(db_pool)
+        result = service.get_redemption_codes(
+            exchange=exchange,
+            is_active=is_active,
+            page=page,
+            page_size=page_size,
+            search=search,
+            user_only=not is_admin  # 普通用户只能查看未使用的
+        )
+        
+        return jsonify(result), 200 if result.get('success') else 500
+        
+    except Exception as e:
+        logger.error(f"获取兑换码列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/redemption-codes', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def create_redemption_code():
+    """创建兑换码"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        if not is_admin:
+            return jsonify({'success': False, 'message': '权限不足'}), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': '请求数据无效'}), 400
+        
+        exchange = data.get('exchange')
+        if not exchange or exchange not in ['okx', 'binance']:
+            return jsonify({'success': False, 'message': '交易所类型无效'}), 400
+        
+        description = data.get('description')
+        expires_at_str = data.get('expires_at')
+        expires_at = None
+        if expires_at_str:
+            try:
+                from datetime import datetime
+                expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+            except Exception as e:
+                logger.warning(f"解析过期时间失败: {e}")
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务
+        from core.message_forward.telegram_bot.redemption_code_service import RedemptionCodeService
+        service = RedemptionCodeService(db_pool)
+        result = service.create_redemption_code(
+            exchange=exchange,
+            description=description,
+            expires_at=expires_at,
+            created_by=user_id
+        )
+        
+        return jsonify(result), 200 if result.get('success') else 500
+        
+    except Exception as e:
+        logger.error(f"创建兑换码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/redemption-codes/batch', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def batch_create_redemption_codes():
+    """批量创建兑换码"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        if not is_admin:
+            return jsonify({'success': False, 'message': '权限不足'}), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': '请求数据无效'}), 400
+        
+        exchange = data.get('exchange')
+        if not exchange or exchange not in ['okx', 'binance']:
+            return jsonify({'success': False, 'message': '交易所类型无效'}), 400
+        
+        count = data.get('count', 1)
+        if count < 1 or count > 100:
+            return jsonify({'success': False, 'message': '创建数量必须在 1-100 之间'}), 400
+        
+        description = data.get('description')
+        expires_at_str = data.get('expires_at')
+        expires_at = None
+        if expires_at_str:
+            try:
+                from datetime import datetime
+                expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+            except Exception as e:
+                logger.warning(f"解析过期时间失败: {e}")
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务
+        from core.message_forward.telegram_bot.redemption_code_service import RedemptionCodeService
+        service = RedemptionCodeService(db_pool)
+        result = service.batch_create_redemption_codes(
+            exchange=exchange,
+            count=count,
+            description=description,
+            expires_at=expires_at,
+            created_by=user_id
+        )
+        
+        return jsonify(result), 200 if result.get('success') else 500
+        
+    except Exception as e:
+        logger.error(f"批量创建兑换码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/redemption-codes/<int:code_id>', methods=['PUT'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def update_redemption_code(code_id):
+    """更新兑换码"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        if not is_admin:
+            return jsonify({'success': False, 'message': '权限不足'}), 403
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': '请求数据无效'}), 400
+        
+        description = data.get('description')
+        is_active = data.get('is_active')
+        expires_at_str = data.get('expires_at')
+        expires_at = None
+        if expires_at_str:
+            try:
+                from datetime import datetime
+                expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+            except Exception as e:
+                logger.warning(f"解析过期时间失败: {e}")
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务
+        from core.message_forward.telegram_bot.redemption_code_service import RedemptionCodeService
+        service = RedemptionCodeService(db_pool)
+        result = service.update_redemption_code(
+            code_id=code_id,
+            description=description,
+            is_active=is_active,
+            expires_at=expires_at
+        )
+        
+        return jsonify(result), 200 if result.get('success') else 500
+        
+    except Exception as e:
+        logger.error(f"更新兑换码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/redemption-codes/<int:code_id>', methods=['DELETE'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def delete_redemption_code(code_id):
+    """删除兑换码"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        if not is_admin:
+            return jsonify({'success': False, 'message': '权限不足'}), 403
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务
+        from core.message_forward.telegram_bot.redemption_code_service import RedemptionCodeService
+        service = RedemptionCodeService(db_pool)
+        result = service.delete_redemption_code(code_id)
+        
+        return jsonify(result), 200 if result.get('success') else 500
+        
+    except Exception as e:
+        logger.error(f"删除兑换码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/redemption-codes/statistics', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def get_redemption_codes_statistics():
+    """获取兑换码统计信息
+    普通用户只能查看未使用的兑换码统计，管理员可以查看完整统计
+    """
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务
+        from core.message_forward.telegram_bot.redemption_code_service import RedemptionCodeService
+        service = RedemptionCodeService(db_pool)
+        result = service.get_statistics(admin_only=is_admin)
+        
+        return jsonify(result), 200 if result.get('success') else 500
+        
+    except Exception as e:
+        logger.error(f"获取兑换码统计失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
 # ==================== 转发交易 API ====================
 
 @app.route('/api/v1/forward-trade/configs', methods=['GET'])
@@ -13263,8 +13704,23 @@ def get_forward_trade_configs():
         if not user_id:
             return jsonify({'success': False, 'message': '未登录'}), 401
         
+        # 🔧 检查是否为管理员
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.is_admin(user_id)
+            except Exception as e:
+                logger.debug(f"检查管理员权限失败: {e}")
+        
+        # 构建查询条件（管理员可以看到所有，普通用户只能看到自己的）
+        where_clause = "ftc.user_id = %s" if not is_admin else "1=1"
+        query_params = [] if is_admin else [user_id]
+        
         # 查询配置列表
-        query = """
+        query = f"""
             SELECT 
                 ftc.id,
                 ftc.config_name,
@@ -13285,10 +13741,10 @@ def get_forward_trade_configs():
                 mp.platform_name as source_platform_display_name
             FROM forward_trade_configs ftc
             LEFT JOIN message_platforms mp ON ftc.source_platform_id = mp.id
-            WHERE ftc.user_id = %s
+            WHERE {where_clause}
             ORDER BY ftc.created_at DESC
         """
-        rows = db_pool.query(query, (user_id,))
+        rows = db_pool.query(query, tuple(query_params) if query_params else None)
         
         configs = []
         for row in rows:
@@ -13354,8 +13810,19 @@ def create_forward_trade_config():
         if not customer_data:
             return jsonify({'success': False, 'message': '客户账号不存在'}), 400
         
-        # 检查客户账号是否属于当前用户
-        if customer_data['owner_user_id'] != user_id:
+        # 🔧 检查是否为管理员
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.is_admin(user_id)
+            except Exception as e:
+                logger.debug(f"检查管理员权限失败: {e}")
+        
+        # 管理员可以使用所有客户账号，普通用户只能使用自己的
+        if not is_admin and customer_data['owner_user_id'] != user_id:
             return jsonify({'success': False, 'message': '无权使用该客户账号'}), 403
         
         # 插入配置
@@ -13451,7 +13918,8 @@ def update_forward_trade_config(config_id):
             )
             if not customer_data:
                 return jsonify({'success': False, 'message': '客户账号不存在'}), 400
-            if customer_data['owner_user_id'] != user_id:
+            # 🔧 管理员可以使用所有客户账号，普通用户只能使用自己的
+            if not is_admin and customer_data['owner_user_id'] != user_id:
                 return jsonify({'success': False, 'message': '无权使用该客户账号'}), 403
             
             update_fields.append("customer_uid = %s")
@@ -13521,11 +13989,28 @@ def delete_forward_trade_config(config_id):
         if not user_id:
             return jsonify({'success': False, 'message': '未登录'}), 401
         
-        # 检查配置是否存在且属于当前用户
-        existing = db_pool.query_one(
-            "SELECT id FROM forward_trade_configs WHERE id = %s AND user_id = %s",
-            (config_id, user_id)
-        )
+        # 🔧 检查是否为管理员
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.is_admin(user_id)
+            except Exception as e:
+                logger.debug(f"检查管理员权限失败: {e}")
+        
+        # 检查配置是否存在且属于当前用户（管理员可以删除所有配置）
+        if is_admin:
+            existing = db_pool.query_one(
+                "SELECT id FROM forward_trade_configs WHERE id = %s",
+                (config_id,)
+            )
+        else:
+            existing = db_pool.query_one(
+                "SELECT id FROM forward_trade_configs WHERE id = %s AND user_id = %s",
+                (config_id, user_id)
+            )
         if not existing:
             return jsonify({'success': False, 'message': '配置不存在或无权限'}), 404
         
@@ -13562,9 +14047,24 @@ def get_forward_trade_records():
         page = request.args.get('page', 1, type=int)
         page_size = request.args.get('page_size', 20, type=int)
         
-        # 构建查询条件
-        where_clause = "ftc.user_id = %s"
-        params = [user_id]
+        # 🔧 检查是否为管理员
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import get_permission_service
+                permission_service = get_permission_service()
+                if permission_service:
+                    is_admin = permission_service.is_admin(user_id)
+            except Exception as e:
+                logger.debug(f"检查管理员权限失败: {e}")
+        
+        # 构建查询条件（管理员可以看到所有，普通用户只能看到自己的）
+        if is_admin:
+            where_clause = "1=1"
+            params = []
+        else:
+            where_clause = "ftc.user_id = %s"
+            params = [user_id]
         
         if config_id:
             where_clause += " AND ftr.config_id = %s"
@@ -13799,7 +14299,7 @@ def receive_tradingview_webhook():
                     else:
                         raise ValueError("正则表达式解析失败，未提取到任何数据")
                 else:
-                    # 有引号但解析失败，可能是格式问题
+                        # 有引号但解析失败，可能是格式问题，重新抛出原始的 JSON 解析错误
                     raise json_error
             except (json.JSONDecodeError, ValueError) as e:
                 # 所有解析方法都失败
@@ -13920,6 +14420,379 @@ def get_webhook_status():
         return jsonify({
             'success': False,
             'error': str(e)
+        }), 500
+
+# ==================== Telegram Bot Webhook ====================
+
+@app.route('/webhook/telegram_bot/<int:platform_id>', methods=['POST'])
+def receive_telegram_bot_webhook(platform_id):
+    """
+    接收 Telegram Bot Webhook 更新
+    
+    Args:
+        platform_id: Telegram Bot 平台ID
+    
+    配置说明：
+    1. 在 Telegram Bot 平台配置中设置 webhook_url:
+       https://your-domain.com/webhook/telegram_bot/{platform_id}
+    2. 可选：设置 webhook_secret 用于验证请求
+    3. 在 connect() 时会自动设置 webhook
+    """
+    try:
+        # 验证 secret token（如果配置了）
+        secret_token = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
+        
+        # 获取消息转发服务
+        if not MESSAGE_FORWARD_AVAILABLE:
+            logger.warning("消息转发模块不可用")
+            return jsonify({'ok': False, 'error': 'Message forward service unavailable'}), 503
+        
+        message_forward_service = get_message_forward_service()
+        if not message_forward_service or not message_forward_service.manager:
+            logger.warning("消息转发管理器未初始化")
+            return jsonify({'ok': False, 'error': 'Message forward manager not initialized'}), 503
+        
+        # 获取平台实例
+        manager = message_forward_service.manager
+        platform = None
+        
+        # 从监听服务获取平台实例
+        if hasattr(manager, '_listener_service') and manager._listener_service:
+            if hasattr(manager._listener_service, 'listening_platforms'):
+                platform = manager._listener_service.listening_platforms.get(platform_id)
+        
+        # 如果不在监听服务中，尝试从数据库动态创建
+        if not platform:
+            platform = manager._get_or_create_platform_instance(platform_id)
+        
+        if not platform:
+            logger.warning(f"Telegram Bot 平台实例不存在 (ID: {platform_id})")
+            return jsonify({'ok': False, 'error': 'Platform not found'}), 404
+        
+        # 检查是否是 Telegram Bot 平台
+        if not hasattr(platform, 'process_webhook_update'):
+            logger.warning(f"平台 {platform_id} 不是 Telegram Bot 平台")
+            return jsonify({'ok': False, 'error': 'Not a Telegram Bot platform'}), 400
+        
+        # 验证 secret token
+        if platform.webhook_secret and secret_token != platform.webhook_secret:
+            logger.warning(f"Webhook secret token 验证失败 (平台ID: {platform_id})")
+            return jsonify({'ok': False, 'error': 'Invalid secret token'}), 403
+        
+        # 获取更新数据
+        update_data = request.get_json()
+        if not update_data:
+            logger.warning("Webhook 请求中没有更新数据")
+            return jsonify({'ok': False, 'error': 'No update data'}), 400
+        
+        # 处理更新
+        try:
+            platform.process_webhook_update(update_data)
+            return jsonify({'ok': True}), 200
+        except Exception as e:
+            logger.error(f"处理 Telegram Bot Webhook 更新失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # 即使处理失败，也返回 200，避免 Telegram 重复发送
+            return jsonify({'ok': True, 'error': str(e)}), 200
+            
+    except Exception as e:
+        logger.error(f"接收 Telegram Bot Webhook 失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+# ==================== Telegram Bot 管理 API ====================
+
+@app.route('/api/v1/telegram-bot/<int:platform_id>/subscriptions', methods=['GET'])
+def get_telegram_bot_subscriptions(platform_id):
+    """
+    获取 Telegram Bot 订阅用户列表
+    
+    Args:
+        platform_id: Telegram Bot 平台ID
+    
+    Query Parameters:
+        page: 页码（默认1）
+        page_size: 每页数量（默认20）
+        status: 订阅状态过滤（active, expired, cancelled，可选）
+    """
+    try:
+        if not MESSAGE_FORWARD_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '消息转发模块未启用'
+            }), 503
+        
+        # 获取查询参数
+        page = int(request.args.get('page', 1))
+        page_size = int(request.args.get('page_size', 20))
+        status = request.args.get('status', '')  # 可选的状态过滤
+        
+        # 先获取数据库连接池（用于后续查询和传递给管理器）
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({
+                'success': False,
+                'message': '数据库连接不可用'
+            }), 500
+        
+        # 验证平台是否存在且为 Telegram Bot
+        service = get_message_forward_service()
+        if not service or not service.manager:
+            return jsonify({
+                'success': False,
+                'message': '消息转发管理器未初始化'
+            }), 503
+        
+        manager = service.manager
+        
+        # 确保管理器的 _db 已设置（如果未设置，使用数据库连接池）
+        if not manager._db:
+            manager._db = db_pool
+        
+        platform = manager._get_or_create_platform_instance(platform_id)
+        
+        if not platform:
+            return jsonify({
+                'success': False,
+                'message': f'平台 {platform_id} 不存在或无法创建'
+            }), 404
+        
+        # 检查是否是 Telegram Bot 平台
+        from core.message_forward.models import PlatformType
+        if not hasattr(platform, 'platform_type') or platform.platform_type != PlatformType.TELEGRAM_BOT:
+            return jsonify({
+                'success': False,
+                'message': f'平台 {platform_id} 不是 Telegram Bot 平台'
+            }), 400
+        
+        # 构建查询SQL
+        where_clauses = ['target_platform_id = %s']
+        params = [platform_id]
+        
+        if status:
+            where_clauses.append('subscription_status = %s')
+            params.append(status)
+        
+        where_sql = ' AND '.join(where_clauses)
+        
+        # 获取总数
+        count_sql = f"""
+            SELECT COUNT(*) as total
+            FROM telegram_user_subscriptions
+            WHERE {where_sql}
+        """
+        count_result = db_pool.query(count_sql, tuple(params))
+        total = count_result[0]['total'] if count_result else 0
+        
+        # 计算分页
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+        offset = (page - 1) * page_size
+        
+        # 获取订阅列表
+        sql = f"""
+            SELECT 
+                s.id,
+                s.user_id,
+                s.username,
+                s.rule_id,
+                r.rule_name,
+                s.source_platform_id,
+                s.target_platform_id,
+                s.intervals,
+                s.strategies,
+                s.subscription_status,
+                s.start_date,
+                s.expire_date,
+                s.messages_received,
+                s.last_message_at,
+                s.created_at,
+                s.updated_at
+            FROM telegram_user_subscriptions s
+            LEFT JOIN message_forward_rules r ON s.rule_id = r.rule_id
+            WHERE {where_sql}
+            ORDER BY s.created_at DESC
+            LIMIT %s OFFSET %s
+        """
+        params.extend([page_size, offset])
+        
+        rows = db_pool.query(sql, tuple(params))
+        
+        # 处理结果
+        subscriptions = []
+        for row in rows:
+            subscription = dict(row)
+            
+            # 解析 JSON 字段
+            if subscription.get('intervals'):
+                if isinstance(subscription['intervals'], str):
+                    try:
+                        import json
+                        subscription['intervals'] = json.loads(subscription['intervals'])
+                    except:
+                        subscription['intervals'] = []
+                elif subscription['intervals'] is None:
+                    subscription['intervals'] = []
+            else:
+                subscription['intervals'] = []
+            
+            if subscription.get('strategies'):
+                if isinstance(subscription['strategies'], str):
+                    try:
+                        import json
+                        subscription['strategies'] = json.loads(subscription['strategies'])
+                    except:
+                        subscription['strategies'] = []
+                elif subscription['strategies'] is None:
+                    subscription['strategies'] = []
+            else:
+                subscription['strategies'] = []
+            
+            # 格式化日期
+            for date_field in ['start_date', 'expire_date', 'last_message_at', 'created_at', 'updated_at']:
+                if subscription.get(date_field):
+                    if isinstance(subscription[date_field], datetime):
+                        subscription[date_field] = subscription[date_field].isoformat()
+                    elif isinstance(subscription[date_field], str):
+                        # 已经是字符串，保持不变
+                        pass
+            
+            subscriptions.append(subscription)
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'subscriptions': subscriptions,
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total': total,
+                    'total_pages': total_pages
+                }
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"获取 Telegram Bot 订阅列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/telegram-bot/<int:platform_id>/stats', methods=['GET'])
+def get_telegram_bot_stats(platform_id):
+    """
+    获取 Telegram Bot 订阅统计信息
+    
+    Args:
+        platform_id: Telegram Bot 平台ID
+    """
+    try:
+        if not MESSAGE_FORWARD_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '消息转发模块未启用'
+            }), 503
+        
+        # 先获取数据库连接池（用于后续查询和传递给管理器）
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({
+                'success': False,
+                'message': '数据库连接不可用'
+            }), 500
+        
+        # 验证平台是否存在
+        service = get_message_forward_service()
+        if not service or not service.manager:
+            return jsonify({
+                'success': False,
+                'message': '消息转发管理器未初始化'
+            }), 503
+        
+        manager = service.manager
+        
+        # 确保管理器的 _db 已设置（如果未设置，使用数据库连接池）
+        if not manager._db:
+            manager._db = db_pool
+        
+        platform = manager._get_or_create_platform_instance(platform_id)
+        
+        if not platform:
+            return jsonify({
+                'success': False,
+                'message': f'平台 {platform_id} 不存在或无法创建'
+            }), 404
+        
+        # 检查是否是 Telegram Bot 平台
+        from core.message_forward.models import PlatformType
+        if not hasattr(platform, 'platform_type') or platform.platform_type != PlatformType.TELEGRAM_BOT:
+            return jsonify({
+                'success': False,
+                'message': f'平台 {platform_id} 不是 Telegram Bot 平台'
+            }), 400
+        
+        # 获取统计信息
+        stats_sql = """
+            SELECT 
+                COUNT(*) as total_subscriptions,
+                SUM(CASE WHEN subscription_status = 'active' AND (expire_date IS NULL OR expire_date > NOW()) THEN 1 ELSE 0 END) as active_subscriptions,
+                SUM(CASE WHEN subscription_status = 'expired' OR (expire_date IS NOT NULL AND expire_date <= NOW()) THEN 1 ELSE 0 END) as expired_subscriptions,
+                SUM(CASE WHEN subscription_status = 'cancelled' THEN 1 ELSE 0 END) as cancelled_subscriptions,
+                COALESCE(SUM(messages_received), 0) as total_messages
+            FROM telegram_user_subscriptions
+            WHERE target_platform_id = %s
+        """
+        
+        stats_result = db_pool.query(stats_sql, (platform_id,))
+        
+        if stats_result:
+            stats = dict(stats_result[0])
+            # 确保数值类型
+            for key in ['total_subscriptions', 'active_subscriptions', 'expired_subscriptions', 
+                       'cancelled_subscriptions', 'total_messages']:
+                stats[key] = int(stats[key] or 0)
+        else:
+            stats = {
+                'total_subscriptions': 0,
+                'active_subscriptions': 0,
+                'expired_subscriptions': 0,
+                'cancelled_subscriptions': 0,
+                'total_messages': 0
+            }
+        
+        # 获取今日消息数（基于实际接收的消息）
+        today_messages_sql = """
+            SELECT COALESCE(SUM(messages_received), 0) as total
+            FROM telegram_user_subscriptions
+            WHERE target_platform_id = %s
+            AND last_message_at IS NOT NULL
+            AND DATE(last_message_at) = CURDATE()
+        """
+        today_result = db_pool.query(today_messages_sql, (platform_id,))
+        if today_result and today_result[0].get('total') is not None:
+            stats['today_messages'] = int(today_result[0]['total'] or 0)
+        else:
+            stats['today_messages'] = 0
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'platform_id': platform_id,
+                'stats': stats
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"获取 Telegram Bot 统计信息失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
         }), 500
 
 # ==================== 微信公众号消息接收 ====================
@@ -14685,6 +15558,55 @@ else:
             )
             
             if user:
+                # 如果提供了会员等级，为用户创建会员记录
+                membership_level_id = data.get('membership_level_id')
+                if membership_level_id:
+                    try:
+                        from core.membership.membership_service import MembershipService
+                        from datetime import datetime, timedelta
+                        
+                        membership_service = MembershipService()
+                        # 创建会员订单并激活（默认1个月有效期）
+                        expires_at = datetime.now() + timedelta(days=30)
+                        
+                        # 直接创建会员记录
+                        db_pool = get_db_pool()
+                        db_pool.execute("""
+                            INSERT INTO user_memberships (user_id, level_id, started_at, expires_at, status, auto_renew)
+                            VALUES (%s, %s, %s, %s, 'active', 0)
+                        """, (user.id, membership_level_id, datetime.now(), expires_at))
+                        
+                        # 同步会员权限（使用存储过程）
+                        try:
+                            db_pool.execute("""
+                                CALL sync_user_membership_permissions(%s)
+                            """, (user.id,))
+                        except Exception as proc_error:
+                            logger.warning(f"调用存储过程失败，尝试直接同步权限: {proc_error}")
+                            # 如果存储过程失败，手动同步权限
+                            membership_service = MembershipService()
+                            level_permissions = membership_service.get_membership_level_permissions(int(membership_level_id))
+                            
+                            # 插入会员权限到 user_permissions
+                            for module_code, permission_level in level_permissions.items():
+                                try:
+                                    db_pool.execute("""
+                                        INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
+                                        VALUES (%s, %s, %s, NULL, NOW())
+                                        ON DUPLICATE KEY UPDATE 
+                                            permission_level = VALUES(permission_level),
+                                            granted_at = NOW()
+                                    """, (user.id, module_code, permission_level))
+                                except Exception as perm_error:
+                                    logger.warning(f"插入权限失败 {module_code}: {perm_error}")
+                        
+                        logger.info(f"✅ 用户 {user.id} 已分配会员等级 {membership_level_id}")
+                    except Exception as e:
+                        logger.error(f"为用户分配会员等级失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        # 即使会员分配失败，用户创建仍然成功
+                
                 return jsonify({
                     'success': True,
                     'data': {
@@ -15083,6 +16005,41 @@ else:
             }), 500
 
     # 用户权限管理API
+    @app.route('/api/v1/auth/users/with-permissions', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_users_with_permissions():
+        """获取所有用户及其权限（包括会员信息）"""
+        try:
+            if not AUTH_MODULE_AVAILABLE or not permission_service:
+                return jsonify({
+                    'success': False,
+                    'message': '权限模块不可用',
+                    'code': 'PERMISSION_MODULE_UNAVAILABLE'
+                }), 503
+            
+            users = permission_service.get_users_with_permissions()
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'users': users
+                },
+                'message': '获取用户权限列表成功'
+            })
+            
+        except Exception as e:
+            logger.error(f"获取用户权限列表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '获取用户权限列表失败',
+                'code': 'GET_USERS_WITH_PERMISSIONS_ERROR'
+            }), 500
+
     @app.route('/api/v1/auth/users/<int:user_id>/permissions', methods=['GET'])
     @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
     @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
@@ -15169,6 +16126,94 @@ else:
                 'success': False,
                 'message': '更新用户权限失败',
                 'code': 'UPDATE_USER_PERMISSIONS_ERROR'
+            }), 500
+
+    # ==================== 会员系统API ====================
+    
+    @app.route('/api/v1/membership/levels', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_membership_levels():
+        """获取所有会员等级（管理员）"""
+        try:
+            from core.membership.membership_service import MembershipService
+            membership_service = MembershipService()
+            levels = membership_service.get_all_membership_levels()
+            
+            return jsonify({
+                'success': True,
+                'data': levels,
+                'message': '获取会员等级列表成功'
+            })
+            
+        except Exception as e:
+            logger.error(f"获取会员等级列表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '获取会员等级列表失败',
+                'code': 'GET_MEMBERSHIP_LEVELS_ERROR'
+            }), 500
+    
+    @app.route('/api/v1/membership/service', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_membership_service():
+        """获取会员服务信息（所有用户可访问）"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            from core.membership.membership_service import MembershipService
+            membership_service = MembershipService()
+            
+            # 获取所有会员等级
+            levels = membership_service.get_all_membership_levels()
+            
+            # 获取用户当前会员信息
+            current_membership = membership_service.get_user_membership(user_id)
+            
+            # 计算剩余天数
+            days_remaining = None
+            if current_membership and current_membership.get('expires_at'):
+                from datetime import datetime
+                expires_at = current_membership['expires_at']
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                if isinstance(expires_at, datetime):
+                    now = datetime.now()
+                    if expires_at.tzinfo:
+                        from datetime import timezone
+                        now = now.replace(tzinfo=timezone.utc)
+                    delta = expires_at - now
+                    days_remaining = max(0, delta.days) if delta.days > 0 else 0
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'levels': levels,
+                    'current_membership': current_membership,
+                    'days_remaining': days_remaining
+                },
+                'message': '获取会员服务信息成功'
+            })
+            
+        except Exception as e:
+            logger.error(f"获取会员服务信息失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '获取会员服务信息失败',
+                'code': 'GET_MEMBERSHIP_SERVICE_ERROR'
             }), 500
     
     # ==================== 做市模块API ====================

@@ -442,7 +442,7 @@ class MessageForwardDB:
                     set_clauses.append(f"{field} = %s")
                     values.append(update_data[field])
             
-            for field in ['source_chat_ids', 'target_platforms', 'target_chat_ids',
+            for field in ['source_chat_ids', 'target_platform_ids', 'target_platforms', 'target_chat_ids',
                           'keywords', 'exclude_keywords']:
                 if field in update_data:
                     set_clauses.append(f"{field} = %s")

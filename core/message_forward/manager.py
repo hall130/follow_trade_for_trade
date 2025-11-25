@@ -135,11 +135,19 @@ class MessageForwardManager:
                     platform_data = self._db.get_platform_by_id(platform_id)
                 else:
                     # 如果没有这个方法，尝试直接查询
+                    db_pool = None
                     if hasattr(self._db, 'db_pool'):
                         db_pool = self._db.db_pool
                     elif hasattr(self._db, '_db_pool'):
                         db_pool = self._db._db_pool
+                    elif hasattr(self._db, 'query'):
+                        # 如果 _db 本身就是数据库连接池（有 query 方法），直接使用
+                        db_pool = self._db
                     else:
+                        logger.warning(f"无法获取数据库连接池")
+                        return None
+                    
+                    if not db_pool:
                         logger.warning(f"无法获取数据库连接池")
                         return None
                     
@@ -178,10 +186,92 @@ class MessageForwardManager:
                 # 对于 webhook 平台，不需要连接，直接返回
                 webhook_platforms = ['dingtalk', 'tradingview', 'wechat_official', 'bicoin', 'coinglass']
                 platform_type_str = platform_data.get('platform_type', '').lower()
+                
+                # Telegram Bot 需要初始化 application 和 bot（用于处理 webhook 更新或轮询）
+                if platform_type_str == 'telegram_bot':
+                    # 设置 platform_id（用于后续查询）
+                    if hasattr(platform_instance, 'platform_id'):
+                        platform_instance.platform_id = platform_id
+                    # 设置 message_manager（用于获取数据库连接池）
+                    if hasattr(platform_instance, 'message_manager'):
+                        platform_instance.message_manager = self
+                    
+                    # 需要初始化 application 和 bot（connect 方法会检查 webhook 是否已设置）
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    try:
+                        if not loop.is_running():
+                            success = loop.run_until_complete(platform_instance.connect())
+                            
+                            # 如果没有配置 webhook（webhook_url 为空或 None），启动轮询模式（用于本地测试环境）
+                            webhook_url = platform_instance.webhook_url or ''
+                            if success and not webhook_url.strip():
+                                try:
+                                    # 使用线程运行轮询（使用阻塞式方法）
+                                    import threading
+                                    polling_thread = threading.Thread(
+                                        target=platform_instance.run_polling_blocking,
+                                        daemon=True,
+                                        name=f"TelegramBotPolling-{platform_id}"
+                                    )
+                                    polling_thread.start()
+                                    logger.info("✅ Telegram Bot 轮询已在后台线程启动（未配置 webhook，本地测试环境）")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ 启动 Telegram Bot 轮询失败: {e}")
+                                    import traceback
+                                    logger.error(traceback.format_exc())
+                        else:
+                            # 如果事件循环正在运行，使用线程运行初始化和轮询
+                            import threading
+                            def init_and_poll_in_thread():
+                                thread_loop = None
+                                try:
+                                    thread_loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(thread_loop)
+                                    
+                                    success = thread_loop.run_until_complete(platform_instance.connect())
+                                    # 如果没有配置 webhook（webhook_url 为空或 None），启动轮询模式
+                                    webhook_url = platform_instance.webhook_url or ''
+                                    if success and not webhook_url.strip():
+                                        # 使用阻塞式方法运行轮询
+                                        platform_instance.run_polling_blocking()
+                                        logger.info("✅ Telegram Bot 轮询已启动（未配置 webhook，本地测试环境）")
+                                except Exception as e:
+                                    logger.error(f"初始化或启动轮询失败: {e}")
+                                    import traceback
+                                    logger.error(traceback.format_exc())
+                                finally:
+                                    # 清理事件循环（如果还有的话）
+                                    if thread_loop and not thread_loop.is_closed():
+                                        try:
+                                            thread_loop.close()
+                                        except Exception:
+                                            pass
+                            
+                            init_thread = threading.Thread(target=init_and_poll_in_thread, daemon=True)
+                            init_thread.start()
+                            success = True  # 假设成功，实际结果在后台处理
+                        logger.debug(f"✅ 动态创建 Telegram Bot 平台实例 (ID: {platform_id})，已初始化")
+                    except Exception as e:
+                        logger.warning(f"初始化 Telegram Bot 平台实例失败: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        # 即使初始化失败，也返回实例（可能后续会重试）
+                    
+                    return platform_instance
+                
                 if platform_type_str in webhook_platforms:
                     # 设置 connected 状态（webhook 平台总是"已连接"）
                     if hasattr(platform_instance, 'connected'):
                         platform_instance.connected = True
+                    # 设置 platform_id（用于后续查询）
+                    if hasattr(platform_instance, 'platform_id'):
+                        platform_instance.platform_id = platform_id
                     logger.debug(f"✅ 动态创建 webhook 平台实例 (ID: {platform_id}, 类型: {platform_type_str})")
                     return platform_instance
                 
@@ -222,12 +312,41 @@ class MessageForwardManager:
             是否添加成功
         """
         try:
+            # 设置 message_manager 引用（用于 Telegram Bot 获取数据库连接池）
+            if hasattr(platform, 'message_manager'):
+                platform.message_manager = self
+            
             # 连接平台
             if await platform.connect():
                 self.platforms[platform.platform_type] = platform
                 
                 # 添加消息处理器
                 platform.add_message_handler(self._on_message_received)
+                
+                # 对于 Telegram Bot 平台，如果未配置 webhook，则启动轮询
+                if hasattr(platform, 'webhook_url') and hasattr(platform, 'run_polling_blocking'):
+                    if not platform.webhook_url:
+                        # 未配置 webhook，使用轮询模式（开发环境）
+                        try:
+                            # 检查是否已经有轮询在运行
+                            if hasattr(platform.application, 'updater') and platform.application.updater.running:
+                                logger.warning("⚠️ Telegram Bot 轮询已在运行，跳过重复启动")
+                            else:
+                                # 使用线程运行阻塞式轮询
+                                import threading
+                                polling_thread = threading.Thread(
+                                    target=platform.run_polling_blocking,
+                                    daemon=True,
+                                    name=f"TelegramBotPolling-{getattr(platform, 'platform_id', 'unknown')}"
+                                )
+                                polling_thread.start()
+                                logger.info("✅ Telegram Bot 轮询已在后台线程启动（未配置 webhook）")
+                        except Exception as e:
+                            logger.warning(f"⚠️ 启动 Telegram Bot 轮询失败: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                    else:
+                        logger.info("✅ Telegram Bot 使用 Webhook 模式（生产环境推荐）")
                 
                 logger.info(f"✅ 平台已添加: {platform.platform_type.value}")
                 return True
@@ -380,7 +499,36 @@ class MessageForwardManager:
                 if not platform_id_map:
                     platform_id_map = self._get_platform_id_map()
                 
-                for platform_id in rule.target_platform_ids:
+                # 如果启用了订阅系统，从订阅表中获取所有有效的订阅平台ID
+                # 这样可以确保转发到所有有有效订阅的平台，而不仅仅是规则中配置的平台
+                platform_ids_to_forward = list(rule.target_platform_ids)
+                if subscription_service:
+                    try:
+                        # 获取该规则的所有有效订阅
+                        subscriptions = subscription_service.get_subscriptions_by_rule(rule.rule_id)
+                        # 提取所有有效的平台ID（使用订阅服务的验证方法确保一致性）
+                        valid_platform_ids = set()
+                        for sub in subscriptions:
+                            platform_id = sub.get('target_platform_id')
+                            chat_id = sub.get('target_chat_id', 'default')
+                            # 使用订阅服务的验证方法（确保日期解析逻辑一致）
+                            if subscription_service.check_subscription_valid(
+                                rule.rule_id, platform_id, chat_id
+                            ):
+                                valid_platform_ids.add(platform_id)
+                        
+                        if valid_platform_ids:
+                            # 合并规则中的平台ID和订阅表中的有效平台ID
+                            platform_ids_to_forward = list(set(rule.target_platform_ids) | valid_platform_ids)
+                            logger.info(f"📋 规则 {rule.rule_name} 的有效订阅平台ID: {sorted(platform_ids_to_forward)} (规则配置: {rule.target_platform_ids}, 订阅表: {sorted(valid_platform_ids)})")
+                        else:
+                            logger.info(f"📋 规则 {rule.rule_name} 没有有效的订阅，仅使用规则配置的平台ID: {rule.target_platform_ids}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ 从订阅表获取有效订阅失败: {e}，使用规则配置的平台ID")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+                
+                for platform_id in platform_ids_to_forward:
                     platform = None
                     
                     # 尝试从 platform_id_map 获取
@@ -426,8 +574,11 @@ class MessageForwardManager:
                             logger.warning(f"规则 {rule.rule_name} 未配置平台 {platform_id} 的目标聊天")
                             continue
                     
+                    logger.info(f"📋 规则 {rule.rule_name} 平台 {platform_id} ({platform_type_str}) 的目标聊天列表: {target_chats} (共 {len(target_chats)} 个)")
+                    
                     # 发送到每个目标聊天
                     for chat_id in target_chats:
+                        logger.info(f"📤 准备转发消息到: 平台ID={platform_id}, 聊天ID={chat_id}")
                         # 检查订阅是否有效（如果启用了订阅系统）
                         if subscription_service:
                             is_valid = subscription_service.check_subscription_valid(
@@ -436,15 +587,44 @@ class MessageForwardManager:
                             if not is_valid:
                                 logger.warning(f"⚠️ 订阅已过期，跳过转发: 规则ID={rule.rule_id}, 平台ID={platform_id}, 群组={chat_id}")
                                 continue
+                            else:
+                                logger.debug(f"✅ 订阅有效: 规则ID={rule.rule_id}, 平台ID={platform_id}, 群组={chat_id}")
+                        
+                        # 对于 Telegram Bot 平台，检查用户订阅过滤条件
+                        # 检查是否是 Telegram Bot 平台（通过检查是否有 get_subscription_service 方法）
+                        if hasattr(platform, 'get_subscription_service'):
+                            # Telegram Bot 的 chat_id 就是 user_id
+                            try:
+                                user_id = int(chat_id)
+                                # 获取 Telegram 订阅服务
+                                telegram_subscription_service = platform.get_subscription_service()
+                                if telegram_subscription_service:
+                                    # 检查消息是否匹配用户的订阅条件
+                                    is_match = telegram_subscription_service.check_message_match(
+                                        user_id, rule.rule_id, transformed_message
+                                    )
+                                    if not is_match:
+                                        logger.debug(f"⚠️ 消息不匹配用户订阅条件，跳过转发: 用户ID={user_id}, 规则ID={rule.rule_id}")
+                                        continue
+                                    # 更新消息计数
+                                    telegram_subscription_service.increment_message_count(user_id, rule.rule_id)
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"⚠️ 无效的 Telegram 用户ID: {chat_id}, 错误: {e}")
+                                continue
                         
                         try:
+                            logger.info(f"🔄 调用平台 send_message: 平台ID={platform_id}, 平台类型={platform_type_str}, 聊天ID={chat_id}")
+                            logger.debug(f"   消息内容预览: {transformed_message.content[:100]}...")
                             success = await platform.send_message(chat_id, transformed_message)
                             if success:
-                                logger.info(f"✅ 消息已转发: 平台ID {platform_id} -> {chat_id}")
+                                logger.info(f"✅ 消息已转发成功: 平台ID={platform_id}, 平台类型={platform_type_str}, 聊天ID={chat_id}")
                             else:
-                                logger.error(f"❌ 消息转发失败: 平台ID {platform_id} -> {chat_id}")
+                                logger.error(f"❌ 消息转发失败（返回False）: 平台ID={platform_id}, 平台类型={platform_type_str}, 聊天ID={chat_id}")
+                                logger.error(f"   请检查平台配置和网络连接")
                         except Exception as e:
-                            logger.error(f"转发消息到 {chat_id} 失败: {e}")
+                            logger.error(f"❌ 转发消息到 {chat_id} 异常: 平台ID={platform_id}, 平台类型={platform_type_str}, 错误={e}")
+                            import traceback
+                            logger.error(f"异常堆栈:\n{traceback.format_exc()}")
             
             # 兼容旧规则：如果没有target_platform_ids，使用target_platforms（平台类型）
             elif rule.target_platforms:

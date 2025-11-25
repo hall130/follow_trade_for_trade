@@ -20,6 +20,7 @@ class MessageType(Enum):
 class PlatformType(Enum):
     """平台类型"""
     TELEGRAM = "telegram"
+    TELEGRAM_BOT = "telegram_bot"  # Telegram Bot 平台（订阅服务）
     DINGTALK = "dingtalk"
     WECHAT = "wechat"
     WECHAT_OFFICIAL = "wechat_official"  # 微信公众号平台

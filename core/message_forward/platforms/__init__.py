@@ -36,6 +36,10 @@ try:
     from .wxauto_wechat import WxAutoWeChatPlatform
 except ImportError:
     WxAutoWeChatPlatform = None
+try:
+    from .telegram_bot import TelegramBotPlatform
+except ImportError:
+    TelegramBotPlatform = None
 
 __all__ = [
     'TelegramMTProtoPlatform',
@@ -46,6 +50,7 @@ __all__ = [
     'CoinGlassPlatform',
     'TradingViewPlatform',
     'WxAutoWeChatPlatform',
+    'TelegramBotPlatform',
     'create_platform_instance'
 ]
 
@@ -55,7 +60,7 @@ def create_platform_instance(platform_type: str, config: Dict[str, Any]) -> Opti
     创建平台实例的工厂函数
     
     Args:
-        platform_type: 平台类型 (telegram, dingtalk, wechat, wechat_official, bicoin, coinglass, tradingview)
+        platform_type: 平台类型 (telegram, telegram_mtproto, telegram_bot, dingtalk, wechat, wechat_official, bicoin, coinglass, tradingview)
         config: 平台配置字典
     
     Returns:
@@ -65,6 +70,8 @@ def create_platform_instance(platform_type: str, config: Dict[str, Any]) -> Opti
     
     if platform_type_lower in ('telegram', 'telegram_mtproto'):
         return TelegramMTProtoPlatform(config)
+    elif platform_type_lower == 'telegram_bot' and TelegramBotPlatform is not None:
+        return TelegramBotPlatform(config)
     elif platform_type_lower == 'dingtalk' and DingTalkPlatform is not None:
         return DingTalkPlatform(config)
     elif platform_type_lower == 'wechat_official' and WeChatOfficialPlatform is not None:
