@@ -1032,14 +1032,18 @@ class EnhancedLimitFollowService:
                 if total_balance == 0 and available_balance == 0:
                     logger.warning(f"未找到USDT余额: {customer_uid} (交易所: {exchange_type})")
                     return None
-            
-            return {
-                'total_balance': total_balance,
-                'available_balance': available_balance,
-                'currency': 'USDT',
-                'customer_uid': customer_uid
-            }
-            
+                
+                return {
+                    'total_balance': total_balance,
+                    'available_balance': available_balance,
+                    'currency': 'USDT',
+                    'customer_uid': customer_uid
+                }
+                
+            except Exception as e:
+                logger.error(f"获取账户余额失败: {e}")
+                return None
+                
         except Exception as e:
             logger.error(f"获取客户账户信息失败: {e}")
             return None
@@ -1239,8 +1243,6 @@ class EnhancedLimitFollowService:
                     elif order_response.get('success'):
                         # 其他交易所的统一格式
                         exchange_order_id = order_response.get('order_id')
-                
-                if exchange_order_id:
                 
                 if exchange_order_id:
                     # 更新数据库中的交易所订单ID

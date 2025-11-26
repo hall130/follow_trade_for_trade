@@ -33,7 +33,15 @@ DEFAULT_LIMIT_FOLLOW_CONFIG = {
     'max_position_size': 1000.0,  # 最大持仓数量
     'min_position_size': 0.01,  # 最小持仓数量
     'price_offset_range': [0.5, 1.0, 1.5, 2.0],  # 价格偏移范围
-    'volume_scale_factors': [0.8, 1.0, 1.2, 1.5]  # 数量缩放因子
+    'volume_scale_factors': [0.8, 1.0, 1.2, 1.5],  # 数量缩放因子
+    # Hyperliquid WebSocket 配置
+    'hyperliquid_websocket': {
+        'enabled': False,  # 默认关闭，需要手动启用
+        'auto_fallback': True,  # WebSocket 失败时自动降级到轮询
+        'reconnect_interval': 5,  # 重连间隔（秒）
+        'heartbeat_interval': 30,  # 心跳间隔（秒）
+        'max_reconnect_attempts': 10,  # 最大重连次数
+    }
 }
 
 # 跟单策略配置

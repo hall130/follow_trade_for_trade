@@ -61,8 +61,36 @@ class LimitFollowExecutor:
             'default_collector_type': default_collector_type  # 默认采集器类型
         }
         
+        # 从配置文件加载 WebSocket 配置
+        try:
+            from config.limit_follow_config import get_limit_follow_config
+            global_config = get_limit_follow_config()
+            ws_config = global_config.get('hyperliquid_websocket', {})
+            self.config['hyperliquid_websocket'] = {
+                'enabled': ws_config.get('enabled', False),
+                'auto_fallback': ws_config.get('auto_fallback', True),
+                'reconnect_interval': ws_config.get('reconnect_interval', 5),
+                'heartbeat_interval': ws_config.get('heartbeat_interval', 30),
+                'max_reconnect_attempts': ws_config.get('max_reconnect_attempts', 10),
+            }
+        except Exception as e:
+            logger.warning(f"加载 WebSocket 配置失败，使用默认值: {e}")
+            self.config['hyperliquid_websocket'] = {
+                'enabled': False,
+                'auto_fallback': True,
+                'reconnect_interval': 5,
+                'heartbeat_interval': 30,
+                'max_reconnect_attempts': 10,
+            }
+        
         # 采集器缓存：{trader_unique_name: collector_instance}
         self.collectors_cache: Dict[str, BaseTraderCollector] = {}
+        
+        # Hyperliquid WebSocket 管理器（可选）
+        self._hyperliquid_ws_manager = None
+        self._ws_manager_initialized = False
+        self._hyperliquid_traders_ws = set()  # 使用 WebSocket 监控的 Hyperliquid 地址
+        self._hyperliquid_traders_polling = set()  # 使用轮询监控的 Hyperliquid 地址（降级）
     
     def _parse_ratio(self, ratio_str: str) -> tuple:
         """解析比例配置字符串，如 '3:1' -> (0.75, 0.25)"""
@@ -1804,11 +1832,154 @@ class LimitFollowExecutor:
 
     # 同步检查方法已删除，使用异步方法替代
     
-    async def check_trader_async(self, session: aiohttp.ClientSession, trader_unique_name: str):
-        """异步检查单个跟单员"""
+    def _init_hyperliquid_ws_manager(self):
+        """初始化 Hyperliquid WebSocket 管理器"""
+        if self._ws_manager_initialized:
+            return
+        
         try:
-            logger.info(f"检查跟单员: {trader_unique_name}")
+            ws_config = self.config.get('hyperliquid_websocket', {})
+            if not ws_config.get('enabled', False):
+                logger.debug("[Hyperliquid WS] WebSocket 未启用，跳过初始化")
+                self._ws_manager_initialized = True
+                return
             
+            from core.limit_trade.websocket.hyperliquid_ws_manager import HyperliquidWebSocketManager
+            self._hyperliquid_ws_manager = HyperliquidWebSocketManager(is_demo=False)
+            self._ws_manager_initialized = True
+            logger.info("[Hyperliquid WS] WebSocket 管理器初始化完成")
+        except Exception as e:
+            logger.error(f"[Hyperliquid WS] 初始化管理器失败: {e}")
+            self._ws_manager_initialized = True
+    
+    async def _start_hyperliquid_ws_manager(self):
+        """启动 Hyperliquid WebSocket 管理器"""
+        try:
+            ws_config = self.config.get('hyperliquid_websocket', {})
+            if not ws_config.get('enabled', False):
+                return
+            
+            if not self._ws_manager_initialized:
+                self._init_hyperliquid_ws_manager()
+            
+            if self._hyperliquid_ws_manager and not self._hyperliquid_ws_manager.is_connected():
+                success = await self._hyperliquid_ws_manager.start()
+                if success:
+                    logger.info("[Hyperliquid WS] WebSocket 管理器启动成功")
+                else:
+                    logger.warning("[Hyperliquid WS] WebSocket 管理器启动失败，将使用轮询模式")
+        except Exception as e:
+            logger.error(f"[Hyperliquid WS] 启动管理器失败: {e}")
+    
+    async def _stop_hyperliquid_ws_manager(self):
+        """停止 Hyperliquid WebSocket 管理器"""
+        try:
+            if self._hyperliquid_ws_manager:
+                await self._hyperliquid_ws_manager.stop()
+                logger.info("[Hyperliquid WS] WebSocket 管理器已停止")
+        except Exception as e:
+            logger.error(f"[Hyperliquid WS] 停止管理器失败: {e}")
+    
+    async def _check_trader_via_websocket(self, trader_unique_name: str):
+        """通过 WebSocket 检查跟单员（仅用于 Hyperliquid）"""
+        # WebSocket 是实时推送的，这里不需要主动检查
+        # 交易数据会通过回调函数自动处理
+        pass
+    
+    async def _check_trader_via_polling(self, session: aiohttp.ClientSession, trader_unique_name: str):
+        """通过轮询检查跟单员（原有逻辑）"""
+        # 这是原有的轮询逻辑，保持不变
+        await self._original_check_trader_async(session, trader_unique_name)
+    
+    async def check_trader_async(self, session: aiohttp.ClientSession, trader_unique_name: str):
+        """异步检查单个跟单员（支持 WebSocket 和轮询两种模式）"""
+        try:
+            logger.debug(f"检查跟单员: {trader_unique_name}")
+            
+            # 获取对应的采集器
+            collector = self._get_collector_for_trader(trader_unique_name)
+            if not collector:
+                logger.warning(f"无法获取带单员 {trader_unique_name} 的采集器，跳过检查")
+                return
+            
+            # 检查是否为 Hyperliquid 且启用了 WebSocket
+            collector_type = collector.get_collector_type()
+            ws_config = self.config.get('hyperliquid_websocket', {})
+            use_websocket = (
+                collector_type == 'hyperliquid' and 
+                ws_config.get('enabled', False) and
+                trader_unique_name not in self._hyperliquid_traders_polling  # 不在降级列表中
+            )
+            
+            if use_websocket:
+                # 初始化并启动 WebSocket 管理器（按需启动，只在第一次遇到 Hyperliquid 地址时）
+                if not self._ws_manager_initialized:
+                    self._init_hyperliquid_ws_manager()
+                
+                # 如果管理器已初始化但未连接，尝试启动
+                if self._hyperliquid_ws_manager and not self._hyperliquid_ws_manager.is_connected():
+                    logger.info(f"[Hyperliquid WS] 检测到 Hyperliquid 地址，启动 WebSocket 管理器: {trader_unique_name}")
+                    success = await self._hyperliquid_ws_manager.start()
+                    if not success:
+                        logger.warning(f"[Hyperliquid WS] 启动失败，降级到轮询: {trader_unique_name}")
+                        self._hyperliquid_traders_polling.add(trader_unique_name)
+                        await self._check_trader_via_polling(session, trader_unique_name)
+                        return
+                
+                # 尝试使用 WebSocket（如果已连接）
+                if self._hyperliquid_ws_manager and self._hyperliquid_ws_manager.is_connected():
+                    # WebSocket 模式下，交易数据会通过回调实时推送
+                    # 这里只需要确保地址已订阅
+                    if trader_unique_name not in self._hyperliquid_traders_ws:
+                        # 订阅地址
+                        async def on_trade_received(address: str, trade: Dict):
+                            """WebSocket 收到交易时的回调"""
+                            try:
+                                await self.process_new_trade(trader_unique_name, trade)
+                            except Exception as e:
+                                logger.error(f"[Hyperliquid WS] 处理交易失败: {e}")
+                        
+                        success = await self._hyperliquid_ws_manager.subscribe_address(
+                            trader_unique_name,  # Hyperliquid 地址就是 trader_unique_name
+                            on_trade_received
+                        )
+                        if success:
+                            self._hyperliquid_traders_ws.add(trader_unique_name)
+                            logger.info(f"[Hyperliquid WS] 已订阅地址: {trader_unique_name}")
+                        else:
+                            # 订阅失败，降级到轮询
+                            logger.warning(f"[Hyperliquid WS] 订阅失败，降级到轮询: {trader_unique_name}")
+                            self._hyperliquid_traders_polling.add(trader_unique_name)
+                            await self._check_trader_via_polling(session, trader_unique_name)
+                    # WebSocket 已订阅，无需轮询检查
+                    return
+                else:
+                    # WebSocket 未连接，降级到轮询
+                    logger.warning(f"[Hyperliquid WS] 未连接，降级到轮询: {trader_unique_name}")
+                    self._hyperliquid_traders_polling.add(trader_unique_name)
+                    await self._check_trader_via_polling(session, trader_unique_name)
+                    return
+            
+            # 使用轮询模式（原有逻辑）
+            await self._check_trader_via_polling(session, trader_unique_name)
+            
+        except Exception as e:
+            logger.error(f"检查跟单员失败: {trader_unique_name}, 错误: {e}")
+            # 发生异常时，如果是 Hyperliquid 且启用了 WebSocket，尝试降级到轮询
+            collector = self._get_collector_for_trader(trader_unique_name)
+            if collector and collector.get_collector_type() == 'hyperliquid':
+                ws_config = self.config.get('hyperliquid_websocket', {})
+                if ws_config.get('enabled', False) and ws_config.get('auto_fallback', True):
+                    logger.warning(f"[Hyperliquid WS] 发生异常，自动降级到轮询: {trader_unique_name}")
+                    self._hyperliquid_traders_polling.add(trader_unique_name)
+                    try:
+                        await self._check_trader_via_polling(session, trader_unique_name)
+                    except Exception as fallback_error:
+                        logger.error(f"[Hyperliquid WS] 降级到轮询也失败: {fallback_error}")
+    
+    async def _original_check_trader_async(self, session: aiohttp.ClientSession, trader_unique_name: str):
+        """原始的轮询检查逻辑（重命名，避免递归）"""
+        try:
             # 获取对应的采集器
             collector = self._get_collector_for_trader(trader_unique_name)
             if not collector:
@@ -2027,22 +2198,90 @@ class LimitFollowExecutor:
         
         # 创建HTTP会话（使用当前事件循环，设置超时避免阻塞）
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            while True:
-                try:
-                    # 获取被监控的跟单员
-                    traders = self.get_monitored_traders()
-                    
-                    if not traders:
-                        logger.info("没有需要监控的跟单员")
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                while True:
+                    try:
+                        # 获取被监控的跟单员
+                        traders = self.get_monitored_traders()
+                        
+                        if not traders:
+                            logger.info("没有需要监控的跟单员")
+                            # 使用当前运行中的事件循环来创建 sleep，确保使用正确的事件循环
+                            try:
+                                current_loop = asyncio.get_running_loop()
+                                # 使用 loop.create_future() 和 loop.call_later() 来创建 sleep
+                                # 这样可以确保 Future 被附加到正确的事件循环
+                                future = current_loop.create_future()
+                                current_loop.call_later(
+                                    self.config['polling_interval'],
+                                    lambda: future.set_result(None) if not future.done() else None
+                                )
+                                await future
+                            except RuntimeError:
+                                # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
+                                import time
+                                logger.warning("无法获取运行中的事件循环，使用同步 sleep")
+                                time.sleep(self.config['polling_interval'])
+                            continue
+                        
+                        logger.info(f"开始并发检查 {len(traders)} 个跟单员...")
+                        
+                        # 确保使用当前运行中的事件循环创建任务
+                        try:
+                            current_loop = asyncio.get_running_loop()
+                            # 验证事件循环是否有效
+                            if current_loop.is_closed():
+                                logger.error("事件循环已关闭，无法创建任务")
+                                raise RuntimeError("事件循环已关闭")
+                        except RuntimeError as loop_error:
+                            error_msg = str(loop_error).lower()
+                            if "attached to a different loop" in error_msg:
+                                logger.error(f"❌ 事件循环冲突: {loop_error}")
+                                logger.error("等待事件循环稳定...")
+                                import time
+                                time.sleep(2.0)
+                                # 重新获取事件循环
+                                current_loop = asyncio.get_running_loop()
+                            else:
+                                raise
+                        
+                        # 创建所有跟单员的检查任务（使用 create_task 确保任务附加到正确的事件循环）
+                        tasks = []
+                        for trader in traders:
+                            try:
+                                # 创建协程对象
+                                coro = self.check_trader_async(session, trader)
+                                # 使用 create_task 确保任务被附加到当前事件循环
+                                task = current_loop.create_task(coro)
+                                tasks.append(task)
+                            except RuntimeError as task_error:
+                                error_msg = str(task_error).lower()
+                                if "attached to a different loop" in error_msg:
+                                    logger.warning(f"创建任务时发生事件循环冲突，跳过跟单员 {trader}: {task_error}")
+                                    continue
+                                else:
+                                    raise
+                        
+                        # 并发执行所有任务
+                        start_time = time.time()
+                        if tasks:
+                            await asyncio.gather(*tasks, return_exceptions=True)
+                        end_time = time.time()
+                        
+                        execution_time = end_time - start_time
+                        logger.info(f"并发检查完成，耗时: {execution_time:.2f} 秒")
+                        
+                        # 等待下次轮询
+                        interval = self.config['polling_interval']
+                        logger.info(f"等待 {interval} 秒后进行下次检查...")
                         # 使用当前运行中的事件循环来创建 sleep，确保使用正确的事件循环
                         try:
                             current_loop = asyncio.get_running_loop()
                             # 使用 loop.create_future() 和 loop.call_later() 来创建 sleep
-                            # 这样可以确保 Future 被附加到正确的事件循环
                             future = current_loop.create_future()
                             current_loop.call_later(
-                                self.config['polling_interval'],
+                                interval,
                                 lambda: future.set_result(None) if not future.done() else None
                             )
                             await future
@@ -2050,151 +2289,91 @@ class LimitFollowExecutor:
                             # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
                             import time
                             logger.warning("无法获取运行中的事件循环，使用同步 sleep")
-                            time.sleep(self.config['polling_interval'])
-                        continue
+                            time.sleep(interval)
                     
-                    logger.info(f"开始并发检查 {len(traders)} 个跟单员...")
-                    
-                    # 确保使用当前运行中的事件循环创建任务
-                    try:
-                        current_loop = asyncio.get_running_loop()
-                        # 验证事件循环是否有效
-                        if current_loop.is_closed():
-                            logger.error("事件循环已关闭，无法创建任务")
-                            raise RuntimeError("事件循环已关闭")
-                    except RuntimeError as loop_error:
-                        error_msg = str(loop_error).lower()
+                    except KeyboardInterrupt:
+                        logger.info("监控已停止")
+                        break
+                    except RuntimeError as e:
+                        # 检查是否是事件循环关闭错误
+                        error_msg = str(e).lower()
                         if "attached to a different loop" in error_msg:
-                            logger.error(f"❌ 事件循环冲突: {loop_error}")
-                            logger.error("等待事件循环稳定...")
-                            import time
-                            time.sleep(2.0)
-                            # 重新获取事件循环
-                            current_loop = asyncio.get_running_loop()
-                        else:
-                            raise
-                    
-                    # 创建所有跟单员的检查任务（使用 create_task 确保任务附加到正确的事件循环）
-                    tasks = []
-                    for trader in traders:
-                        try:
-                            # 创建协程对象
-                            coro = self.check_trader_async(session, trader)
-                            # 使用 create_task 确保任务被附加到当前事件循环
-                            task = current_loop.create_task(coro)
-                            tasks.append(task)
-                        except RuntimeError as task_error:
-                            error_msg = str(task_error).lower()
-                            if "attached to a different loop" in error_msg:
-                                logger.warning(f"创建任务时发生事件循环冲突，跳过跟单员 {trader}: {task_error}")
+                            # 事件循环不匹配，这是一个严重问题，说明事件循环被外部操作影响了
+                            # 在独立线程中运行的任务不应该出现这种情况
+                            logger.error(f"❌ 事件循环不匹配（严重错误）: {e}")
+                            logger.error("这通常是因为其他操作（如热门带单员采集）影响了当前线程的事件循环")
+                            logger.error("LimitFollowExecutor 应该在完全独立的线程和事件循环中运行")
+                            
+                            # 尝试重新获取当前运行中的事件循环（不创建新的）
+                            try:
+                                current_loop = asyncio.get_running_loop()
+                                if current_loop.is_closed():
+                                    logger.error("当前事件循环已关闭，无法继续监控")
+                                    break
+                                logger.warning(f"当前事件循环: {current_loop} (ID={id(current_loop)})，尝试继续...")
+                                # 等待一小段时间，让事件循环稳定（使用同步 sleep，避免事件循环问题）
+                                time.sleep(2.0)  # 增加等待时间到2秒，让其他线程的事件循环操作完成
+                                # 继续监控循环（跳过本次迭代）
+                                logger.info("✅ 事件循环已恢复，继续监控")
                                 continue
-                            else:
-                                raise
-                    
-                    # 并发执行所有任务
-                    start_time = time.time()
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
-                    end_time = time.time()
-                    
-                    execution_time = end_time - start_time
-                    logger.info(f"并发检查完成，耗时: {execution_time:.2f} 秒")
-                    
-                    # 等待下次轮询
-                    interval = self.config['polling_interval']
-                    logger.info(f"等待 {interval} 秒后进行下次检查...")
-                    # 使用当前运行中的事件循环来创建 sleep，确保使用正确的事件循环
-                    try:
-                        current_loop = asyncio.get_running_loop()
-                        # 使用 loop.create_future() 和 loop.call_later() 来创建 sleep
-                        future = current_loop.create_future()
-                        current_loop.call_later(
-                            interval,
-                            lambda: future.set_result(None) if not future.done() else None
-                        )
-                        await future
-                    except RuntimeError:
-                        # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
-                        import time
-                        logger.warning("无法获取运行中的事件循环，使用同步 sleep")
-                        time.sleep(interval)
-                    
-                except KeyboardInterrupt:
-                    logger.info("监控已停止")
-                    break
-                except RuntimeError as e:
-                    # 检查是否是事件循环关闭错误
-                    error_msg = str(e).lower()
-                    if "attached to a different loop" in error_msg:
-                        # 事件循环不匹配，这是一个严重问题，说明事件循环被外部操作影响了
-                        # 在独立线程中运行的任务不应该出现这种情况
-                        logger.error(f"❌ 事件循环不匹配（严重错误）: {e}")
-                        logger.error("这通常是因为其他操作（如热门带单员采集）影响了当前线程的事件循环")
-                        logger.error("LimitFollowExecutor 应该在完全独立的线程和事件循环中运行")
-                        
-                        # 尝试重新获取当前运行中的事件循环（不创建新的）
-                        try:
-                            current_loop = asyncio.get_running_loop()
-                            if current_loop.is_closed():
-                                logger.error("当前事件循环已关闭，无法继续监控")
+                            except RuntimeError as loop_error:
+                                logger.error(f"❌ 无法获取运行中的事件循环: {loop_error}")
+                                logger.error("LimitFollowExecutor 监控将停止，需要重启服务")
+                                import traceback
+                                logger.error(traceback.format_exc())
                                 break
-                            logger.warning(f"当前事件循环: {current_loop} (ID={id(current_loop)})，尝试继续...")
-                            # 等待一小段时间，让事件循环稳定（使用同步 sleep，避免事件循环问题）
-                            time.sleep(2.0)  # 增加等待时间到2秒，让其他线程的事件循环操作完成
-                            # 继续监控循环（跳过本次迭代）
-                            logger.info("✅ 事件循环已恢复，继续监控")
-                            continue
-                        except RuntimeError as loop_error:
-                            logger.error(f"❌ 无法获取运行中的事件循环: {loop_error}")
-                            logger.error("LimitFollowExecutor 监控将停止，需要重启服务")
+                            except Exception as recover_error:
+                                logger.error(f"❌ 无法恢复事件循环: {recover_error}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                                break
+                        elif "closed" in error_msg or "no running event loop" in error_msg:
+                            logger.error(f"事件循环错误，监控将停止: {e}")
+                            # 尝试重新获取事件循环
+                            try:
+                                loop = asyncio.get_running_loop()
+                                if loop.is_closed():
+                                    logger.error("事件循环已关闭，无法继续监控")
+                                    break
+                            except RuntimeError:
+                                logger.error("无法获取事件循环，监控将停止")
+                                break
+                        else:
+                            # 其他 RuntimeError，记录并继续
+                            logger.error(f"监控异常: {e}")
                             import traceback
                             logger.error(traceback.format_exc())
-                            break
-                        except Exception as recover_error:
-                            logger.error(f"❌ 无法恢复事件循环: {recover_error}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                            break
-                    elif "closed" in error_msg or "no running event loop" in error_msg:
-                        logger.error(f"事件循环错误，监控将停止: {e}")
-                        # 尝试重新获取事件循环
-                        try:
-                            loop = asyncio.get_running_loop()
-                            if loop.is_closed():
-                                logger.error("事件循环已关闭，无法继续监控")
+                            try:
+                                # 确保事件循环仍然有效
+                                loop = asyncio.get_running_loop()
+                                if loop.is_closed():
+                                    logger.error("事件循环已关闭，无法继续监控")
+                                    break
+                                await asyncio.sleep(10)  # 异常后等待10秒再继续
+                            except RuntimeError as sleep_e:
+                                logger.error(f"无法继续等待，监控将停止: {sleep_e}")
                                 break
-                        except RuntimeError:
-                            logger.error("无法获取事件循环，监控将停止")
-                            break
-                    else:
-                        # 其他 RuntimeError，记录并继续
+                    except Exception as e:
                         logger.error(f"监控异常: {e}")
                         import traceback
                         logger.error(traceback.format_exc())
+                        # 异常后等待，但需要检查事件循环是否仍然有效
                         try:
-                            # 确保事件循环仍然有效
                             loop = asyncio.get_running_loop()
                             if loop.is_closed():
                                 logger.error("事件循环已关闭，无法继续监控")
                                 break
                             await asyncio.sleep(10)  # 异常后等待10秒再继续
-                        except RuntimeError as sleep_e:
-                            logger.error(f"无法继续等待，监控将停止: {sleep_e}")
+                        except RuntimeError:
+                            logger.error("无法获取事件循环，监控将停止")
                             break
-                except Exception as e:
-                    logger.error(f"监控异常: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    # 异常后等待，但需要检查事件循环是否仍然有效
-                    try:
-                        loop = asyncio.get_running_loop()
-                        if loop.is_closed():
-                            logger.error("事件循环已关闭，无法继续监控")
-                            break
-                        await asyncio.sleep(10)  # 异常后等待10秒再继续
-                    except RuntimeError:
-                        logger.error("无法获取事件循环，监控将停止")
-                        break
+        
+        # 监控循环结束，停止 WebSocket 管理器
+        finally:
+            try:
+                await self._stop_hyperliquid_ws_manager()
+            except Exception as e:
+                logger.error(f"[Hyperliquid WS] 停止管理器失败: {e}")
 
 
 async def main():

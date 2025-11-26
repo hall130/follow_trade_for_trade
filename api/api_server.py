@@ -13337,7 +13337,10 @@ def delete_subscription():
 @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_redemption_codes():
     """获取兑换码列表（支持分页和筛选）
-    普通用户只能查看未使用的兑换码，管理员可以查看所有兑换码
+    普通用户可以查看：
+    1. 未使用的兑换码（激活且未过期）
+    2. 自己已使用的兑换码（历史记录）
+    管理员可以查看所有兑换码
     """
     try:
         user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
@@ -13348,10 +13351,15 @@ def get_redemption_codes():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
-                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+                    # 方法1: 检查用户角色是否为admin
+                    user_role = permission_service.get_user_role(user_id)
+                    if user_role == 'admin':
+                        is_admin = True
+                    else:
+                        # 方法2: 检查权限（system_settings:admin）
+                        is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
             except Exception as e:
                 logger.debug(f"检查权限失败: {e}")
         
@@ -13369,11 +13377,13 @@ def get_redemption_codes():
         if page_size > 100:
             page_size = 100
         
-        # 如果不是管理员，只允许查看未使用的兑换码
+        # 如果不是管理员，只允许查看未使用的兑换码或自己已使用的兑换码
         if not is_admin:
-            is_active = 1  # 只显示激活的
-            # 普通用户只能查看未使用的兑换码（user_id为NULL）
-            # 这个逻辑需要在服务层处理
+            is_active = 1  # 只显示激活的（对于未使用的）
+            # 普通用户可以查看：
+            # 1. 未使用的兑换码（user_id为NULL，激活且未过期）
+            # 2. 自己已使用的兑换码（user_id = current_user_id，显示所有）
+            # 这个逻辑在服务层通过 user_only 和 current_user_id 参数处理
         
         # 获取数据库连接池
         db_pool = get_db_pool()
@@ -13389,7 +13399,8 @@ def get_redemption_codes():
             page=page,
             page_size=page_size,
             search=search,
-            user_only=not is_admin  # 普通用户只能查看未使用的
+            user_only=not is_admin,  # 普通用户模式
+            current_user_id=user_id if not is_admin else None  # 传递当前用户ID，用于显示自己已使用的兑换码
         )
         
         return jsonify(result), 200 if result.get('success') else 500
@@ -13416,15 +13427,26 @@ def create_redemption_code():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
-                    is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+                    # 方法1: 检查用户角色是否为admin
+                    user_role = permission_service.get_user_role(user_id)
+                    if user_role == 'admin':
+                        is_admin = True
+                        logger.debug(f"用户 {user_id} 通过角色检查（admin）")
+                    else:
+                        # 方法2: 检查权限（system_settings:admin）
+                        is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+                        if is_admin:
+                            logger.debug(f"用户 {user_id} 通过权限检查（system_settings:admin）")
+                        else:
+                            logger.warning(f"用户 {user_id} 权限不足（角色: {user_role}）")
             except Exception as e:
-                logger.debug(f"检查权限失败: {e}")
+                logger.error(f"检查权限失败: {e}", exc_info=True)
         
         if not is_admin:
-            return jsonify({'success': False, 'message': '权限不足'}), 403
+            logger.warning(f"用户 {user_id} 尝试创建兑换码，但权限不足")
+            return jsonify({'success': False, 'message': '权限不足，需要管理员权限'}), 403
         
         data = request.get_json()
         if not data:
@@ -13483,8 +13505,7 @@ def batch_create_redemption_codes():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
             except Exception as e:
@@ -13555,8 +13576,7 @@ def update_redemption_code(code_id):
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
             except Exception as e:
@@ -13619,8 +13639,7 @@ def delete_redemption_code(code_id):
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
             except Exception as e:
@@ -13650,6 +13669,53 @@ def delete_redemption_code(code_id):
             'message': str(e)
         }), 500
 
+@app.route('/api/v1/redemption-codes/use', methods=['POST'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def use_redemption_code():
+    """用户使用兑换码"""
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': '请求数据无效'}), 400
+        
+        code = data.get('code', '').strip()
+        exchange = data.get('exchange', '').strip().lower()
+        
+        if not code:
+            return jsonify({'success': False, 'message': '兑换码不能为空'}), 400
+        
+        if not exchange or exchange not in ['okx', 'binance']:
+            return jsonify({'success': False, 'message': '交易所类型无效，支持: okx, binance'}), 400
+        
+        # 获取数据库连接池
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        # 调用服务使用兑换码
+        from core.message_forward.telegram_bot.exchange_api_service import ExchangeAPIService
+        service = ExchangeAPIService(db_pool)
+        result = service.use_redemption_code(
+            code=code,
+            exchange=exchange,
+            user_id=user_id
+        )
+        
+        return jsonify(result), 200 if result.get('success') else 400
+        
+    except Exception as e:
+        logger.error(f"使用兑换码失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'使用失败: {str(e)}'
+        }), 500
+
 @app.route('/api/v1/redemption-codes/statistics', methods=['GET'])
 @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
 def get_redemption_codes_statistics():
@@ -13665,8 +13731,7 @@ def get_redemption_codes_statistics():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
             except Exception as e:
@@ -13708,8 +13773,7 @@ def get_forward_trade_configs():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.is_admin(user_id)
             except Exception as e:
@@ -13814,8 +13878,7 @@ def create_forward_trade_config():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.is_admin(user_id)
             except Exception as e:
@@ -13993,8 +14056,7 @@ def delete_forward_trade_config(config_id):
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.is_admin(user_id)
             except Exception as e:
@@ -14051,8 +14113,7 @@ def get_forward_trade_records():
         is_admin = False
         if AUTH_MODULE_AVAILABLE:
             try:
-                from auth.permission_service import get_permission_service
-                permission_service = get_permission_service()
+                from auth.permission_service import permission_service
                 if permission_service:
                     is_admin = permission_service.is_admin(user_id)
             except Exception as e:
@@ -14675,6 +14736,140 @@ def get_telegram_bot_subscriptions(platform_id):
         
     except Exception as e:
         logger.error(f"获取 Telegram Bot 订阅列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/telegram-bot/<int:platform_id>/subscriptions/<int:subscription_id>', methods=['GET'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def get_telegram_bot_subscription_detail(platform_id, subscription_id):
+    """
+    获取 Telegram Bot 订阅详情（管理员）
+    
+    Args:
+        platform_id: Telegram Bot 平台ID
+        subscription_id: 订阅ID
+    """
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import permission_service
+                if permission_service:
+                    user_role = permission_service.get_user_role(user_id)
+                    if user_role == 'admin':
+                        is_admin = True
+                    else:
+                        is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        if not is_admin:
+            return jsonify({'success': False, 'message': '权限不足，需要管理员权限'}), 403
+        
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        from core.message_forward.telegram_bot.subscription_service import TelegramSubscriptionService
+        service = TelegramSubscriptionService(db_pool)
+        subscription = service.get_subscription_by_id(subscription_id)
+        
+        if not subscription:
+            return jsonify({'success': False, 'message': '订阅不存在'}), 404
+        
+        # 验证订阅属于指定的平台
+        if subscription.get('target_platform_id') != platform_id:
+            return jsonify({'success': False, 'message': '订阅不属于该平台'}), 400
+        
+        return jsonify({
+            'success': True,
+            'data': subscription
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"获取订阅详情失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/v1/telegram-bot/<int:platform_id>/subscriptions/<int:subscription_id>', methods=['DELETE'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+def delete_telegram_bot_subscription(platform_id, subscription_id):
+    """
+    删除 Telegram Bot 订阅（管理员）
+    
+    Args:
+        platform_id: Telegram Bot 平台ID
+        subscription_id: 订阅ID
+    """
+    try:
+        user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+        if not user_id:
+            return jsonify({'success': False, 'message': '未登录'}), 401
+        
+        # 检查权限（管理员）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import permission_service
+                if permission_service:
+                    user_role = permission_service.get_user_role(user_id)
+                    if user_role == 'admin':
+                        is_admin = True
+                    else:
+                        is_admin = permission_service.has_permission(user_id, 'system_settings', 'admin')
+            except Exception as e:
+                logger.debug(f"检查权限失败: {e}")
+        
+        if not is_admin:
+            return jsonify({'success': False, 'message': '权限不足，需要管理员权限'}), 403
+        
+        db_pool = get_db_pool()
+        if not db_pool:
+            return jsonify({'success': False, 'message': '数据库连接不可用'}), 500
+        
+        from core.message_forward.telegram_bot.subscription_service import TelegramSubscriptionService
+        service = TelegramSubscriptionService(db_pool)
+        
+        # 先获取订阅信息，验证平台
+        subscription = service.get_subscription_by_id(subscription_id)
+        if not subscription:
+            return jsonify({'success': False, 'message': '订阅不存在'}), 404
+        
+        if subscription.get('target_platform_id') != platform_id:
+            return jsonify({'success': False, 'message': '订阅不属于该平台'}), 400
+        
+        # 删除订阅
+        success = service.delete_subscription(
+            subscription['user_id'],
+            subscription['rule_id']
+        )
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': '订阅已删除'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': '删除订阅失败'
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"删除订阅失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({

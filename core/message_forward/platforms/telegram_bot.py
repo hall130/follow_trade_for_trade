@@ -83,6 +83,21 @@ class TelegramBotPlatform(MessagePlatform):
         else:
             self.enabled = True
     
+    def _truncate_message(self, message: str, max_length: int = 200) -> str:
+        """
+        截断消息以确保不超过 Telegram 的限制
+        
+        Args:
+            message: 原始消息
+            max_length: 最大长度（默认 200，Telegram callback query answer 的限制）
+        
+        Returns:
+            截断后的消息
+        """
+        if len(message) <= max_length:
+            return message
+        return message[:max_length - 3] + "..."
+    
     async def connect(self) -> bool:
         """连接到 Telegram Bot"""
         if not self.enabled:
@@ -430,7 +445,35 @@ class TelegramBotPlatform(MessagePlatform):
         current_state = session.get('current_state', '')
         context_data = session.get('context_data', {})
         
-        # 根据状态处理输入
+        # 首先检查是否是主菜单按钮文本（优先级最高，即使有状态也要先处理按钮）
+        # 这样可以避免在配置状态下误将按钮文本当作输入
+        if text == "📊 订阅管理":
+            # 清除当前状态，返回主菜单
+            state_manager.update_session(user.id, current_state='main_menu', context_data={})
+            # 验证用户是否已绑定
+            if not await self._check_user_verified(update, context):
+                return
+            await self.handle_subscription_menu(update, context)
+            return
+        elif text == "👤 我的":
+            # 清除当前状态，返回主菜单
+            state_manager.update_session(user.id, current_state='main_menu', context_data={})
+            await self.handle_my_account(update, context)
+            return
+        elif text == "💬 联系客服":
+            # 清除当前状态，返回主菜单
+            state_manager.update_session(user.id, current_state='main_menu', context_data={})
+            await update.effective_message.reply_text(
+                "💬 *联系客服*\n\n"
+                "如有任何问题，请直接联系客服：\n"
+                "[@Hongniugegege](https://t.me/Hongniugegege)\n\n"
+                "点击上方用户名即可跳转到客服 Telegram。",
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+            return
+        
+        # 根据状态处理输入（只有在不是按钮文本时才处理状态输入）
         if current_state == 'bind_account_username':
             # 等待输入用户名
             context_data['username'] = text
@@ -644,29 +687,13 @@ class TelegramBotPlatform(MessagePlatform):
             )
             return
         
-        # 处理固定按钮点击
-        if text == "📊 订阅管理":
-            # 验证用户是否已绑定
-            if not await self._check_user_verified(update, context):
-                return
-            await self.handle_subscription_menu(update, context)
-        elif text == "👤 我的":
-            await self.handle_my_account(update, context)
-        elif text == "💬 联系客服":
-            await update.effective_message.reply_text(
-                "💬 *联系客服*\n\n"
-                "如有任何问题，请直接联系客服：\n"
-                "[@Hongniugegege](https://t.me/Hongniugegege)\n\n"
-                "点击上方用户名即可跳转到客服 Telegram。",
-                parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=True
-            )
-        else:
-            await update.effective_message.reply_text(
-                "❓ 未知命令。\n\n"
-                "使用 /help 查看帮助信息，或点击下方按钮使用功能。",
-                parse_mode=ParseMode.MARKDOWN
-            )
+        # 如果执行到这里，说明不是状态输入，也不是按钮文本，显示未知命令提示
+        # 注意：按钮文本的处理已经在上面完成了，这里只处理未知命令
+        await update.effective_message.reply_text(
+            "❓ 未知命令。\n\n"
+            "使用 /help 查看帮助信息，或点击下方按钮使用功能。",
+            parse_mode=ParseMode.MARKDOWN
+        )
     
     async def _process_redemption_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE, exchange: str, code: str):
         """处理兑换码"""
@@ -795,6 +822,11 @@ class TelegramBotPlatform(MessagePlatform):
             await self.handle_save_subscription(update, context)
         elif data == "view_subscription":
             await self.handle_view_subscription(update, context)
+        elif data == "cancel_subscription":
+            await self.handle_cancel_subscription(update, context)
+        elif data.startswith("confirm_cancel_subscription:"):
+            rule_id = data.split(":")[1]
+            await self.handle_confirm_cancel_subscription(update, context, rule_id)
         elif data == "back_to_main":
             await self.handle_back_to_main(update, context)
         elif data == "back_to_subscription_menu":
@@ -1110,7 +1142,12 @@ class TelegramBotPlatform(MessagePlatform):
         
         # 获取或创建默认规则ID（匹配所有 TradingView 平台）
         rule_id = self.config.get('default_rule_id')
-        target_platform_id = self.platform_id  # 当前平台ID
+        
+        # 获取当前平台ID（从配置或数据库）
+        target_platform_id = self._get_platform_id()
+        if not target_platform_id:
+            await update.callback_query.answer("❌ 无法获取平台ID，请检查配置", show_alert=True)
+            return
         
         # 如果没有配置 rule_id，尝试从数据库查找或创建
         if not rule_id:
@@ -1168,17 +1205,121 @@ class TelegramBotPlatform(MessagePlatform):
                     )
                 await update.callback_query.answer("✅ 订阅已保存", show_alert=True)
             else:
-                await update.callback_query.answer(f"保存失败: {result.get('message', '未知错误')}", show_alert=True)
+                # Telegram callback query answer 消息限制为 200 字符
+                error_msg = result.get('message', '未知错误')
+                full_msg = f"保存失败: {error_msg}"
+                await update.callback_query.answer(self._truncate_message(full_msg), show_alert=True)
                 
         except Exception as e:
             logger.error(f"保存订阅失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            await update.callback_query.answer("保存失败，请稍后重试", show_alert=True)
+            # 截断错误消息，确保不超过 200 字符
+            error_msg = f"保存失败: {str(e)}"
+            await update.callback_query.answer(self._truncate_message(error_msg), show_alert=True)
+    
+    async def handle_cancel_subscription(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """取消订阅"""
+        from core.message_forward.telegram_bot.state_manager import StateManager
+        from core.message_forward.telegram_bot.keyboard_builder import KeyboardBuilder
+        
+        user_id = update.effective_user.id
+        subscription_service = self.get_subscription_service()
+        
+        if not subscription_service:
+            await update.callback_query.answer("❌ 订阅服务不可用", show_alert=True)
+            return
+        
+        # 获取用户的订阅
+        subscriptions = subscription_service.get_user_subscriptions(user_id)
+        if not subscriptions:
+            await update.callback_query.answer("❌ 您当前没有活跃的订阅", show_alert=True)
+            return
+        
+        # 获取默认规则ID
+        rule_id = self.config.get('default_rule_id')
+        if not rule_id:
+            # 如果没有配置，使用第一个订阅的规则ID
+            rule_id = subscriptions[0].get('rule_id')
+        
+        # 确认取消
+        confirm_text = f"""⚠️ *确认取消订阅*
+
+确定要取消订阅吗？
+
+取消后，您将不再接收交易信号。
+
+此操作可以随时恢复。"""
+        
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        confirm_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ 确认取消", callback_data=f"confirm_cancel_subscription:{rule_id}")],
+            [InlineKeyboardButton("❌ 取消", callback_data="back_to_subscription_menu")]
+        ])
+        
+        try:
+            await update.callback_query.edit_message_text(
+                confirm_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=confirm_keyboard
+            )
+        except Exception:
+            await update.callback_query.message.reply_text(
+                confirm_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=confirm_keyboard
+            )
+        await update.callback_query.answer()
+    
+    async def handle_confirm_cancel_subscription(self, update: Update, context: ContextTypes.DEFAULT_TYPE, rule_id: str):
+        """确认取消订阅"""
+        from core.message_forward.telegram_bot.state_manager import StateManager
+        from core.message_forward.telegram_bot.keyboard_builder import KeyboardBuilder
+        
+        user_id = update.effective_user.id
+        subscription_service = self.get_subscription_service()
+        
+        if not subscription_service:
+            await update.callback_query.answer("❌ 订阅服务不可用", show_alert=True)
+            return
+        
+        # 取消订阅
+        success = subscription_service.cancel_subscription(user_id, rule_id)
+        
+        if success:
+            state_manager = StateManager(self.get_db_pool())
+            state_manager.update_session(user_id, current_state='main_menu', context_data={})
+            
+            reply_markup = KeyboardBuilder.build_main_menu()
+            
+            success_text = """✅ *订阅已取消*
+
+您已成功取消订阅。
+
+如需重新订阅，请前往「📊 订阅管理」菜单。"""
+            
+            try:
+                await update.callback_query.edit_message_text(
+                    success_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            except Exception:
+                await update.callback_query.message.reply_text(
+                    success_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            await update.callback_query.answer("✅ 订阅已取消", show_alert=True)
+        else:
+            await update.callback_query.answer("❌ 取消订阅失败，请稍后重试", show_alert=True)
     
     async def handle_view_subscription(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """查看当前订阅"""
+        """查看当前订阅详情"""
         from core.message_forward.telegram_bot.state_manager import StateManager
+        from core.message_forward.telegram_bot.keyboard_builder import KeyboardBuilder
+        from telegram import InlineKeyboardMarkup
+        from datetime import datetime
         
         user_id = update.effective_user.id
         state_manager = StateManager(self.get_db_pool())
@@ -1187,7 +1328,143 @@ class TelegramBotPlatform(MessagePlatform):
         state_manager.push_navigation(user_id, 'view_subscription')
         state_manager.update_session(user_id, current_state='view_subscription')
         
-        await self.handle_status(update, context)
+        # 获取订阅服务
+        subscription_service = self.get_subscription_service()
+        if not subscription_service:
+            error_text = "❌ 订阅服务暂时不可用，请稍后再试。"
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.effective_message.reply_text(error_text)
+            return
+        
+        # 获取用户的所有订阅
+        subscriptions = subscription_service.get_user_subscriptions(user_id)
+        
+        if not subscriptions:
+            detail_text = """📋 *订阅详情*
+
+您当前没有活跃的订阅。
+
+👉 点击「📊 订阅管理」来创建订阅。"""
+            reply_markup = KeyboardBuilder.build_subscription_menu()
+        else:
+            detail_text = "📋 *我的订阅详情*\n\n"
+            
+            for idx, sub in enumerate(subscriptions, 1):
+                detail_text += f"━━━━━━━━━━━━━━━━━━━━\n"
+                detail_text += f"*订阅 #{idx}*\n\n"
+                
+                # 规则名称
+                rule_name = sub.get('rule_name', '未知规则')
+                detail_text += f"📋 *规则名称*: {rule_name}\n"
+                
+                # 订阅状态
+                status = sub.get('subscription_status', '未知')
+                status_emoji = {
+                    'active': '✅',
+                    'expired': '⏰',
+                    'cancelled': '❌',
+                    'paused': '⏸️'
+                }.get(status, '❓')
+                status_text = {
+                    'active': '活跃中',
+                    'expired': '已过期',
+                    'cancelled': '已取消',
+                    'paused': '已暂停'
+                }.get(status, status)
+                detail_text += f"{status_emoji} *状态*: {status_text}\n\n"
+                
+                # 时间周期
+                intervals = sub.get('intervals', [])
+                if intervals:
+                    detail_text += f"⏱️ *订阅时间周期*\n"
+                    detail_text += f"   {', '.join(intervals)}\n\n"
+                else:
+                    detail_text += f"⏱️ *订阅时间周期*: 未选择\n\n"
+                
+                # 策略
+                strategies = sub.get('strategies', [])
+                if strategies:
+                    detail_text += f"📈 *订阅策略*\n"
+                    detail_text += f"   {', '.join(strategies)}\n\n"
+                else:
+                    detail_text += f"📈 *订阅策略*: 未选择\n\n"
+                
+                # 时间信息
+                start_date = sub.get('start_date')
+                expire_date = sub.get('expire_date')
+                
+                if start_date:
+                    try:
+                        if isinstance(start_date, str):
+                            start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                        detail_text += f"📅 *开始时间*: {start_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    except Exception:
+                        pass
+                
+                if expire_date:
+                    try:
+                        if isinstance(expire_date, str):
+                            expire_date = datetime.fromisoformat(expire_date.replace('Z', '+00:00'))
+                        days_left = (expire_date - datetime.now()).days
+                        detail_text += f"📅 *过期时间*: {expire_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        if days_left > 0:
+                            detail_text += f"⏳ *剩余天数*: {days_left} 天\n"
+                        else:
+                            detail_text += f"⚠️ *已过期*: {abs(days_left)} 天前\n"
+                    except Exception:
+                        pass
+                else:
+                    detail_text += f"📅 *过期时间*: 永不过期\n"
+                
+                # 统计信息
+                messages_received = sub.get('messages_received', 0)
+                last_message_at = sub.get('last_message_at')
+                
+                detail_text += f"\n📊 *统计信息*\n"
+                detail_text += f"   📨 已接收消息: {messages_received} 条\n"
+                
+                if last_message_at:
+                    try:
+                        if isinstance(last_message_at, str):
+                            last_message_at = datetime.fromisoformat(last_message_at.replace('Z', '+00:00'))
+                        detail_text += f"   🕐 最后接收: {last_message_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    except Exception:
+                        detail_text += f"   🕐 最后接收: 未知\n"
+                else:
+                    detail_text += f"   🕐 最后接收: 暂无\n"
+                
+                detail_text += "\n"
+            
+            # 添加返回按钮
+            back_button = KeyboardBuilder.build_back_button("back_to_subscription_menu")
+            reply_markup = InlineKeyboardMarkup([back_button])
+        
+        # 发送消息
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_text(
+                    detail_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+                await update.callback_query.answer()
+            except Exception as e:
+                # 如果编辑失败，发送新消息
+                logger.debug(f"编辑消息失败，发送新消息: {e}")
+                await update.callback_query.message.reply_text(
+                    detail_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+                await update.callback_query.answer()
+        else:
+            await update.effective_message.reply_text(
+                detail_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup
+            )
     
     async def handle_back_to_main(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """返回主菜单（统一入口）"""
@@ -2343,6 +2620,46 @@ class TelegramBotPlatform(MessagePlatform):
             else:
                 return None
         return self._exchange_api_service
+    
+    def _get_platform_id(self) -> Optional[int]:
+        """
+        获取当前平台的数据库ID
+        
+        Returns:
+            平台ID，如果不存在则返回None
+        """
+        # 首先尝试从配置中获取
+        platform_id = self.config.get('platform_id')
+        if platform_id:
+            return int(platform_id)
+        
+        # 如果配置中没有，从数据库查询
+        try:
+            db_pool = self.get_db_pool()
+            if not db_pool:
+                logger.warning("数据库连接池不可用，无法查询平台ID")
+                return None
+            
+            # 根据 bot_token 查询平台ID
+            sql = """
+                SELECT id FROM message_platforms 
+                WHERE platform_type = 'telegram_bot' 
+                AND config->>'$.bot_token' = %s
+                AND enabled = 1
+                LIMIT 1
+            """
+            rows = db_pool.query(sql, (self.bot_token,))
+            if rows:
+                platform_id = rows[0].get('id')
+                # 缓存到配置中，避免重复查询
+                self.config['platform_id'] = platform_id
+                return platform_id
+            
+            logger.warning(f"未找到对应的平台记录（bot_token: {self.bot_token[:10]}...）")
+            return None
+        except Exception as e:
+            logger.error(f"查询平台ID失败: {e}")
+            return None
     
     def _get_or_create_default_rule(self, target_platform_id: int) -> str:
         """
