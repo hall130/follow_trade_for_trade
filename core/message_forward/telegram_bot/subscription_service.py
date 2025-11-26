@@ -94,8 +94,8 @@ class TelegramSubscriptionService:
                 logger.info(f"✅ 更新订阅成功: 用户ID={user_id}, 规则ID={rule_id}")
             else:
                 # 创建新订阅
-                # 如果 source_platform_id 为 None，存储为 0 表示匹配所有 TradingView 平台
-                stored_source_platform_id = source_platform_id if source_platform_id is not None else 0
+                # 如果 source_platform_id 为 None，存储为 NULL 表示匹配所有 TradingView 平台
+                # 注意：需要确保数据库表允许 source_platform_id 为 NULL
                 sql = """
                     INSERT INTO telegram_user_subscriptions 
                     (user_id, username, rule_id, source_platform_id, target_platform_id,
@@ -103,10 +103,10 @@ class TelegramSubscriptionService:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, %s)
                 """
                 self.db_pool.execute(sql, (
-                    user_id, username, rule_id, stored_source_platform_id, target_platform_id,
+                    user_id, username, rule_id, source_platform_id, target_platform_id,
                     intervals_json, strategies_json, start_date, expire_date
                 ))
-                logger.info(f"✅ 创建订阅成功: 用户ID={user_id}, 规则ID={rule_id}, 源平台ID={stored_source_platform_id} (0表示所有TradingView)")
+                logger.info(f"✅ 创建订阅成功: 用户ID={user_id}, 规则ID={rule_id}, 源平台ID={source_platform_id} (NULL表示所有TradingView)")
             
             return {
                 'success': True,
@@ -286,6 +286,79 @@ class TelegramSubscriptionService:
         except Exception as e:
             logger.error(f"❌ 取消订阅失败: {e}")
             return False
+    
+    def delete_subscription(
+        self,
+        user_id: int,
+        rule_id: str
+    ) -> bool:
+        """
+        删除订阅（物理删除）
+        
+        Args:
+            user_id: 用户ID
+            rule_id: 规则ID
+        
+        Returns:
+            是否删除成功
+        """
+        try:
+            sql = """
+                DELETE FROM telegram_user_subscriptions 
+                WHERE user_id = %s AND rule_id = %s
+            """
+            self.db_pool.execute(sql, (user_id, rule_id))
+            
+            logger.info(f"✅ 删除订阅成功: 用户ID={user_id}, 规则ID={rule_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ 删除订阅失败: {e}")
+            return False
+    
+    def get_subscription_by_id(
+        self,
+        subscription_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        根据订阅ID获取订阅信息（管理员使用）
+        
+        Args:
+            subscription_id: 订阅ID
+        
+        Returns:
+            订阅信息，如果不存在返回 None
+        """
+        try:
+            sql = """
+                SELECT s.*, r.rule_name
+                FROM telegram_user_subscriptions s
+                LEFT JOIN message_forward_rules r ON s.rule_id = r.rule_id
+                WHERE s.id = %s
+            """
+            rows = self.db_pool.query(sql, (subscription_id,))
+            
+            if rows:
+                subscription = dict(rows[0])
+                # 解析 JSON 字段
+                if subscription.get('intervals'):
+                    if isinstance(subscription['intervals'], str):
+                        subscription['intervals'] = json.loads(subscription['intervals'])
+                else:
+                    subscription['intervals'] = []
+                
+                if subscription.get('strategies'):
+                    if isinstance(subscription['strategies'], str):
+                        subscription['strategies'] = json.loads(subscription['strategies'])
+                else:
+                    subscription['strategies'] = []
+                
+                return subscription
+            return None
+            
+        except Exception as e:
+            logger.error(f"查询订阅详情失败: {e}")
+            return None
     
     def check_message_match(
         self,

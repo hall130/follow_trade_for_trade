@@ -51,7 +51,8 @@ class ExchangeAPIService:
         try:
             sql = """
                 SELECT * FROM exchange_api_redemption_codes
-                WHERE code = %s AND exchange = %s
+                WHERE code COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci 
+                AND exchange COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci
             """
             rows = self.db_pool.query(sql, (code, exchange))
             
@@ -139,7 +140,8 @@ class ExchangeAPIService:
             update_sql = """
                 UPDATE exchange_api_redemption_codes
                 SET user_id = %s, used_at = NOW(), updated_at = NOW()
-                WHERE code = %s AND exchange = %s
+                WHERE code COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci 
+                AND exchange COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci
             """
             self.db_pool.execute(update_sql, (user_id, code, exchange))
             
@@ -178,7 +180,7 @@ class ExchangeAPIService:
         try:
             sql = """
                 SELECT id FROM exchange_api_redemption_codes
-                WHERE user_id = %s AND exchange = %s
+                WHERE user_id = %s AND exchange COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci
                 LIMIT 1
             """
             rows = self.db_pool.query(sql, (user_id, exchange))
@@ -359,8 +361,8 @@ class ExchangeAPIService:
                         ELSE '未配置'
                     END as api_secret_status
                 FROM users u
-                LEFT JOIN customers c ON u.customer_uid = c.customer_uid
-                WHERE u.id = %s AND (c.exchange = %s OR c.exchange IS NULL)
+                LEFT JOIN customers c ON u.customer_uid COLLATE utf8mb4_general_ci = c.customer_uid COLLATE utf8mb4_general_ci
+                WHERE u.id = %s AND (c.exchange COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci OR c.exchange IS NULL)
             """
             rows = self.db_pool.query(sql, (user_id, exchange))
             if rows:

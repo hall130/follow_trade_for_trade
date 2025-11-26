@@ -142,7 +142,8 @@ class RedemptionCodeService:
         page: int = 1,
         page_size: int = 20,
         search: Optional[str] = None,
-        user_only: bool = False
+        user_only: bool = False,
+        current_user_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         获取兑换码列表（支持分页和筛选）
@@ -153,7 +154,8 @@ class RedemptionCodeService:
             page: 页码（从1开始）
             page_size: 每页数量
             search: 搜索关键词（搜索兑换码或描述）
-            user_only: 如果为True，只返回未使用的兑换码（user_id IS NULL）
+            user_only: 如果为True，只返回未使用的兑换码或当前用户已使用的兑换码
+            current_user_id: 当前用户ID（用于 user_only 模式，显示用户自己的兑换码）
         
         Returns:
             兑换码列表和分页信息
@@ -177,16 +179,30 @@ class RedemptionCodeService:
                 conditions.append("r.exchange = %s")
                 params.append(exchange)
             
-            if is_active is not None:
-                conditions.append("r.is_active = %s")
-                params.append(is_active)
+            # 注意：is_active 条件在 user_only 模式下需要特殊处理
+            # 如果 user_only=True，我们需要分别处理未使用和已使用的情况
+            # 所以先不在这里添加 is_active 条件，在 user_only 逻辑中处理
             
-            # 普通用户只能查看未使用的兑换码
+            # 普通用户只能查看：未使用的兑换码 或 自己已使用的兑换码
             if user_only:
-                conditions.append("r.user_id IS NULL")
-                # 只显示激活且未过期的
-                conditions.append("r.is_active = 1")
-                conditions.append("(r.expires_at IS NULL OR r.expires_at > NOW())")
+                if current_user_id:
+                    # 显示未使用的（user_id IS NULL，激活且未过期）或自己已使用的（user_id = current_user_id，显示所有）
+                    # 使用复杂的条件：未使用的需要激活且未过期，已使用的显示所有（不过滤过期和激活状态）
+                    conditions.append("(" +
+                        "(r.user_id IS NULL AND r.is_active = 1 AND (r.expires_at IS NULL OR r.expires_at > NOW())) OR " +
+                        "(r.user_id = %s)" +
+                    ")")
+                    params.append(current_user_id)
+                else:
+                    # 如果没有用户ID，只显示未使用的（激活且未过期）
+                    conditions.append("r.user_id IS NULL")
+                    conditions.append("r.is_active = 1")
+                    conditions.append("(r.expires_at IS NULL OR r.expires_at > NOW())")
+            else:
+                # 管理员模式：如果指定了 is_active，添加条件
+                if is_active is not None:
+                    conditions.append("r.is_active = %s")
+                    params.append(is_active)
             
             if search:
                 conditions.append("(r.code LIKE %s OR r.description LIKE %s)")

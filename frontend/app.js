@@ -13285,33 +13285,23 @@ class OKXTradingApp {
     // 加载会员服务数据
     async loadMembershipServiceData() {
         try {
-            console.log('开始加载会员服务数据...');
             const response = await this.apiRequest(`${this.apiBaseUrl}/membership/service`);
             if (response && response.ok) {
                 const data = await response.json();
-                console.log('会员服务数据:', data);
                 if (data.success) {
                     this.membershipLevels = data.data.levels || [];
                     this.currentMembership = data.data.current_membership || null;
                     this.daysRemaining = data.data.days_remaining || null;
                     
-                    console.log('会员等级数量:', this.membershipLevels.length);
-                    console.log('会员等级列表:', this.membershipLevels);
-                    
                     // 确保页面已激活后再渲染
-                    console.log('准备延迟渲染，等待页面激活...');
                     const renderWithRetry = (retryCount = 0) => {
-                        console.log(`\n=== renderWithRetry 调用 (重试次数: ${retryCount}) ===`);
                         const membershipPage = document.getElementById('membership-service-page');
                         const container = document.getElementById('membershipLevelsContainer');
                         
-                        console.log('查找页面元素...');
                         if (!membershipPage) {
                             console.error('❌ 找不到会员服务页面元素');
                             return;
                         }
-                        console.log('✅ 找到页面元素');
-                        console.log('页面是否激活:', membershipPage.classList.contains('active'));
                         
                         if (!membershipPage.classList.contains('active')) {
                             console.warn(`页面未激活，重试 ${retryCount + 1}/3...`);
@@ -13321,36 +13311,21 @@ class OKXTradingApp {
                             } else {
                                 // 强制激活页面
                                 membershipPage.classList.add('active');
-                                console.log('🔧 强制激活会员服务页面');
                             }
                         }
-                        
-                        console.log('查找容器元素...');
+
                         if (!container) {
                             console.error('❌ 找不到会员等级容器元素 membershipLevelsContainer');
-                            console.log('尝试在页面中查找所有包含membership的元素...');
                             const allElements = membershipPage.querySelectorAll('[id*="membership"]');
-                            console.log('找到的元素:', Array.from(allElements).map(el => el.id));
                             return;
                         }
-                        console.log('✅ 找到容器元素');
-                        console.log('容器当前子元素数量:', container.children.length);
                         
                         try {
                             // 渲染会员等级卡片
-                            console.log('准备调用 renderMembershipLevels()...');
                             this.renderMembershipLevels();
-                            console.log('renderMembershipLevels() 调用完成');
-                            
-                            // 验证渲染结果
-                            console.log('验证渲染结果...');
-                            console.log('容器子元素数量:', container.children.length);
-                            console.log('容器HTML长度:', container.innerHTML.length);
                             
                             // 绑定支付周期切换事件
-                            console.log('调用 bindMembershipEvents()...');
                             this.bindMembershipEvents();
-                            console.log('bindMembershipEvents() 调用完成');
                         } catch (error) {
                             console.error('❌ 渲染过程中出错:', error);
                             console.error('错误堆栈:', error.stack);
@@ -13358,7 +13333,6 @@ class OKXTradingApp {
                     };
                     
                     setTimeout(() => {
-                        console.log('延迟时间到，开始渲染...');
                         renderWithRetry();
                     }, 150);
                 } else {
@@ -13377,26 +13351,18 @@ class OKXTradingApp {
     
     // 渲染会员等级卡片
     renderMembershipLevels() {
-        console.log('🎨 开始渲染会员等级卡片...');
-        console.log('当前会员等级数据:', this.membershipLevels);
-        console.log('会员等级数量:', this.membershipLevels?.length || 0);
-        
         // 先检查页面是否存在
         const membershipPage = document.getElementById('membership-service-page');
         if (!membershipPage) {
             console.error('❌ 找不到会员服务页面元素 membership-service-page');
             return;
         }
-        console.log('✅ 找到会员服务页面');
         
         // 确保页面已激活
         if (!membershipPage.classList.contains('active')) {
             console.warn('⚠️ 页面未激活，强制激活...');
             membershipPage.classList.add('active');
         }
-        
-        console.log('页面是否激活:', membershipPage.classList.contains('active'));
-        console.log('页面可见性:', window.getComputedStyle(membershipPage).display);
         
         // 再查找容器元素
         const container = document.getElementById('membershipLevelsContainer');
@@ -13440,14 +13406,22 @@ class OKXTradingApp {
             let cardClass = 'col-lg-4 col-md-6 mb-4';
             let cardStyle = '';
             let headerClass = 'bg-primary text-white';
+            let levelNameStyle = '';  // 会员名称颜色样式
+            let iconStyle = '';  // 图标颜色样式
             
             if (level.level_code === 'vip') {
                 cardStyle = 'border: 2px solid #ffc107; box-shadow: 0 0 20px rgba(255, 193, 7, 0.3);';
                 headerClass = 'bg-warning text-dark';
+                levelNameStyle = 'color: #b45309; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.1);';  // 深橙色，加粗，阴影
+                iconStyle = 'color: #b45309;';  // 深橙色图标
             } else if (level.level_code === 'premium') {
                 headerClass = 'bg-info text-white';
+                levelNameStyle = 'color: #ffffff; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.3);';  // 白色，加粗，阴影（在蓝色背景上）
+                iconStyle = 'color: #ffffff;';  // 白色图标
             } else if (level.level_code === 'basic') {
                 headerClass = 'bg-success text-white';
+                levelNameStyle = 'color: #ffffff; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.3);';  // 白色，加粗，阴影（在绿色背景上）
+                iconStyle = 'color: #ffffff;';  // 白色图标
             }
             
             const card = document.createElement('div');
@@ -13456,17 +13430,17 @@ class OKXTradingApp {
                 <div class="card h-100 ${isCurrent ? 'border-primary shadow-lg' : 'shadow'}" style="${cardStyle}">
                     <div class="card-header text-center ${headerClass}">
                         <h4 class="mb-0">
-                            ${level.level_code === 'vip' ? '<i class="bi bi-star-fill"></i> ' : ''}
-                            ${level.level_code === 'premium' ? '<i class="bi bi-gem"></i> ' : ''}
-                            ${level.level_code === 'basic' ? '<i class="bi bi-award"></i> ' : ''}
-                            ${level.level_name}
+                            ${level.level_code === 'vip' ? `<i class="bi bi-star-fill" style="${iconStyle}"></i> ` : ''}
+                            ${level.level_code === 'premium' ? `<i class="bi bi-gem" style="${iconStyle}"></i> ` : ''}
+                            ${level.level_code === 'basic' ? `<i class="bi bi-award" style="${iconStyle}"></i> ` : ''}
+                            <span style="${levelNameStyle}">${level.level_name}</span>
                             ${isCurrent ? '<span class="badge bg-light text-dark ms-2">当前会员</span>' : ''}
                         </h4>
                     </div>
                     <div class="card-body d-flex flex-column">
                         <div class="text-center mb-4">
                             <div class="display-4 fw-bold text-primary mb-2">
-                                ${price === 0 ? '免费' : `¥${price.toFixed(2)}`}
+                                ${price === 0 ? '定制' : `¥${price.toFixed(2)}`}
                             </div>
                             ${price > 0 ? `
                                 <div class="text-muted small mb-2">
@@ -13533,12 +13507,10 @@ class OKXTradingApp {
             if (!container.classList.contains('row')) {
                 container.classList.add('row', 'g-4');
             }
-            console.log('🔧 容器已包含', container.children.length, '个卡片');
             
-            // 确保页面激活
-            if (membershipPageCheck && !membershipPageCheck.classList.contains('active')) {
-                membershipPageCheck.classList.add('active');
-                console.log('🔧 已激活会员服务页面');
+            // 确保页面激活（使用已定义的 membershipPage 变量）
+            if (membershipPage && !membershipPage.classList.contains('active')) {
+                membershipPage.classList.add('active');
             }
         } else {
             console.error('❌ 容器中没有卡片元素！');
@@ -13649,6 +13621,8 @@ class OKXTradingApp {
                 if (pageTitle) pageTitle.textContent = '兑换码管理';
                 if (statsCards) statsCards.style.display = 'flex';
                 adminColumns.forEach(col => col.style.display = 'table-cell');
+                const userActionColumn = document.getElementById('userActionColumn');
+                if (userActionColumn) userActionColumn.style.display = 'none';
                 // 加载统计信息（仅管理员）
                 await this.loadRedemptionCodesStatistics();
             } else {
@@ -13657,6 +13631,8 @@ class OKXTradingApp {
                 if (pageTitle) pageTitle.textContent = '兑换码';
                 if (statsCards) statsCards.style.display = 'none';
                 adminColumns.forEach(col => col.style.display = 'none');
+                const userActionColumn = document.getElementById('userActionColumn');
+                if (userActionColumn) userActionColumn.style.display = 'table-cell';
             }
             
             // 加载兑换码列表
@@ -13744,8 +13720,11 @@ class OKXTradingApp {
         const tbody = document.getElementById('redemptionCodesTableBody');
         if (!tbody) return;
         
+        const isAdmin = this.currentUser && this.currentUser.role === 'admin';
+        const colspan = isAdmin ? 8 : 8; // 总列数保持一致
+        
         if (!codes || codes.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无兑换码</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="text-center text-muted">暂无兑换码</td></tr>`;
             return;
         }
         
@@ -13764,27 +13743,40 @@ class OKXTradingApp {
                 this.escapeHtml(code.description) : 
                 '<span class="text-muted">-</span>';
             
+            // 管理员操作按钮
+            const adminActions = isAdmin ? `
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary" onclick="window.app.editRedemptionCode(${code.id})" title="编辑">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    ${!code.user_id ? `
+                    <button class="btn btn-outline-danger" onclick="window.app.deleteRedemptionCode(${code.id})" title="删除">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                    ` : ''}
+                </div>
+            ` : '';
+            
+            // 普通用户操作按钮（只能使用未使用的兑换码）
+            const userActions = !isAdmin ? `
+                ${!code.user_id && code.is_active && (!code.expires_at || new Date(code.expires_at) > new Date()) ? `
+                <button class="btn btn-sm btn-success" onclick="window.app.useRedemptionCode('${this.escapeHtml(code.code)}', '${code.exchange}')" title="使用兑换码">
+                    <i class="bi bi-check-circle"></i> 使用
+                </button>
+                ` : code.user_id ? '<span class="text-muted">已使用</span>' : '<span class="text-muted">不可用</span>'}
+            ` : '';
+            
             return `
                 <tr>
                     <td><code>${this.escapeHtml(code.code)}</code></td>
                     <td><span class="badge bg-info">${code.exchange.toUpperCase()}</span></td>
                     <td>${description}</td>
                     <td>${statusBadge}</td>
-                    <td>${usedBy}</td>
+                    <td class="admin-only-column">${usedBy}</td>
                     <td>${createdAt}</td>
                     <td>${expiresAt}</td>
-                    <td>
-                        <div class="btn-group btn-group-sm">
-                            <button class="btn btn-outline-primary" onclick="window.app.editRedemptionCode(${code.id})" title="编辑">
-                                <i class="bi bi-pencil"></i>
-                            </button>
-                            ${!code.user_id ? `
-                            <button class="btn btn-outline-danger" onclick="window.app.deleteRedemptionCode(${code.id})" title="删除">
-                                <i class="bi bi-trash"></i>
-                            </button>
-                            ` : ''}
-                        </div>
-                    </td>
+                    <td class="admin-only-column">${adminActions}</td>
+                    <td id="userActionCell" style="display: ${isAdmin ? 'none' : 'table-cell'};">${userActions}</td>
                 </tr>
             `;
         }).join('');
@@ -13856,28 +13848,53 @@ class OKXTradingApp {
     
     // 绑定兑换码事件
     bindRedemptionCodesEvents() {
-        // 创建兑换码
+        // 使用事件委托或先移除旧监听器，避免重复绑定
+        
+        // 创建兑换码 - 先移除旧监听器，再添加新的
         const createBtn = document.getElementById('createRedemptionCodeBtn');
         if (createBtn) {
-            createBtn.addEventListener('click', () => this.createRedemptionCode());
+            // 克隆节点以移除所有事件监听器
+            const newCreateBtn = createBtn.cloneNode(true);
+            createBtn.parentNode?.replaceChild(newCreateBtn, createBtn);
+            newCreateBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.createRedemptionCode();
+            });
         }
         
         // 批量创建兑换码
         const batchCreateBtn = document.getElementById('batchCreateRedemptionCodeBtn');
         if (batchCreateBtn) {
-            batchCreateBtn.addEventListener('click', () => this.batchCreateRedemptionCode());
+            const newBatchCreateBtn = batchCreateBtn.cloneNode(true);
+            batchCreateBtn.parentNode?.replaceChild(newBatchCreateBtn, batchCreateBtn);
+            newBatchCreateBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.batchCreateRedemptionCode();
+            });
         }
         
         // 更新兑换码
         const updateBtn = document.getElementById('updateRedemptionCodeBtn');
         if (updateBtn) {
-            updateBtn.addEventListener('click', () => this.updateRedemptionCode());
+            const newUpdateBtn = updateBtn.cloneNode(true);
+            updateBtn.parentNode?.replaceChild(newUpdateBtn, updateBtn);
+            newUpdateBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.updateRedemptionCode();
+            });
         }
         
         // 筛选按钮
         const filterBtn = document.getElementById('rcFilterBtn');
         if (filterBtn) {
-            filterBtn.addEventListener('click', () => {
+            const newFilterBtn = filterBtn.cloneNode(true);
+            filterBtn.parentNode?.replaceChild(newFilterBtn, filterBtn);
+            newFilterBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 this.redemptionCodesFilters.exchange = document.getElementById('rcExchangeFilter')?.value || '';
                 this.redemptionCodesFilters.status = document.getElementById('rcStatusFilter')?.value || '';
                 this.redemptionCodesFilters.search = document.getElementById('rcSearch')?.value || '';
@@ -13888,7 +13905,11 @@ class OKXTradingApp {
         // 刷新按钮
         const refreshBtn = document.getElementById('refreshRedemptionCodesBtn');
         if (refreshBtn) {
-            refreshBtn.addEventListener('click', () => {
+            const newRefreshBtn = refreshBtn.cloneNode(true);
+            refreshBtn.parentNode?.replaceChild(newRefreshBtn, refreshBtn);
+            newRefreshBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 this.loadRedemptionCodesData();
             });
         }
@@ -13896,7 +13917,11 @@ class OKXTradingApp {
         // 普通用户的刷新按钮
         const refreshBtnUser = document.getElementById('refreshRedemptionCodesBtnUser');
         if (refreshBtnUser) {
-            refreshBtnUser.addEventListener('click', () => {
+            const newRefreshBtnUser = refreshBtnUser.cloneNode(true);
+            refreshBtnUser.parentNode?.replaceChild(newRefreshBtnUser, refreshBtnUser);
+            newRefreshBtnUser.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 this.loadRedemptionCodesData();
             });
         }
@@ -13904,7 +13929,14 @@ class OKXTradingApp {
     
     // 创建兑换码
     async createRedemptionCode() {
+        // 防止重复提交
+        if (this._creatingRedemptionCode) {
+            return;
+        }
+        
         try {
+            this._creatingRedemptionCode = true;
+            
             const exchange = document.getElementById('rcExchange')?.value;
             const description = document.getElementById('rcDescription')?.value;
             const expiresAt = document.getElementById('rcExpiresAt')?.value;
@@ -13946,12 +13978,21 @@ class OKXTradingApp {
         } catch (error) {
             console.error('创建兑换码失败:', error);
             this.showToast('错误', '创建兑换码失败', 'danger');
+        } finally {
+            this._creatingRedemptionCode = false;
         }
     }
     
     // 批量创建兑换码
     async batchCreateRedemptionCode() {
+        // 防止重复提交
+        if (this._batchCreatingRedemptionCode) {
+            return;
+        }
+        
         try {
+            this._batchCreatingRedemptionCode = true;
+            
             const exchange = document.getElementById('batchRcExchange')?.value;
             const count = parseInt(document.getElementById('batchRcCount')?.value || '1');
             const description = document.getElementById('batchRcDescription')?.value;
@@ -14000,6 +14041,8 @@ class OKXTradingApp {
         } catch (error) {
             console.error('批量创建兑换码失败:', error);
             this.showToast('错误', '批量创建兑换码失败', 'danger');
+        } finally {
+            this._batchCreatingRedemptionCode = false;
         }
     }
     
@@ -14106,6 +14149,43 @@ class OKXTradingApp {
         } catch (error) {
             console.error('删除兑换码失败:', error);
             this.showToast('错误', '删除兑换码失败', 'danger');
+        }
+    }
+    
+    // 使用兑换码
+    async useRedemptionCode(code, exchange) {
+        try {
+            if (!confirm(`确定要使用兑换码吗？\n\n兑换码: ${code}\n交易所: ${exchange.toUpperCase()}\n\n使用后，您就可以配置该交易所的 API 了。`)) {
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/redemption-codes/use`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    code: code,
+                    exchange: exchange
+                })
+            });
+            
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', data.message || '兑换码使用成功！您现在可以配置 API 了', 'success');
+                    // 刷新列表
+                    await this.loadRedemptionCodesList();
+                } else {
+                    this.showToast('错误', data.message || '使用兑换码失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({ message: '使用兑换码失败' }));
+                this.showToast('错误', errorData.message || '使用兑换码失败', 'danger');
+            }
+        } catch (error) {
+            console.error('使用兑换码失败:', error);
+            this.showToast('错误', '使用兑换码失败: ' + error.message, 'danger');
         }
     }
     
@@ -14257,8 +14337,11 @@ class OKXTradingApp {
                     <td>${sub.messages_received || 0}</td>
                     <td>${lastMessageDisplay}</td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary" onclick="window.app.viewTelegramBotSubscription(${sub.user_id}, '${sub.rule_id}')" title="查看详情">
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="window.app.viewTelegramBotSubscription(${sub.id}, ${sub.user_id}, '${sub.rule_id}')" title="查看详情">
                             <i class="bi bi-eye"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="window.app.deleteTelegramBotSubscription(${sub.id}, ${sub.user_id}, '${sub.rule_id}')" title="删除订阅">
+                            <i class="bi bi-trash"></i>
                         </button>
                     </td>
                 </tr>
@@ -14297,9 +14380,187 @@ class OKXTradingApp {
         }
     }
     
-    // 查看订阅详情（占位方法）
-    viewTelegramBotSubscription(userId, ruleId) {
-        this.showToast('提示', '订阅详情功能待实现', 'info');
+    // 查看订阅详情
+    async viewTelegramBotSubscription(subscriptionId, userId, ruleId) {
+        try {
+            const platformId = document.getElementById('telegramBotPlatformSelect')?.value;
+            if (!platformId) {
+                this.showToast('错误', '请先选择 Bot 平台', 'danger');
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/telegram-bot/${platformId}/subscriptions/${subscriptionId}`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success && data.data) {
+                    const sub = data.data;
+                    this.showSubscriptionDetailModal(sub);
+                } else {
+                    this.showToast('错误', data.message || '获取订阅详情失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({ message: '获取订阅详情失败' }));
+                this.showToast('错误', errorData.message || '获取订阅详情失败', 'danger');
+            }
+        } catch (error) {
+            console.error('查看订阅详情失败:', error);
+            this.showToast('错误', '查看订阅详情失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 显示订阅详情模态框
+    showSubscriptionDetailModal(subscription) {
+        const intervals = subscription.intervals || [];
+        const strategies = subscription.strategies || [];
+        const intervalsDisplay = intervals.length > 0 ? intervals.join(', ') : '全部';
+        const strategiesDisplay = strategies.length > 0 ? strategies.join(', ') : '全部';
+        
+        let statusBadge = '';
+        const status = subscription.subscription_status || 'active';
+        if (status === 'active') {
+            statusBadge = '<span class="badge bg-success">活跃</span>';
+        } else if (status === 'expired') {
+            statusBadge = '<span class="badge bg-warning">已过期</span>';
+        } else if (status === 'cancelled') {
+            statusBadge = '<span class="badge bg-secondary">已取消</span>';
+        } else {
+            statusBadge = '<span class="badge bg-secondary">' + status + '</span>';
+        }
+        
+        const formatDate = (dateStr) => {
+            if (!dateStr) return '-';
+            return new Date(dateStr).toLocaleString('zh-CN');
+        };
+        
+        const modalHtml = `
+            <div class="modal fade" id="subscriptionDetailModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">订阅详情</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <table class="table table-bordered">
+                                <tr>
+                                    <th width="30%">订阅ID</th>
+                                    <td>${subscription.id}</td>
+                                </tr>
+                                <tr>
+                                    <th>用户ID</th>
+                                    <td>${subscription.user_id}</td>
+                                </tr>
+                                <tr>
+                                    <th>用户名</th>
+                                    <td>${this.escapeHtml(subscription.username || '-')}</td>
+                                </tr>
+                                <tr>
+                                    <th>规则名称</th>
+                                    <td>${this.escapeHtml(subscription.rule_name || subscription.rule_id || '-')}</td>
+                                </tr>
+                                <tr>
+                                    <th>规则ID</th>
+                                    <td><code>${subscription.rule_id}</code></td>
+                                </tr>
+                                <tr>
+                                    <th>状态</th>
+                                    <td>${statusBadge}</td>
+                                </tr>
+                                <tr>
+                                    <th>订阅时间周期</th>
+                                    <td>${this.escapeHtml(intervalsDisplay)}</td>
+                                </tr>
+                                <tr>
+                                    <th>订阅策略</th>
+                                    <td>${this.escapeHtml(strategiesDisplay)}</td>
+                                </tr>
+                                <tr>
+                                    <th>开始时间</th>
+                                    <td>${formatDate(subscription.start_date)}</td>
+                                </tr>
+                                <tr>
+                                    <th>过期时间</th>
+                                    <td>${formatDate(subscription.expire_date) || '永不过期'}</td>
+                                </tr>
+                                <tr>
+                                    <th>已接收消息数</th>
+                                    <td>${subscription.messages_received || 0}</td>
+                                </tr>
+                                <tr>
+                                    <th>最后接收消息时间</th>
+                                    <td>${formatDate(subscription.last_message_at)}</td>
+                                </tr>
+                                <tr>
+                                    <th>创建时间</th>
+                                    <td>${formatDate(subscription.created_at)}</td>
+                                </tr>
+                                <tr>
+                                    <th>更新时间</th>
+                                    <td>${formatDate(subscription.updated_at)}</td>
+                                </tr>
+                            </table>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // 移除旧的模态框
+        const oldModal = document.getElementById('subscriptionDetailModal');
+        if (oldModal) {
+            oldModal.remove();
+        }
+        
+        // 添加新模态框
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('subscriptionDetailModal'));
+        modal.show();
+        
+        // 模态框关闭后移除DOM
+        document.getElementById('subscriptionDetailModal').addEventListener('hidden.bs.modal', function() {
+            this.remove();
+        });
+    }
+    
+    // 删除订阅
+    async deleteTelegramBotSubscription(subscriptionId, userId, ruleId) {
+        try {
+            const platformId = document.getElementById('telegramBotPlatformSelect')?.value;
+            if (!platformId) {
+                this.showToast('错误', '请先选择 Bot 平台', 'danger');
+                return;
+            }
+            
+            if (!confirm(`确定要删除该订阅吗？\n\n订阅ID: ${subscriptionId}\n用户ID: ${userId}\n规则ID: ${ruleId}\n\n删除后无法恢复！`)) {
+                return;
+            }
+            
+            const response = await this.apiRequest(`${this.apiBaseUrl}/telegram-bot/${platformId}/subscriptions/${subscriptionId}`, {
+                method: 'DELETE'
+            });
+            
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    this.showToast('成功', '订阅已删除', 'success');
+                    // 刷新列表
+                    await this.loadTelegramBotSubscriptions(platformId);
+                } else {
+                    this.showToast('错误', data.message || '删除订阅失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({ message: '删除订阅失败' }));
+                this.showToast('错误', errorData.message || '删除订阅失败', 'danger');
+            }
+        } catch (error) {
+            console.error('删除订阅失败:', error);
+            this.showToast('错误', '删除订阅失败: ' + error.message, 'danger');
+        }
     }
     
     // 启动消息转发服务
@@ -16162,12 +16423,8 @@ class OKXTradingApp {
             }
             
             // 获取群组列表（性能优化：使用已运行的实例）
-            const startTime = Date.now();
             const chatsResponse = await fetch(`${this.apiBaseUrl}/message-forward/platforms/${platformId}/chats`);
             const chatsData = await chatsResponse.json();
-            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-            
-            console.log(`获取群组列表耗时: ${duration}秒`);
             
             if (!chatsData.success) {
                 this.showToast('错误', chatsData.message || '获取群组列表失败', 'danger');
