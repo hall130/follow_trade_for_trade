@@ -1,5 +1,166 @@
 # 更新日志
 
+## [🚀已发布] - 2025-11-27
+
+### 🎯 新增功能
+
+#### 1. 会员系统与权限完全融合
+- **功能描述**：权限模块与会员等级系统完全融合，会员变更时自动同步用户权限
+- **实现位置**：
+  - `core/membership/membership_service.py`：会员激活、续费、升级时自动同步权限
+  - `auth/permission_service.py`：权限检查逻辑融合会员等级权限
+  - `database/membership_system_schema.sql`：数据库触发器自动同步权限
+- **使用场景**：
+  - 用户注册时自动分配免费会员权限
+  - 用户升级会员时自动更新权限
+  - 用户续费会员时保持权限一致
+  - 会员到期时自动清理权限
+- **权限优先级**：
+  1. 管理员角色（拥有所有权限）
+  2. 用户自定义权限（手动授予）
+  3. 会员等级权限（自动同步）
+  4. 角色默认权限（基础权限）
+
+#### 2. 支付系统集成
+- **功能描述**：支持 USDT TRC20、支付宝、Binance Pay 三种支付方式
+- **实现位置**：
+  - `core/payment/`：支付订单管理和监听服务
+  - `core/payment/listeners/`：USDT、支付宝、Binance Pay 支付监听器
+  - `api/api_server.py`：支付相关 API 接口
+- **支付流程**：
+  1. 用户选择会员等级和计费周期
+  2. 创建支付订单
+  3. 选择支付方式（USDT/支付宝/Binance Pay）
+  4. 支付监听器监控支付状态
+  5. 支付成功后自动激活会员
+- **支付监听**：
+  - USDT TRC20：通过 TronGrid API 轮询监控
+  - 支付宝：支持轮询和 Webhook 回调
+  - Binance Pay：支持轮询和 Webhook 回调
+
+#### 3. 会员续费功能
+- **功能描述**：支持手动续费和自动续费两种方式
+- **实现位置**：
+  - `core/membership/membership_service.py`：续费和自动续费逻辑
+  - `api/api_server.py`：续费 API 接口
+  - `frontend/app.js`：续费 UI 界面
+- **功能特性**：
+  - 手动续费：用户可选择月付或年付续费
+  - 自动续费：开启后到期自动续费
+  - 续费后自动同步权限
+
+### 🔧 功能优化
+
+#### 1. Telegram Bot API 配置优化
+- **改进前**：配置 API 时未设置 `is_demo` 字段，导致客户数据无法正确显示
+- **改进后**：
+  - 自动从环境变量 `IS_DEMO` 获取模拟盘设置
+  - 创建和更新客户记录时自动设置 `is_demo` 字段
+  - 确保客户数据与系统设置一致
+- **实现位置**：`core/message_forward/telegram_bot/exchange_api_service.py`
+
+#### 2. 客户管理功能增强
+- **新增功能**：用户可删除自己添加的客户 API 配置
+- **权限控制**：
+  - 使用 `@filter_customers` 装饰器确保只能删除自己的客户
+  - 删除前验证客户是否存在和权限
+  - 删除后自动重新加载客户信息
+- **实现位置**：`api/api_server.py` 的 `delete_customer` 函数
+
+#### 3. 权限检查逻辑优化
+- **改进**：优化客户数据查询时的权限过滤逻辑
+- **修复**：使用正则表达式正确解析 `g.customer_filter`，支持 `" AND owner_user_id = 6"` 格式
+- **实现位置**：`api/api_server.py` 的 `get_customers` 和 `get_customer` 函数
+
+### 🐛 问题修复
+
+#### 1. 会员续费后权限未同步
+- **问题**：用户续费会员后，权限未自动同步更新
+- **修复**：在 `renew_membership` 方法中添加权限同步逻辑
+- **实现位置**：`core/membership/membership_service.py`
+
+#### 2. 会员到期时权限未清理
+- **问题**：会员到期后，自动授予的权限未清理
+- **修复**：新增 `cleanup_expired_membership_permissions` 方法，清理过期会员权限
+- **实现位置**：`core/membership/membership_service.py`
+
+#### 3. 客户数据查询权限过滤失败
+- **问题**：`g.customer_filter` 格式为 `" AND owner_user_id = 6"`，但解析逻辑不正确
+- **修复**：使用正则表达式 `r'owner_user_id\s*=\s*(\d+)'` 正确提取用户ID
+- **实现位置**：`api/api_server.py`
+
+#### 4. Telegram Bot 配置 API 缺少 is_demo 字段
+- **问题**：通过 Telegram Bot 配置 API 时，未设置 `is_demo` 字段，导致客户数据无法显示
+- **修复**：在 `save_exchange_api_config` 方法中自动获取并设置 `is_demo` 字段
+- **实现位置**：`core/message_forward/telegram_bot/exchange_api_service.py`
+
+#### 5. 客户删除功能缺失
+- **问题**：用户无法删除自己添加的客户 API 配置，返回 405 Method Not Allowed
+- **修复**：添加 `DELETE /api/v1/customers/<customer_uid>` 路由，支持删除客户
+- **实现位置**：`api/api_server.py`
+
+#### 6. 异步函数调用错误
+- **问题**：在同步代码中使用 `asyncio.create_task()` 导致 `no running event loop` 错误
+- **修复**：使用 `run_async_safe()` 函数安全调用异步函数
+- **实现位置**：`api/api_server.py` 的转发交易配置缓存刷新逻辑
+
+### 📝 代码改进
+
+#### 1. 权限同步机制
+- **数据库触发器**：会员变更时自动调用 `sync_user_membership_permissions` 存储过程
+- **手动同步**：在 `activate_membership` 和 `renew_membership` 中显式调用权限同步
+- **权限清理**：会员到期时自动清理 `granted_by IS NULL` 的权限
+
+#### 2. 支付系统架构
+- **订单管理**：`core/payment/order_service.py` 管理支付订单
+- **监听服务**：`core/payment/payment_listener_service.py` 统一管理所有支付监听器
+- **监听器实现**：
+  - `usdt_listener.py`：USDT TRC20 监听器
+  - `alipay_listener.py`：支付宝监听器
+  - `binance_listener.py`：Binance Pay 监听器
+
+### 📚 文档更新
+
+#### 新增文档
+- `docs/PAYMENT_SYSTEM_DESIGN.md`：支付系统设计文档
+- `database/membership_payment_schema.sql`：支付订单和监听日志表结构
+
+#### 更新文档
+- `README.md`：添加最新版本更新说明
+- `CHANGELOG.md`：添加 v1.2.0 版本更新日志
+
+### ⚠️ 注意事项
+
+1. **权限同步**：
+   - 会员变更时权限会自动同步，无需手动操作
+   - 如果存储过程失败，系统会回退到手动同步
+   - 建议定期检查权限同步日志，确保没有异常
+
+2. **支付配置**：
+   - USDT TRC20 需要配置收款地址和 TronGrid API
+   - 支付宝需要配置 App ID 和回调地址
+   - Binance Pay 需要配置 API Key 和 Secret
+   - 汇率配置：默认 USD 到 CNY 汇率为 7.2
+
+3. **客户数据过滤**：
+   - 普通用户只能看到和操作自己的客户数据
+   - 管理员可以看到所有客户数据
+   - 删除客户前会验证权限，确保安全
+
+4. **Telegram Bot API 配置**：
+   - 配置 API 时会自动设置 `is_demo` 字段
+   - 确保环境变量 `IS_DEMO` 正确设置
+   - 客户数据会根据 `is_demo` 字段过滤显示
+
+### 🚀 下一步计划
+
+- [ ] 实现支付监听器的 Webhook 回调支持
+- [ ] 添加支付订单的统计和报表功能
+- [ ] 优化权限同步性能，支持批量同步
+- [ ] 添加会员等级变更的审计日志
+
+---
+
 ## [🚀已发布] - 2025-11-25
 
 ### 🎯 新增功能
