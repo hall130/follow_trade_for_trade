@@ -1,6 +1,6 @@
 # 🚀 千里金量化交易系统
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-2.0+-green.svg)](https://flask.palletsprojects.com/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+-orange.svg)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -185,11 +185,11 @@
 
 | 组件 | 版本要求 | 推荐配置 |
 |------|---------|---------|
-| **Python** | 3.8+ | 3.9+ |
+| **Python** | 3.10+ | 3.11+ |
 | **MySQL** | 8.0+ | 8.0.32+ |
 | **Redis** | 6.0+ | 7.0+ (可选) |
-| **内存** | 4GB+ | 8GB+ |
-| **CPU** | 2核+ | 4核+ |
+| **内存** | 4GB+ | 16GB+ |
+| **CPU** | 2核+ | 8核+ |
 | **网络** | 稳定网络 | 低延迟(<100ms) |
 
 ### ⚡ 一键启动
