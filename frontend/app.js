@@ -18,6 +18,11 @@ class OKXTradingApp {
         this.systemLogsPageSize = 10;
         this.systemLogsTotal = 0;
         
+        // 热门带单员分页
+        this.popularTradersPageSize = 20; // 默认每页显示20个
+        this.popularTradersAllData = [];
+        this.popularTradersCurrentPage = 1;
+        
         // 自动刷新配置 - 完全后台运行，无需用户控制
         this.autoRefreshConfig = {
             enabled: true, // 始终启用
@@ -294,69 +299,9 @@ class OKXTradingApp {
         }
     }
     
-    // 显示用户资料
+    // 显示用户资料（跳转到"我的"页面）
     showUserProfile() {
-        if (!this.currentUser) {
-            this.showToast('错误', '用户信息未加载', 'danger');
-            return;
-        }
-        
-        const modal = document.createElement('div');
-        modal.className = 'modal fade';
-        modal.innerHTML = `
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">用户资料</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <label class="form-label">用户名</label>
-                                <input type="text" class="form-control" value="${this.currentUser.username || ''}" readonly>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label">姓名</label>
-                                <input type="text" class="form-control" value="${this.currentUser.full_name || ''}" readonly>
-                            </div>
-                        </div>
-                        <div class="row mt-3">
-                            <div class="col-md-6">
-                                <label class="form-label">邮箱</label>
-                                <input type="email" class="form-control" value="${this.currentUser.email || ''}" readonly>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label">角色</label>
-                                <input type="text" class="form-control" value="${this.currentUser.role || ''}" readonly>
-                            </div>
-                        </div>
-                        <div class="row mt-3">
-                            <div class="col-md-6">
-                                <label class="form-label">状态</label>
-                                <input type="text" class="form-control" value="${this.currentUser.status || ''}" readonly>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label">最后登录</label>
-                                <input type="text" class="form-control" value="${this.currentUser.last_login_at || '未知'}" readonly>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        document.body.appendChild(modal);
-        const bsModal = new bootstrap.Modal(modal);
-        bsModal.show();
-        
-        // 模态框关闭后移除DOM元素
-        modal.addEventListener('hidden.bs.modal', () => {
-            document.body.removeChild(modal);
-        });
+        this.navigateToPage('my-profile');
     }
     
     // 更新用户显示
@@ -1367,6 +1312,9 @@ class OKXTradingApp {
                 break;
             case 'membership-service':
                 this.loadMembershipServiceData();
+                break;
+            case 'my-profile':
+                this.loadMyProfileData();
                 break;
             case 'redemption-codes':
                 this.loadRedemptionCodesData();
@@ -9790,13 +9738,42 @@ class OKXTradingApp {
                 // 处理数据格式：如果是字典格式，需要合并成数组
                 let tradersList = result.data;
                 if (!Array.isArray(tradersList)) {
-                    // 字典格式：{okx: [...], binance: [...]}
+                    // 字典格式：{okx: [...], binance: [...]} 或其他可能的键
                     tradersList = [];
-                    if (result.data.okx && Array.isArray(result.data.okx)) {
-                        tradersList = tradersList.concat(result.data.okx);
+                    if (result.data && typeof result.data === 'object' && result.data !== null) {
+                        // 遍历所有键，合并所有数组
+                        for (const key in result.data) {
+                            if (result.data.hasOwnProperty(key)) {
+                                const value = result.data[key];
+                                if (Array.isArray(value)) {
+                                    tradersList = tradersList.concat(value);
+                                } else if (value && typeof value === 'object') {
+                                    // 如果值是对象，可能是嵌套结构，尝试提取数组
+                                    console.warn(`数据键 "${key}" 的值不是数组，而是对象:`, value);
+                                }
+                            }
+                        }
                     }
-                    if (result.data.binance && Array.isArray(result.data.binance)) {
-                        tradersList = tradersList.concat(result.data.binance);
+                    
+                    // 如果合并后为空但总数大于0，说明数据格式有问题
+                    if (tradersList.length === 0 && totalCount > 0) {
+                        console.error('数据合并失败：总数大于0但合并后为空', {
+                            result: result,
+                            data: result.data,
+                            dataType: typeof result.data,
+                            dataKeys: result.data ? Object.keys(result.data) : null,
+                            // 详细检查每个键
+                            detailedCheck: result.data ? Object.keys(result.data).reduce((acc, key) => {
+                                acc[key] = {
+                                    value: result.data[key],
+                                    type: typeof result.data[key],
+                                    isArray: Array.isArray(result.data[key]),
+                                    constructor: result.data[key]?.constructor?.name,
+                                    keys: result.data[key] && typeof result.data[key] === 'object' ? Object.keys(result.data[key]) : null
+                                };
+                                return acc;
+                            }, {}) : null
+                        });
                     }
                 }
                 
@@ -9806,7 +9783,18 @@ class OKXTradingApp {
                 
                 // 如果没有设置limit，启用分页
                 if (!limit || limit <= 0) {
-                    this.renderPopularTradersWithPagination(tradersList, page);
+                    // 使用分页渲染
+                    if (tradersList.length > 0) {
+                        this.renderPopularTradersWithPagination(tradersList, page);
+                    } else {
+                        // 如果合并后为空，但总数大于0，说明数据格式有问题
+                        console.error('数据合并后为空，但总数大于0', {
+                            totalCount: totalCount,
+                            resultData: result.data,
+                            tradersList: tradersList
+                        });
+                        this.renderPopularTraders([]);
+                    }
                 } else {
                     // 如果设置了limit，直接显示所有数据（不分页）
                     this.renderPopularTraders(tradersList);
@@ -9832,6 +9820,12 @@ class OKXTradingApp {
     }
     
     renderPopularTradersWithPagination(traders, page = 1) {
+        // 如果没有数据，直接渲染空状态
+        if (!traders || traders.length === 0) {
+            this.renderPopularTraders([]);
+            return;
+        }
+        
         const pageSize = this.popularTradersPageSize;
         const totalPages = Math.ceil(traders.length / pageSize);
         const startIndex = (page - 1) * pageSize;
@@ -13416,12 +13410,12 @@ class OKXTradingApp {
                 iconStyle = 'color: #b45309;';  // 深橙色图标
             } else if (level.level_code === 'premium') {
                 headerClass = 'bg-info text-white';
-                levelNameStyle = 'color: #ffffff; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.3);';  // 白色，加粗，阴影（在蓝色背景上）
-                iconStyle = 'color: #ffffff;';  // 白色图标
+                levelNameStyle = 'color:rgb(157, 38, 194); font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.3);';  // 白色，加粗，阴影（在蓝色背景上）
+                iconStyle = 'color:rgb(151, 5, 5);';  // 白色图标
             } else if (level.level_code === 'basic') {
                 headerClass = 'bg-success text-white';
-                levelNameStyle = 'color: #ffffff; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.3);';  // 白色，加粗，阴影（在绿色背景上）
-                iconStyle = 'color: #ffffff;';  // 白色图标
+                levelNameStyle = 'color:rgb(37, 214, 21); font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,0.3);';  // 白色，加粗，阴影（在绿色背景上）
+                iconStyle = 'color:rgb(35, 189, 209);';  // 白色图标
             }
             
             const card = document.createElement('div');
@@ -13429,18 +13423,18 @@ class OKXTradingApp {
             card.innerHTML = `
                 <div class="card h-100 ${isCurrent ? 'border-primary shadow-lg' : 'shadow'}" style="${cardStyle}">
                     <div class="card-header text-center ${headerClass}">
-                        <h4 class="mb-0">
+                        <h5 class="mb-0">
                             ${level.level_code === 'vip' ? `<i class="bi bi-star-fill" style="${iconStyle}"></i> ` : ''}
                             ${level.level_code === 'premium' ? `<i class="bi bi-gem" style="${iconStyle}"></i> ` : ''}
                             ${level.level_code === 'basic' ? `<i class="bi bi-award" style="${iconStyle}"></i> ` : ''}
                             <span style="${levelNameStyle}">${level.level_name}</span>
                             ${isCurrent ? '<span class="badge bg-light text-dark ms-2">当前会员</span>' : ''}
-                        </h4>
+                        </h5>
                     </div>
                     <div class="card-body d-flex flex-column">
                         <div class="text-center mb-4">
-                            <div class="display-4 fw-bold text-primary mb-2">
-                                ${price === 0 ? '定制' : `¥${price.toFixed(2)}`}
+                            <div class="display-6 fw-bold text-primary mb-2">
+                                ${price === 0 ? '联系客服' : `$${price.toFixed(2)}`}
                             </div>
                             ${price > 0 ? `
                                 <div class="text-muted small mb-2">
@@ -13450,8 +13444,8 @@ class OKXTradingApp {
                             ` : ''}
                             ${hasDiscount && originalPrice > price ? `
                                 <div class="text-muted mt-2">
-                                    <del class="text-muted small">原价 ¥${originalPrice.toFixed(2)}</del>
-                                    <span class="badge bg-success ms-2">省¥${(originalPrice - price).toFixed(2)}</span>
+                                    <del class="text-muted small">原价 $${originalPrice.toFixed(2)}</del>
+                                    <span class="badge bg-success ms-2">省$${(originalPrice - price).toFixed(2)}</span>
                                 </div>
                             ` : ''}
                             ${level.level_code === 'vip' && billingPeriod === 'yearly' && priceYearly === 0 ? `
@@ -13480,9 +13474,12 @@ class OKXTradingApp {
                         
                         <div class="mt-auto">
                             ${isCurrent ? `
-                                <button class="btn btn-primary w-100" disabled>
+                                <button class="btn btn-primary w-100 mb-2" disabled>
                                     <i class="bi bi-check-circle"></i> 当前会员
                                     ${this.daysRemaining !== null ? ` (剩余 ${this.daysRemaining} 天)` : ''}
+                                </button>
+                                <button class="btn btn-success w-100" onclick="app.renewMembership(null, '${billingPeriod}')">
+                                    <i class="bi bi-arrow-repeat"></i> 续费
                                 </button>
                             ` : level.level_code === 'vip' ? `
                                 <button class="btn btn-dark w-100" onclick="app.contactServiceForVIP()">
@@ -13515,6 +13512,95 @@ class OKXTradingApp {
         } else {
             console.error('❌ 容器中没有卡片元素！');
         }
+        
+        // 渲染常见问题FAQ
+        this.renderMembershipFAQ();
+    }
+    
+    // 渲染会员服务常见问题
+    renderMembershipFAQ() {
+        const faqContainer = document.getElementById('membershipFAQAccordion');
+        if (!faqContainer) {
+            return;
+        }
+        
+        const faqData = [
+            {
+                id: 'faq1',
+                question: '如何选择适合的会员等级？',
+                answer: '基础会员适合个人交易者，提供基础的跟单功能，支持3个客户账户和4个策略。高级会员适合专业交易者，提供完整功能，支持10个客户账户和10个策略，包含策略交易完整权限。VIP会员适合机构用户，提供无限制功能，需要联系客服进行定制化配置。'
+            },
+            {
+                id: 'faq2',
+                question: '月付和年付有什么区别？',
+                answer: '月付按月收费，适合短期使用或试用。年付享受9折优惠，适合长期使用的用户，可以节省约10%的费用。年付用户还可以获得更稳定的服务保障。'
+            },
+            {
+                id: 'faq3',
+                question: '会员到期后数据会丢失吗？',
+                answer: '不会。会员到期后，您的所有数据（包括客户账户、策略配置、交易记录等）都会保留。但部分高级功能可能会受到限制，需要续费后才能继续使用。'
+            },
+            {
+                id: 'faq4',
+                question: '可以随时升级或降级会员等级吗？',
+                answer: '可以。您可以随时升级会员等级，升级后立即享受新等级的所有功能。降级需要等到当前会员期结束后才能生效。升级时，系统会按剩余时间比例计算差价。'
+            },
+            {
+                id: 'faq5',
+                question: 'VIP会员如何定制化配置？',
+                answer: 'VIP会员提供无限制功能和专属客服支持。请联系客服（通过页面上的"联系客服"按钮），我们的客服团队会根据您的具体需求，为您定制最适合的会员方案和功能配置。'
+            },
+            {
+                id: 'faq6',
+                question: '支持哪些交易所的跟单功能？',
+                answer: '目前支持OKX、Binance和Hyperliquid三个主流交易所的跟单功能。您可以在热门带单员页面查看和选择不同交易所的优秀带单员进行跟单。'
+            },
+            {
+                id: 'faq7',
+                question: '消息转发功能如何使用？',
+                answer: '消息转发功能允许您将不同平台（如Telegram、微信等）的消息转发到指定目标。基础会员每月50条，高级会员每月500条。您可以在"消息转发"页面配置转发规则。'
+            },
+            {
+                id: 'faq8',
+                question: '如何申请兑换码？',
+                answer: '管理员可以在"兑换码"页面创建兑换码。普通用户可以使用有效的兑换码来激活或延长会员服务。兑换码通常有使用期限，请在有效期内使用。'
+            },
+            {
+                id: 'faq9',
+                question: '会员服务支持退款吗？',
+                answer: '会员服务一经购买，不支持退款。但如果您在购买后7天内遇到技术问题无法正常使用，可以联系客服申请处理。建议您在购买前仔细阅读会员权益说明。'
+            },
+            {
+                id: 'faq10',
+                question: '如何查看当前会员状态和剩余天数？',
+                answer: '在会员服务页面，如果您当前有激活的会员，会在对应的会员卡片上显示"当前会员"标识和剩余天数。您也可以点击右上角用户菜单中的"个人资料"进入"我的"页面查看详细的会员信息。'
+            }
+        ];
+        
+        faqContainer.innerHTML = '';
+        
+        faqData.forEach((faq, index) => {
+            const faqItem = document.createElement('div');
+            faqItem.className = 'accordion-item';
+            faqItem.innerHTML = `
+                <h2 class="accordion-header" id="heading${faq.id}">
+                    <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" 
+                            data-bs-toggle="collapse" data-bs-target="#collapse${faq.id}" 
+                            aria-expanded="${index === 0 ? 'true' : 'false'}" 
+                            aria-controls="collapse${faq.id}">
+                        <i class="bi bi-question-circle me-2 text-primary"></i>
+                        ${faq.question}
+                    </button>
+                </h2>
+                <div id="collapse${faq.id}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" 
+                     aria-labelledby="heading${faq.id}" data-bs-parent="#membershipFAQAccordion">
+                    <div class="accordion-body">
+                        ${faq.answer}
+                    </div>
+                </div>
+            `;
+            faqContainer.appendChild(faqItem);
+        });
     }
     
     // 构建会员功能列表（只显示特有限制和高级功能，不显示通用基础功能）
@@ -13536,7 +13622,7 @@ class OKXTradingApp {
             features.push({ enabled: true, text: `策略数: ${level.max_strategies}个` });
             features.push({ enabled: true, text: `每日回测次数: ${level.max_backtests_per_day}次` });
             features.push({ enabled: true, text: '热门带单员跟单' });
-            features.push({ enabled: true, text: 'Hyperliquid' });
+            features.push({ enabled: true, text: 'Hyperliquid查看' });
             features.push({ enabled: true, text: '跟单交易自定义配置' });
             features.push({ enabled: true, text: '信号源市价跟单交易策略' });
             features.push({ enabled: true, text: '消息转发（每月50条）' });
@@ -13555,7 +13641,7 @@ class OKXTradingApp {
             features.push({ enabled: true, text: '跟单交易自定义配置' });
             features.push({ enabled: true, text: '信号源市价跟单交易策略' });
             features.push({ enabled: true, text: '消息转发（每月500条）' });
-            features.push({ enabled: false, text: '刷单做市模块' });
+            features.push({ enabled: true, text: '刷单做市模块' });
             features.push({ enabled: false, text: 'Telegram Bot 使用' });
             features.push({ enabled: false, text: '专属客服' });
         } else if (level.level_code === 'vip') {
@@ -13590,18 +13676,524 @@ class OKXTradingApp {
     // 订阅会员
     async subscribeMembership(levelId, billingPeriod) {
         try {
-            // TODO: 实现订阅逻辑（跳转到支付页面或创建订单）
-            this.showToast('提示', '订阅功能开发中，请联系客服', 'info');
+            // 查找会员等级信息
+            const level = this.membershipLevels.find(l => l.id === levelId);
+            if (!level) {
+                this.showToast('错误', '未找到会员等级信息', 'danger');
+                return;
+            }
+            
+            // 显示支付弹窗
+            this.showPaymentModal({
+                type: 'subscribe',
+                levelId: levelId,
+                levelName: level.level_name,
+                billingPeriod: billingPeriod,
+                price: billingPeriod === 'yearly' ? parseFloat(level.price_yearly) : parseFloat(level.price_monthly)
+            });
         } catch (error) {
             console.error('订阅会员失败:', error);
-            this.showToast('错误', '订阅失败', 'danger');
+            this.showToast('错误', '订阅失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 显示支付弹窗
+    showPaymentModal(options) {
+        const { type, levelId, levelName, billingPeriod, price } = options;
+        
+        // 检查支付弹窗是否存在
+        const paymentModal = document.getElementById('paymentModal');
+        if (!paymentModal) {
+            console.error('支付弹窗元素不存在');
+            this.showToast('错误', '支付弹窗未找到，请刷新页面重试', 'danger');
+            return;
+        }
+        
+        // 设置订单信息
+        const duration = billingPeriod === 'yearly' ? '365天' : '30天';
+        const priceUSD = price || 0;
+        
+        // 更新弹窗内容（添加空值检查）
+        const paymentDurationEl = document.getElementById('paymentDuration');
+        const paymentPriceEl = document.getElementById('paymentPrice');
+        const finalPaymentAmountEl = document.getElementById('finalPaymentAmount');
+        const confirmPaymentTextEl = document.getElementById('confirmPaymentText');
+        const discountCodeEl = document.getElementById('discountCode');
+        const usdtBtn = document.querySelector('[data-method="usdt_trc20"]');
+        
+        if (paymentDurationEl) paymentDurationEl.textContent = duration;
+        if (paymentPriceEl) paymentPriceEl.textContent = `$${priceUSD.toFixed(2)}`;
+        if (finalPaymentAmountEl) finalPaymentAmountEl.textContent = `$${priceUSD.toFixed(2)}`;
+        if (confirmPaymentTextEl) confirmPaymentTextEl.textContent = `支付 $${priceUSD.toFixed(2)}`;
+        
+        // 重置优惠码
+        if (discountCodeEl) discountCodeEl.value = '';
+        
+        // 重置支付方式（默认USDT TRC20）
+        document.querySelectorAll('.payment-method-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        if (usdtBtn) usdtBtn.classList.add('active');
+        
+        // 存储订单信息
+        this.currentPaymentOrder = {
+            type: type, // 'subscribe' 或 'renew'
+            levelId: levelId,
+            levelName: levelName,
+            billingPeriod: billingPeriod,
+            price: priceUSD,
+            discountCode: '',
+            paymentMethod: 'usdt_trc20',
+            discountAmount: 0
+        };
+        
+        // 更新支付提示
+        this.updatePaymentTips('usdt_trc20');
+        
+        // 显示弹窗
+        const modal = new bootstrap.Modal(document.getElementById('paymentModal'));
+        modal.show();
+        
+        // 绑定事件
+        this.bindPaymentModalEvents();
+    }
+    
+    // 绑定支付弹窗事件
+    bindPaymentModalEvents() {
+        // 先移除旧的事件监听器（避免重复绑定）
+        const paymentMethodBtns = document.querySelectorAll('.payment-method-btn');
+        paymentMethodBtns.forEach(btn => {
+            // 克隆节点以移除旧的事件监听器
+            const newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+        });
+        
+        // 支付方式选择
+        document.querySelectorAll('.payment-method-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.payment-method-btn').forEach(b => b.classList.remove('active'));
+                e.currentTarget.classList.add('active');
+                const method = e.currentTarget.dataset.method;
+                if (this.currentPaymentOrder) {
+                    this.currentPaymentOrder.paymentMethod = method;
+                }
+                this.updatePaymentTips(method);
+                this.updatePaymentAmount();
+            });
+        });
+        
+        // 优惠码应用
+        const applyDiscountBtn = document.getElementById('applyDiscountBtn');
+        if (applyDiscountBtn) {
+            // 移除旧的事件监听器
+            const newBtn = applyDiscountBtn.cloneNode(true);
+            applyDiscountBtn.parentNode.replaceChild(newBtn, applyDiscountBtn);
+            document.getElementById('applyDiscountBtn').onclick = () => this.applyDiscountCode();
+        }
+        
+        // 确认支付
+        const confirmPaymentBtn = document.getElementById('confirmPaymentBtn');
+        if (confirmPaymentBtn) {
+            // 移除旧的事件监听器
+            const newBtn = confirmPaymentBtn.cloneNode(true);
+            confirmPaymentBtn.parentNode.replaceChild(newBtn, confirmPaymentBtn);
+            document.getElementById('confirmPaymentBtn').onclick = () => this.confirmPayment();
+        }
+    }
+    
+    // 更新支付提示
+    updatePaymentTips(paymentMethod) {
+        const tipsContent = document.getElementById('paymentTipsContent');
+        if (!tipsContent) {
+            console.warn('支付提示内容元素不存在');
+            return;
+        }
+        
+        if (paymentMethod === 'usdt_trc20') {
+            tipsContent.innerHTML = `使用TRC20 支付,请在转账操作时自行添加所需的网络GAS费,确保到账金额为订单金额,否则交易失效,支付金额无法原路返回,需联系客服手动处理!<br>
+            例如:订单金额10u,网络费用1u,需在支付时输入11u`;
+        } else if (paymentMethod === 'alipay') {
+            tipsContent.innerHTML = `使用支付宝支付,请确保支付金额与订单金额一致,支付完成后请保留支付凭证,如有问题请联系客服。`;
+        } else if (paymentMethod === 'binance') {
+            tipsContent.innerHTML = `使用Binance Pay支付,请确保支付金额与订单金额一致,支付完成后系统会自动确认。`;
+        }
+    }
+    
+    // 应用优惠码
+    async applyDiscountCode() {
+        const discountCode = document.getElementById('discountCode').value.trim();
+        if (!discountCode) {
+            this.showToast('提示', '请输入优惠码', 'info');
+            return;
+        }
+        
+        // TODO: 调用API验证优惠码
+        // 这里暂时模拟
+        this.showToast('提示', '优惠码功能开发中', 'info');
+        // this.currentPaymentOrder.discountCode = discountCode;
+        // this.updatePaymentAmount();
+    }
+    
+    // 更新支付金额（根据支付方式和优惠码）
+    updatePaymentAmount() {
+        if (!this.currentPaymentOrder) {
+            return;
+        }
+        
+        const order = this.currentPaymentOrder;
+        let finalAmount = order.price - (order.discountAmount || 0);
+        
+        const finalPaymentAmountEl = document.getElementById('finalPaymentAmount');
+        const paymentAmountNoteEl = document.getElementById('paymentAmountNote');
+        const confirmPaymentTextEl = document.getElementById('confirmPaymentText');
+        
+        if (!finalPaymentAmountEl || !confirmPaymentTextEl) {
+            console.warn('支付金额显示元素不存在');
+            return;
+        }
+        
+        if (order.paymentMethod === 'alipay') {
+            // 支付宝：转换为人民币（假设汇率 7.2）
+            const exchangeRate = 7.2;
+            const cnyAmount = finalAmount * exchangeRate;
+            finalPaymentAmountEl.textContent = `¥${cnyAmount.toFixed(2)}`;
+            if (paymentAmountNoteEl) {
+                paymentAmountNoteEl.textContent = `约等于 $${finalAmount.toFixed(2)} USD`;
+            }
+            confirmPaymentTextEl.textContent = `支付 ¥${cnyAmount.toFixed(2)}`;
+        } else {
+            // USDT TRC20 和 Binance Pay：使用美元
+            finalPaymentAmountEl.textContent = `$${finalAmount.toFixed(2)}`;
+            if (paymentAmountNoteEl) {
+                paymentAmountNoteEl.textContent = '';
+            }
+            confirmPaymentTextEl.textContent = `支付 $${finalAmount.toFixed(2)}`;
+        }
+    }
+    
+    // 确认支付
+    async confirmPayment() {
+        const order = this.currentPaymentOrder;
+        
+        // 确认支付
+        const confirmMessage = `确定要使用${this.getPaymentMethodName(order.paymentMethod)}支付吗？\n\n金额: ${this.getPaymentAmountDisplay(order)}`;
+        if (!confirm(confirmMessage)) {
+            return;
+        }
+        
+        try {
+            // 根据订单类型调用不同的API
+            let apiUrl, requestBody;
+            
+            if (order.type === 'subscribe') {
+                apiUrl = `${this.apiBaseUrl}/membership/subscribe`;
+                requestBody = {
+                    level_id: order.levelId,
+                    billing_period: order.billingPeriod,
+                    payment_method: order.paymentMethod,
+                    discount_code: order.discountCode || null
+                };
+            } else if (order.type === 'renew') {
+                apiUrl = `${this.apiBaseUrl}/membership/renew`;
+                requestBody = {
+                    billing_period: order.billingPeriod,
+                    payment_method: order.paymentMethod,
+                    discount_code: order.discountCode || null
+                };
+            }
+            
+            // 调用API
+            const response = await this.apiRequest(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    // 关闭弹窗
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('paymentModal'));
+                    if (modal) {
+                        modal.hide();
+                    }
+                    
+                    this.showToast('成功', result.message || '支付成功', 'success');
+                    
+                    // 重新加载会员服务数据和"我的"页面数据
+                    await this.loadMembershipServiceData();
+                    if (this.currentPage === 'my-profile') {
+                        await this.loadMyProfileData();
+                    }
+                } else {
+                    this.showToast('错误', result.message || '支付失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || '支付失败', 'danger');
+            }
+        } catch (error) {
+            console.error('支付失败:', error);
+            this.showToast('错误', '支付失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 获取支付方式名称
+    getPaymentMethodName(method) {
+        const methods = {
+            'usdt_trc20': 'USDT TRC20',
+            'alipay': '支付宝',
+            'binance': 'Binance Pay'
+        };
+        return methods[method] || method;
+    }
+    
+    // 获取支付金额显示
+    getPaymentAmountDisplay(order) {
+        let finalAmount = order.price - (order.discountAmount || 0);
+        if (order.paymentMethod === 'alipay') {
+            // 支付宝：显示人民币，并标注美元等价金额
+            const exchangeRate = 7.2;
+            const cnyAmount = finalAmount * exchangeRate;
+            return `¥${cnyAmount.toFixed(2)} (约 $${finalAmount.toFixed(2)} USD)`;
+        } else {
+            // USDT TRC20 和 Binance Pay：显示美元
+            return `$${finalAmount.toFixed(2)}`;
         }
     }
     
     // 联系客服（VIP）
     contactServiceForVIP() {
-        // TODO: 跳转到客服页面或打开客服对话框
-        this.showToast('提示', '打开telegram搜索 @Hongniugegege 进行联系', 'info');
+        const telegramUrl = 'https://t.me/Hongniugegege';
+        // 直接在新标签页中打开Telegram链接
+        window.open(telegramUrl, '_blank');
+    }
+    
+    // 续费会员
+    async renewMembership(levelId, billingPeriod) {
+        try {
+            // 获取当前会员信息
+            const membership = this.currentMembership;
+            if (!membership || !membership.level_id) {
+                this.showToast('错误', '未找到当前会员信息', 'danger');
+                return;
+            }
+            
+            // 查找会员等级信息
+            const level = this.membershipLevels.find(l => l.id === membership.level_id);
+            if (!level) {
+                this.showToast('错误', '未找到会员等级信息', 'danger');
+                return;
+            }
+            
+            // 如果是VIP会员且年费价格为0，或者VIP会员需要联系客服
+            const price = billingPeriod === 'yearly' ? parseFloat(level.price_yearly) : parseFloat(level.price_monthly);
+            if (level.level_code === 'vip' && (price === 0 || billingPeriod === 'yearly')) {
+                // VIP会员年费需要联系客服
+                this.contactServiceForVIP();
+                return;
+            }
+            
+            // 如果价格为0，也需要联系客服
+            if (price === 0) {
+                this.contactServiceForVIP();
+                return;
+            }
+            
+            // 显示支付弹窗
+            this.showPaymentModal({
+                type: 'renew',
+                levelId: membership.level_id,
+                levelName: level.level_name,
+                billingPeriod: billingPeriod,
+                price: price
+            });
+        } catch (error) {
+            console.error('续费会员失败:', error);
+            this.showToast('错误', '续费失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 设置自动续费
+    async setAutoRenew(autoRenew) {
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/membership/auto-renew`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    auto_renew: autoRenew
+                })
+            });
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    this.showToast('成功', result.message || `自动续费已${autoRenew ? '开启' : '关闭'}`, 'success');
+                    // 重新加载"我的"页面数据
+                    if (this.currentPage === 'my-profile') {
+                        await this.loadMyProfileData();
+                    }
+                } else {
+                    this.showToast('错误', result.message || '设置失败', 'danger');
+                }
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || '设置失败', 'danger');
+            }
+        } catch (error) {
+            console.error('设置自动续费失败:', error);
+            this.showToast('错误', '设置失败: ' + error.message, 'danger');
+        }
+    }
+    
+    // 加载"我的"页面数据
+    async loadMyProfileData() {
+        try {
+            // 更新用户基本信息
+            if (this.currentUser) {
+                document.getElementById('myProfileUsername').textContent = this.currentUser.username || '-';
+                document.getElementById('myProfileFullName').textContent = this.currentUser.full_name || '-';
+                document.getElementById('myProfileEmail').textContent = this.currentUser.email || '-';
+                document.getElementById('myProfileRole').innerHTML = this.currentUser.role === 'admin' 
+                    ? '<span class="badge bg-danger">管理员</span>' 
+                    : '<span class="badge bg-secondary">普通用户</span>';
+                document.getElementById('myProfileStatus').innerHTML = this.currentUser.status === 'active'
+                    ? '<span class="badge bg-success">激活</span>'
+                    : '<span class="badge bg-secondary">未激活</span>';
+                document.getElementById('myProfileLastLogin').textContent = this.currentUser.last_login_at || '未知';
+            }
+            
+            // 加载会员信息
+            const response = await this.apiRequest(`${this.apiBaseUrl}/membership/service`);
+            if (response && response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    const membershipContainer = document.getElementById('myProfileMembership');
+                    const currentMembership = data.data.current_membership;
+                    const daysRemaining = data.data.days_remaining;
+                    
+                    if (currentMembership && currentMembership.level_code !== 'free' && 
+                        currentMembership.membership_status_display === 'active') {
+                        // 格式化时间函数
+                        const formatDateTime = (dateStr) => {
+                            if (!dateStr) return '-';
+                            const date = new Date(dateStr);
+                            const year = date.getFullYear();
+                            const month = String(date.getMonth() + 1).padStart(2, '0');
+                            const day = String(date.getDate()).padStart(2, '0');
+                            const hours = String(date.getHours()).padStart(2, '0');
+                            const minutes = String(date.getMinutes()).padStart(2, '0');
+                            const seconds = String(date.getSeconds()).padStart(2, '0');
+                            return `${year}/${month}/${day} ${hours}:${minutes}:${seconds}`;
+                        };
+                        
+                        // 有激活的会员
+                        membershipContainer.innerHTML = `
+                            <div class="text-center mb-4 pb-3 border-bottom">
+                                <h4 class="text-primary mb-2" style="font-size: 1.5rem; font-weight: 600;">
+                                    <i class="bi bi-star-fill"></i> ${currentMembership.level_name || '会员'}
+                                </h4>
+                                <span class="badge bg-success" style="font-size: 0.85rem; padding: 0.35rem 0.75rem;">激活中</span>
+                            </div>
+                            <div class="membership-details">
+                                ${currentMembership.started_at ? `
+                                    <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                                        <span class="text-muted" style="font-size: 0.9rem; min-width: 80px;">开始时间</span>
+                                        <span class="text-dark" style="font-size: 0.9rem; font-weight: 500;">${formatDateTime(currentMembership.started_at)}</span>
+                                    </div>
+                                ` : ''}
+                                ${currentMembership.expires_at ? `
+                                    <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                                        <span class="text-muted" style="font-size: 0.9rem; min-width: 80px;">到期时间</span>
+                                        <span class="text-dark" style="font-size: 0.9rem; font-weight: 500;">${formatDateTime(currentMembership.expires_at)}</span>
+                                    </div>
+                                ` : ''}
+                                ${daysRemaining !== null && daysRemaining !== undefined ? `
+                                    <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                                        <span class="text-muted" style="font-size: 0.9rem; min-width: 80px;">剩余天数</span>
+                                        <span class="badge ${daysRemaining > 7 ? 'bg-success' : daysRemaining > 3 ? 'bg-warning' : 'bg-danger'}" 
+                                              style="font-size: 0.85rem; padding: 0.35rem 0.75rem;">
+                                            ${daysRemaining.toLocaleString()} 天
+                                        </span>
+                                    </div>
+                                ` : ''}
+                                ${currentMembership.auto_renew !== undefined ? `
+                                    <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom">
+                                        <span class="text-muted" style="font-size: 0.9rem; min-width: 80px;">自动续费</span>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <span class="badge ${currentMembership.auto_renew ? 'bg-info' : 'bg-secondary'}" 
+                                                  style="font-size: 0.85rem; padding: 0.35rem 0.75rem;">
+                                                ${currentMembership.auto_renew ? '已开启' : '未开启'}
+                                            </span>
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" 
+                                                       id="autoRenewSwitch" 
+                                                       ${currentMembership.auto_renew ? 'checked' : ''}
+                                                       onchange="window.app.setAutoRenew(this.checked)">
+                                            </div>
+                                        </div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                            <div class="mt-4 pt-3 border-top">
+                                <div class="d-grid gap-2">
+                                    <button class="btn btn-success btn-sm" 
+                                            onclick="app.renewMembership(null, 'monthly')">
+                                        <i class="bi bi-arrow-repeat"></i> 手动续费（月付）
+                                    </button>
+                                    <button class="btn btn-success btn-sm" 
+                                            onclick="app.renewMembership(null, 'yearly')">
+                                        <i class="bi bi-arrow-repeat"></i> 手动续费（年付）
+                                    </button>
+                                    <a href="#" class="btn btn-primary btn-sm" 
+                                       onclick="window.app.navigateToPage('membership-service'); return false;"
+                                       style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none;">
+                                        <i class="bi bi-star-fill"></i> 查看会员服务
+                                    </a>
+                                </div>
+                            </div>
+                        `;
+                    } else {
+                        // 没有激活的会员
+                        membershipContainer.innerHTML = `
+                            <div class="text-center py-4">
+                                <i class="bi bi-star text-muted" style="font-size: 3rem;"></i>
+                                <h5 class="mt-3 text-muted">当前为免费会员</h5>
+                                <p class="text-muted">升级会员以享受更多功能</p>
+                                <div class="mt-4">
+                                    <a href="#" class="btn btn-primary" onclick="window.app.navigateToPage('membership-service'); return false;">
+                                        <i class="bi bi-star-fill"></i> 查看会员服务
+                                    </a>
+                                </div>
+                            </div>
+                        `;
+                    }
+                } else {
+                    document.getElementById('myProfileMembership').innerHTML = `
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle"></i> 加载会员信息失败
+                        </div>
+                    `;
+                }
+            } else {
+                document.getElementById('myProfileMembership').innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle"></i> 无法加载会员信息
+                    </div>
+                `;
+            }
+        } catch (error) {
+            console.error('加载"我的"页面数据失败:', error);
+            document.getElementById('myProfileMembership').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-x-circle"></i> 加载失败: ${error.message}
+                </div>
+            `;
+        }
     }
     
     // 加载兑换码数据
@@ -14931,7 +15523,7 @@ class OKXTradingApp {
                 if (data.success && data.data) {
                     select.innerHTML = '<option value="">请选择会员等级（可选）</option>' +
                         data.data.map(level => 
-                            `<option value="${level.id}">${level.level_name} (¥${level.price_monthly}/月)</option>`
+                            `<option value="${level.id}">${level.level_name} ($${level.price_monthly}/月)</option>`
                         ).join('');
                 }
             }
@@ -15415,8 +16007,8 @@ class OKXTradingApp {
                         <small class="text-muted d-block">${level.description || ''}</small>
                         <small class="text-muted d-block">
                             权限数: ${level.permission_count || 0} | 
-                            月费: ¥${level.price_monthly || 0} | 
-                            年费: ¥${level.price_yearly || 0}
+                            月费: $${level.price_monthly || 0} | 
+                            年费: $${level.price_yearly || 0}
                         </small>
                     </div>
                     <div>
@@ -19980,10 +20572,6 @@ class MyStrategy(BaseStrategy):
                     
                     config[paramName] = value;
                     
-                    // 特别检查bb_std参数
-                    if (paramName === 'bb_std') {
-                        console.log(`🔍 bb_std 参数详情: 原始值="${input.value}", 转换后=${value}, 类型=${typeof value}`);
-                    }
                 });
             } else {
                 console.warn('⚠️ 未找到动态参数容器，使用默认值');
@@ -20118,10 +20706,6 @@ class MyStrategy(BaseStrategy):
                 strategy_config: strategyConfig  // 策略配置参数
             };
             
-            if (strategyConfig.bb_std !== undefined) {
-                console.log(`🔍 bb_std 最终值: ${strategyConfig.bb_std} (${typeof strategyConfig.bb_std})`);
-            }
-            
             // 回测可能需要较长时间，使用 apiRequest 并设置更长的超时（10分钟）
             const response = await this.apiRequest(`${this.apiBaseUrl}/strategy/backtests`, {
                 method: 'POST',
@@ -20222,11 +20806,6 @@ class MyStrategy(BaseStrategy):
             
             selectElement.appendChild(option);
         });
-        
-        // 显示当前选择状态
-        if (selectedValues.length > 0) {
-            console.log(`当前已选择 ${selectedValues.length} 个交易对:`, selectedValues);
-        }
     }
 
     // 初始化交易对搜索功能
@@ -20999,11 +21578,6 @@ class MyStrategy(BaseStrategy):
             modal.setAttribute('tabindex', '-1');
             document.body.appendChild(modal);
         }
-        
-        // 调试：记录接收到的数据
-        // console.log('[用户详情] 接收到的portfolio数据:', portfolio);
-        // console.log('[用户详情] portfolio类型:', typeof portfolio);
-        // console.log('[用户详情] portfolio键:', portfolio ? Object.keys(portfolio) : 'null');
         
         // 处理数据格式：Hyperliquid API 可能返回不同的数据结构
         let marginSummary = {};

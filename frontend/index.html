@@ -2619,6 +2619,91 @@
                         <div class="row g-4" id="membershipLevelsContainer">
                             <!-- 卡片将通过JavaScript动态生成 -->
                         </div>
+                        
+                        <!-- 常见问题 FAQ -->
+                        <div class="row mt-5">
+                            <div class="col-12">
+                                <div class="card">
+                                    <div class="card-header bg-light">
+                                        <h3 class="mb-0">
+                                            <i class="bi bi-question-circle text-primary"></i> 常见问题
+                                        </h3>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="accordion" id="membershipFAQAccordion">
+                                            <!-- FAQ项将通过JavaScript动态生成 -->
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 我的页面 -->
+        <div id="my-profile-page" class="page-content">
+            <div class="container-fluid">
+                <div class="row">
+                    <div class="col-12">
+                        <h2 class="mb-4">
+                            <i class="bi bi-person-circle"></i> 我的
+                        </h2>
+                    </div>
+                </div>
+                
+                <div class="row">
+                    <!-- 用户信息卡片 -->
+                    <div class="col-md-6 mb-4">
+                        <div class="card">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="mb-0"><i class="bi bi-person"></i> 基本信息</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row mb-3">
+                                    <div class="col-4"><strong>用户名：</strong></div>
+                                    <div class="col-8" id="myProfileUsername">-</div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-4"><strong>姓名：</strong></div>
+                                    <div class="col-8" id="myProfileFullName">-</div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-4"><strong>邮箱：</strong></div>
+                                    <div class="col-8" id="myProfileEmail">-</div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-4"><strong>角色：</strong></div>
+                                    <div class="col-8" id="myProfileRole">-</div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-4"><strong>状态：</strong></div>
+                                    <div class="col-8" id="myProfileStatus">-</div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-4"><strong>最后登录：</strong></div>
+                                    <div class="col-8" id="myProfileLastLogin">-</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 会员信息卡片 -->
+                    <div class="col-md-6 mb-4">
+                        <div class="card">
+                            <div class="card-header bg-warning text-dark">
+                                <h5 class="mb-0"><i class="bi bi-star-fill"></i> 会员信息</h5>
+                            </div>
+                            <div class="card-body" id="myProfileMembership">
+                                <div class="text-center py-4">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">加载中...</span>
+                                    </div>
+                                    <p class="mt-2 text-muted">正在加载会员信息...</p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -6547,6 +6632,81 @@ class MyStrategy(BaseStrategy):
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" onclick="window.app.saveAnnouncement()">
                         <i class="bi bi-check-circle"></i> 保存
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 支付弹窗 -->
+    <div class="modal fade" id="paymentModal" tabindex="-1" aria-labelledby="paymentModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="paymentModalLabel">购买/续费会员服务</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- 服务详情 -->
+                    <div class="mb-3">
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">时长:</span>
+                            <span class="text-danger fw-bold" id="paymentDuration">30天</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2">
+                            <span class="text-muted">单价:</span>
+                            <span class="text-danger fw-bold" id="paymentPrice">$40</span>
+                        </div>
+                    </div>
+
+                    <!-- 优惠码 -->
+                    <div class="mb-3">
+                        <label for="discountCode" class="form-label">优惠码</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="discountCode" placeholder="输入优惠码(非必填)">
+                            <button class="btn btn-outline-secondary" type="button" id="applyDiscountBtn">应用</button>
+                        </div>
+                    </div>
+
+                    <!-- 支付方式 -->
+                    <div class="mb-3">
+                        <label class="form-label">支付方式</label>
+                        <div class="d-flex flex-row gap-2" id="paymentMethods">
+                            <button type="button" class="btn btn-outline-primary payment-method-btn active flex-fill" data-method="usdt_trc20">
+                                <i class="bi bi-currency-bitcoin text-success"></i>
+                                <span>USDT TRC20</span>
+                            </button>
+                            <button type="button" class="btn btn-outline-primary payment-method-btn flex-fill" data-method="alipay">
+                                <i class="bi bi-wallet2"></i>
+                                <span>支付宝</span>
+                            </button>
+                            <button type="button" class="btn btn-outline-primary payment-method-btn flex-fill" data-method="binance">
+                                <i class="bi bi-currency-exchange"></i>
+                                <span>Binance Pay</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 支付提示 -->
+                    <div class="alert alert-info mb-3" id="paymentTips">
+                        <strong>支付提示:</strong><br>
+                        <span id="paymentTipsContent">使用TRC20 支付,请在转账操作时自行添加所需的网络GAS费,确保到账金额为订单金额,否则交易失效,支付金额无法原路返回,需联系客服手动处理!<br>
+                        例如:订单金额10u,网络费用1u,需在支付时输入11u</span>
+                    </div>
+
+                    <!-- 实际支付金额 -->
+                    <div class="mb-3 p-3 bg-light rounded">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="fw-bold">实际支付金额:</span>
+                            <span class="fs-4 text-primary fw-bold" id="finalPaymentAmount">$40</span>
+                        </div>
+                        <small class="text-muted" id="paymentAmountNote"></small>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="confirmPaymentBtn">
+                        <i class="bi bi-wallet2"></i> <span id="confirmPaymentText">支付 $40</span>
                     </button>
                 </div>
             </div>

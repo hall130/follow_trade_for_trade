@@ -783,16 +783,18 @@ class TelegramBotPlatform(MessagePlatform):
             from core.message_forward.telegram_bot.keyboard_builder import KeyboardBuilder
             reply_markup = KeyboardBuilder.build_main_menu()
             
+            # 转义特殊字符以避免 Markdown 解析错误
+            exchange_upper = exchange.upper()
             await update.effective_message.reply_text(
-                f"✅ *{exchange.upper()} API 配置成功！*\n\n"
+                f"✅ {exchange_upper} API 配置成功！\n\n"
                 f"您的 API 配置已保存。",
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN
+                reply_markup=reply_markup
             )
         else:
+            error_message = result.get('message', '未知错误')
+            # 转义特殊字符以避免 Markdown 解析错误
             await update.effective_message.reply_text(
-                f"❌ *配置失败*\n\n{result.get('message', '未知错误')}",
-                parse_mode=ParseMode.MARKDOWN
+                f"❌ 配置失败\n\n{error_message}"
             )
     
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1582,15 +1584,28 @@ class TelegramBotPlatform(MessagePlatform):
 
 💡 您现在可以使用所有功能了！"""
             
+            # 使用内联键盘（因为原始消息是内联键盘）
+            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
             from core.message_forward.telegram_bot.keyboard_builder import KeyboardBuilder
-            reply_markup = KeyboardBuilder.build_main_menu()
+            
+            # 构建内联键盘，包含返回主菜单按钮
+            inline_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 返回主菜单", callback_data="back_to_main")]
+            ])
             
             await update.callback_query.edit_message_text(
                 success_text,
-                reply_markup=reply_markup,
+                reply_markup=inline_keyboard,
                 parse_mode=ParseMode.MARKDOWN
             )
-            await update.callback_query.answer()
+            
+            # 发送固定键盘消息（用于主菜单）
+            await update.callback_query.message.reply_text(
+                "💡 您可以使用以下按钮快速访问功能：",
+                reply_markup=KeyboardBuilder.build_main_menu()
+            )
+            
+            await update.callback_query.answer("✅ 账号创建成功！")
         else:
             await update.callback_query.answer(
                 result.get('message', '注册失败'),
@@ -2281,22 +2296,46 @@ class TelegramBotPlatform(MessagePlatform):
             return
         
         user_id = platform_user['user_id']
-        customer_uid = platform_user.get('customer_uid')
         
         try:
-            # 获取交易所账户信息
+            # 从 customers 表查询该用户的交易所账户信息
+            # 注意：需要根据 user_id 或 owner_user_id 查询，而不是使用 platform_user 中的 customer_uid
+            # 使用 COLLATE 确保大小写不敏感匹配
             api_sql = """
                 SELECT exchange, customer_uid, name
                 FROM customers
-                WHERE customer_uid = %s AND exchange = %s AND enabled = 1
+                WHERE (user_id = %s OR owner_user_id = %s) 
+                AND exchange COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci 
+                AND enabled = 1
                 LIMIT 1
             """
-            api_rows = db_pool.query(api_sql, (customer_uid, exchange))
+            api_rows = db_pool.query(api_sql, (user_id, user_id, exchange))
             if not api_rows:
-                await update.callback_query.answer("❌ 该交易所 API 未配置", show_alert=True)
+                # 添加调试日志
+                logger.warning(f"用户 {user_id} 未找到交易所 {exchange} 的配置。查询条件: user_id={user_id}, owner_user_id={user_id}, exchange={exchange}")
+                # 检查是否有其他交易所的配置
+                check_all_sql = """
+                    SELECT exchange, customer_uid, name
+                    FROM customers
+                    WHERE (user_id = %s OR owner_user_id = %s) AND enabled = 1
+                """
+                all_configs = db_pool.query(check_all_sql, (user_id, user_id))
+                if all_configs:
+                    available_exchanges = [row.get('exchange') for row in all_configs]
+                    logger.info(f"用户 {user_id} 已配置的交易所: {available_exchanges}")
+                await update.callback_query.answer("❌ 该交易所 API 未配置，请先配置交易所 API", show_alert=True)
                 return
             
+            customer_uid = api_rows[0].get('customer_uid')
             customer_name = api_rows[0].get('name', f'{exchange.upper()} 账户')
+            
+            if not customer_uid:
+                await update.callback_query.answer("❌ 无法获取客户账户信息", show_alert=True)
+                return
+            
+            # 确保 customer_uid 是字符串类型，并去除可能的空白字符
+            customer_uid = str(customer_uid).strip()
+            logger.info(f"选择交易所 {exchange}，customer_uid={customer_uid!r}, customer_name={customer_name}")
             
             # 更新会话状态
             from core.message_forward.telegram_bot.state_manager import StateManager
@@ -2304,7 +2343,7 @@ class TelegramBotPlatform(MessagePlatform):
             session = state_manager.get_session(user.id)
             context_data = session.get('context_data', {})
             context_data['exchange'] = exchange
-            context_data['customer_uid'] = customer_uid
+            context_data['customer_uid'] = customer_uid  # 使用清理后的值
             context_data['customer_name'] = customer_name
             
             state_manager.update_session(
@@ -2372,9 +2411,16 @@ class TelegramBotPlatform(MessagePlatform):
         customer_name = context_data.get('customer_name')
         amount_ratio = context_data.get('amount_ratio', 1.0)
         
+        # 清理 customer_uid（确保是字符串且去除空白）
+        if customer_uid:
+            customer_uid = str(customer_uid).strip()
+        
         if not all([config_name, source_platform_id, customer_uid]):
+            logger.warning(f"配置信息不完整: config_name={config_name}, source_platform_id={source_platform_id}, customer_uid={customer_uid!r}")
             await update.callback_query.answer("❌ 配置信息不完整", show_alert=True)
             return
+        
+        logger.info(f"准备创建转发交易配置: user_id={user_id}, customer_uid={customer_uid!r}, config_name={config_name}")
         
         try:
             # 检查配置名称是否已存在
@@ -2386,16 +2432,58 @@ class TelegramBotPlatform(MessagePlatform):
                 await update.callback_query.answer("❌ 配置名称已存在，请使用其他名称", show_alert=True)
                 return
             
-            # 插入配置
+            # 验证 customer_uid 是否存在于 customers 表中，并获取实际的 customer_uid（确保字符编码一致）
+            # 使用 COLLATE utf8mb4_general_ci 匹配 customers 表的排序规则
+            check_customer_sql = """
+                SELECT customer_uid, name, exchange, enabled 
+                FROM customers 
+                WHERE customer_uid = %s COLLATE utf8mb4_general_ci
+            """
+            customer_exists = db_pool.query(check_customer_sql, (customer_uid,))
+            if not customer_exists:
+                logger.error(f"客户 {customer_uid} 不存在于 customers 表中。用户ID: {user_id}")
+                # 尝试查找该用户的所有 customers 记录
+                debug_sql = """
+                    SELECT customer_uid, name, exchange, enabled 
+                    FROM customers 
+                    WHERE (user_id = %s OR owner_user_id = %s)
+                """
+                all_customers = db_pool.query(debug_sql, (user_id, user_id))
+                logger.error(f"用户 {user_id} 的所有 customers 记录: {all_customers}")
+                await update.callback_query.answer("❌ 客户账户不存在，请先配置交易所 API", show_alert=True)
+                return
+            
+            # 使用从数据库查询到的实际 customer_uid（确保字符编码和值完全一致）
+            verified_customer_uid = customer_exists[0].get('customer_uid')
+            verified_customer_name = customer_exists[0].get('name', customer_name)
+            
+            # 记录验证信息
+            logger.info(f"验证 customer_uid: 会话中的={customer_uid!r}, 数据库中的={verified_customer_uid!r}, 是否匹配={customer_uid == verified_customer_uid}")
+            
+            # 如果值不匹配，使用数据库中的值
+            if verified_customer_uid != customer_uid:
+                logger.warning(f"customer_uid 值不匹配，使用数据库中的值: {verified_customer_uid}")
+                customer_uid = verified_customer_uid
+                customer_name = verified_customer_name
+            
+            # 插入配置（使用验证后的 customer_uid）
+            # 排序规则已统一为 utf8mb4_general_ci，直接使用已验证的 customer_uid
+            # 同时确保 amount_ratio 是 Decimal 类型
+            from decimal import Decimal
+            amount_ratio_decimal = Decimal(str(amount_ratio)).quantize(Decimal('0.0001'))
+            
+            # 使用已验证的 customer_uid（从数据库查询得到的值，确保完全匹配）
             insert_sql = """
                 INSERT INTO forward_trade_configs
                 (config_name, user_id, source_platform_id, source_platform_name,
                  customer_uid, customer_name, amount_ratio, enabled, created_by_user_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s)
             """
+            logger.info(f"准备插入转发交易配置: customer_uid={verified_customer_uid!r}, user_id={user_id}, config_name={config_name}, amount_ratio={amount_ratio_decimal}")
+            logger.info(f"customer_uid 类型: {type(verified_customer_uid)}, 值: {repr(verified_customer_uid)}")
             db_pool.execute(insert_sql, (
                 config_name, user_id, source_platform_id, source_platform_name,
-                customer_uid, customer_name, amount_ratio, user_id
+                verified_customer_uid, customer_name, amount_ratio_decimal, user_id
             ))
             
             # 清除会话状态
@@ -2428,7 +2516,39 @@ class TelegramBotPlatform(MessagePlatform):
             logger.error(f"创建转发交易配置失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            await update.callback_query.answer("创建失败，请稍后重试", show_alert=True)
+            
+            # 如果是外键约束错误，提供更详细的错误信息和调试
+            error_msg = str(e)
+            if "foreign key constraint" in error_msg.lower() or "1452" in error_msg:
+                logger.error(f"外键约束错误详情: customer_uid={customer_uid!r}, user_id={user_id}, config_name={config_name}")
+                
+                # 再次检查 customer_uid 是否存在（使用多种方式）
+                final_check_sql1 = """
+                    SELECT customer_uid, name, exchange, enabled 
+                    FROM customers 
+                    WHERE customer_uid = %s
+                """
+                final_check1 = db_pool.query(final_check_sql1, (customer_uid,))
+                
+                # 也检查该用户的所有 customers
+                final_check_sql2 = """
+                    SELECT customer_uid, name, exchange, enabled 
+                    FROM customers 
+                    WHERE (user_id = %s OR owner_user_id = %s) AND enabled = 1
+                """
+                final_check2 = db_pool.query(final_check_sql2, (user_id, user_id))
+                
+                logger.error(f"最终验证1 (精确匹配): {final_check1}")
+                logger.error(f"最终验证2 (用户所有记录): {final_check2}")
+                
+                if not final_check1:
+                    logger.error(f"customer_uid={customer_uid!r} 确实不存在于 customers 表中")
+                    await update.callback_query.answer("❌ 客户账户不存在，请重新选择交易所", show_alert=True)
+                else:
+                    logger.error(f"验证成功但插入失败，可能是字符编码或数据库约束问题")
+                    await update.callback_query.answer("❌ 创建失败，请稍后重试或联系管理员", show_alert=True)
+            else:
+                await update.callback_query.answer("创建失败，请稍后重试", show_alert=True)
     
     async def handle_toggle_forward_trade_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE, config_id: int):
         """切换转发交易配置的启用状态"""

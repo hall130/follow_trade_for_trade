@@ -75,7 +75,6 @@ class ExchangeAPIService:
             expires_at = code_info.get('expires_at')
             if expires_at:
                 if isinstance(expires_at, str):
-                    from datetime import datetime
                     expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
                 if datetime.now() > expires_at:
                     return {
@@ -195,7 +194,8 @@ class ExchangeAPIService:
         exchange: str,
         api_key: str,
         api_secret: str,
-        passphrase: Optional[str] = None
+        passphrase: Optional[str] = None,
+        is_demo: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         保存交易所 API 配置到 customers 表
@@ -224,6 +224,11 @@ class ExchangeAPIService:
                     'message': '请先使用兑换码获取配置权限。前往 qianlijin.com 获取兑换码。'
                 }
             
+            # 获取全局 is_demo 设置（如果未提供）
+            if is_demo is None:
+                import os
+                is_demo = int(os.environ.get('IS_DEMO', '1'))
+            
             # 获取用户信息
             user_sql = "SELECT customer_uid FROM users WHERE id = %s"
             user_rows = self.db_pool.query(user_sql, (user_id,))
@@ -246,68 +251,73 @@ class ExchangeAPIService:
                 self.db_pool.execute(update_user_sql, (customer_uid, user_id))
             
             # 检查 customers 表中是否已存在
-            check_customer_sql = "SELECT id FROM customers WHERE customer_uid = %s"
+            # 注意：customers 表的主键是 customer_uid，不是 id
+            check_customer_sql = "SELECT customer_uid FROM customers WHERE customer_uid = %s"
             customer_rows = self.db_pool.query(check_customer_sql, (customer_uid,))
             
             if customer_rows:
-                # 更新现有记录
-                customer_id = customer_rows[0]['id']
+                # 更新现有记录（不需要 customer_id，直接使用 customer_uid）
                 # 检查 customers 表是否有 passphrase 字段
                 try:
-                    # 尝试更新（包含 passphrase）
+                    # 尝试更新（包含 passphrase 和 is_demo）
+                    # 注意：customers 表没有 updated_at 字段
+                    # 同时更新 user_id 和 owner_user_id，确保查询时能找到
                     update_sql = """
                         UPDATE customers 
-                        SET api_key = %s, api_secret = %s, exchange = %s, updated_at = NOW()
+                        SET api_key = %s, api_secret = %s, exchange = %s, 
+                            user_id = %s, owner_user_id = %s, is_demo = %s
                         WHERE customer_uid = %s
                     """
-                    params = [api_key, api_secret, exchange, customer_uid]
+                    params = [api_key, api_secret, exchange, user_id, user_id, is_demo, customer_uid]
                     # 如果 customers 表有 passphrase 字段，添加它
                     if passphrase:
                         update_sql = """
                             UPDATE customers 
                             SET api_key = %s, api_secret = %s, passphrase = %s, 
-                                exchange = %s, updated_at = NOW()
+                                exchange = %s, user_id = %s, owner_user_id = %s, is_demo = %s
                             WHERE customer_uid = %s
                         """
-                        params = [api_key, api_secret, passphrase, exchange, customer_uid]
+                        params = [api_key, api_secret, passphrase, exchange, user_id, user_id, is_demo, customer_uid]
                     self.db_pool.execute(update_sql, tuple(params))
                 except Exception as e:
                     # 如果 passphrase 字段不存在，只更新 api_key 和 api_secret
                     logger.debug(f"更新 customers 表时 passphrase 字段可能不存在: {e}")
                     update_sql = """
                         UPDATE customers 
-                        SET api_key = %s, api_secret = %s, exchange = %s, updated_at = NOW()
+                        SET api_key = %s, api_secret = %s, exchange = %s,
+                            user_id = %s, owner_user_id = %s, is_demo = %s
                         WHERE customer_uid = %s
                     """
-                    self.db_pool.execute(update_sql, (api_key, api_secret, exchange, customer_uid))
+                    self.db_pool.execute(update_sql, (api_key, api_secret, exchange, user_id, user_id, is_demo, customer_uid))
             else:
                 # 创建新记录
                 try:
-                    # 尝试插入（包含 passphrase）
+                    # 尝试插入（包含 passphrase 和 is_demo）
+                    # 注意：需要设置 user_id 和 owner_user_id，以便后续查询时能找到
                     insert_sql = """
                         INSERT INTO customers 
-                        (customer_uid, name, api_key, api_secret, exchange, enabled, created_at)
-                        VALUES (%s, %s, %s, %s, %s, 1, NOW())
+                        (customer_uid, user_id, owner_user_id, name, api_key, api_secret, exchange, enabled, is_demo, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, NOW())
                     """
-                    params = [customer_uid, f"tg_user_{user_id}", api_key, api_secret, exchange]
+                    params = [customer_uid, user_id, user_id, f"tg_user_{user_id}", api_key, api_secret, exchange, is_demo]
                     # 如果 customers 表有 passphrase 字段，添加它
                     if passphrase:
                         insert_sql = """
                             INSERT INTO customers 
-                            (customer_uid, name, api_key, api_secret, passphrase, exchange, enabled, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, 1, NOW())
+                            (customer_uid, user_id, owner_user_id, name, api_key, api_secret, passphrase, exchange, enabled, is_demo, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, NOW())
                         """
-                        params = [customer_uid, f"tg_user_{user_id}", api_key, api_secret, passphrase, exchange]
+                        params = [customer_uid, user_id, user_id, f"tg_user_{user_id}", api_key, api_secret, passphrase, exchange, is_demo]
                     self.db_pool.execute(insert_sql, tuple(params))
                 except Exception as e:
                     # 如果 passphrase 字段不存在，只插入 api_key 和 api_secret
                     logger.debug(f"插入 customers 表时 passphrase 字段可能不存在: {e}")
                     insert_sql = """
                         INSERT INTO customers 
-                        (customer_uid, name, api_key, api_secret, exchange, enabled, created_at)
-                        VALUES (%s, %s, %s, %s, %s, 1, NOW())
+                        (customer_uid, user_id, owner_user_id, name, api_key, api_secret, exchange, enabled, is_demo, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, NOW())
                     """
-                    self.db_pool.execute(insert_sql, (customer_uid, f"tg_user_{user_id}", api_key, api_secret, exchange))
+                    self.db_pool.execute(insert_sql, (customer_uid, user_id, user_id, f"tg_user_{user_id}", api_key, api_secret, exchange, is_demo))
             
             logger.info(f"✅ 用户 {user_id} 已保存 {exchange.upper()} API 配置")
             

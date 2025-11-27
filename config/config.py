@@ -95,6 +95,44 @@ def get_okx_config():
 
 # 注意：REDIS_CONFIG 已在文件开头定义（第13行），这里不再重复定义
 
+# 支付配置
+PAYMENT_CONFIG = {
+    'usdt_trc20': {
+        'enabled': True,
+        'receive_address': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',  # 收款地址（需要替换为实际地址）
+        'api_url': 'https://api.trongrid.io',
+        'poll_interval': 30,  # 轮询间隔（秒）
+        'order_expire_minutes': 30,  # 订单过期时间（分钟）
+    },
+    'alipay': {
+        'enabled': True,
+        'app_id': '',  # 支付宝应用ID
+        'private_key': '',  # 应用私钥
+        'public_key': '',  # 支付宝公钥
+        'notify_url': 'https://your-domain.com/api/v1/payment/callback/alipay',
+        'return_url': 'https://your-domain.com/payment/success',
+        'poll_interval': 30,
+        'order_expire_minutes': 30,
+    },
+    'binance': {
+        'enabled': True,
+        'api_key': '',  # Binance Pay API Key
+        'api_secret': '',  # Binance Pay API Secret
+        'api_url': 'https://bpay.binanceapi.com',
+        'webhook_url': 'https://your-domain.com/api/v1/payment/callback/binance',
+        'poll_interval': 30,
+        'order_expire_minutes': 30,
+    },
+    'exchange_rate': {
+        'usd_to_cny': 7.2,  # USD到CNY汇率（可配置或从API获取）
+        'update_interval': 3600,  # 汇率更新间隔（秒）
+    }
+}
+
+def get_payment_config():
+    """获取支付配置"""
+    return PAYMENT_CONFIG.copy()
+
 def get_redis_config():
     """获取 Redis 配置（过滤掉 RedisManager 不支持的参数）"""
     config = REDIS_CONFIG.copy()

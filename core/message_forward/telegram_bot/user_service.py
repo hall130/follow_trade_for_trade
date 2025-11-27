@@ -130,8 +130,50 @@ class TelegramBotUserService:
                 INSERT INTO users (username, password_hash, role, status, created_at)
                 VALUES (%s, %s, 'user', 'active', NOW())
             """
-            self.db_pool.execute(create_user_sql, (username, password_hash))
-            user_id = self.db_pool.lastrowid
+            user_id = self.db_pool.execute(create_user_sql, (username, password_hash))
+            
+            if not user_id:
+                raise Exception("创建用户失败，未返回用户ID")
+            
+            # 为新用户自动分配免费会员
+            try:
+                free_level = self.db_pool.query_one(
+                    "SELECT id FROM membership_levels WHERE level_code = 'free' LIMIT 1",
+                    ()
+                )
+                
+                if free_level:
+                    # 创建免费会员记录（永久有效，expires_at为NULL）
+                    self.db_pool.execute("""
+                        INSERT INTO user_memberships (user_id, level_id, started_at, expires_at, status, auto_renew)
+                        VALUES (%s, %s, NOW(), NULL, 'active', 0)
+                    """, (user_id, free_level['id']))
+                    
+                    # 同步会员权限
+                    try:
+                        self.db_pool.execute("CALL sync_user_membership_permissions(%s)", (user_id,))
+                    except Exception as proc_error:
+                        logger.warning(f"调用存储过程失败，尝试直接同步权限: {proc_error}")
+                        # 如果存储过程失败，手动同步权限
+                        from core.membership.membership_service import MembershipService
+                        membership_service = MembershipService()
+                        level_permissions = membership_service.get_membership_level_permissions(free_level['id'])
+                        for module_code, permission_level in level_permissions.items():
+                            try:
+                                self.db_pool.execute("""
+                                    INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
+                                    VALUES (%s, %s, %s, NULL, NOW())
+                                    ON DUPLICATE KEY UPDATE 
+                                        permission_level = VALUES(permission_level),
+                                        granted_at = NOW()
+                                """, (user_id, module_code, permission_level))
+                            except Exception as perm_error:
+                                logger.warning(f"插入权限失败 {module_code}: {perm_error}")
+                    
+                    logger.info(f"✅ 用户 {user_id} 已自动分配免费会员")
+            except Exception as e:
+                logger.warning(f"为用户分配免费会员失败: {e}")
+                # 即使会员分配失败，用户创建仍然成功
             
             # 创建绑定关系
             binding_sql = """
@@ -141,7 +183,7 @@ class TelegramBotUserService:
             """
             self.db_pool.execute(binding_sql, (telegram_user_id, telegram_username, user_id))
             
-            logger.info(f"✅ 已为用户 {telegram_user_id} 创建平台账号: {username}")
+            logger.info(f"✅ 已为用户 {telegram_user_id} 创建平台账号: {username} (ID: {user_id})")
             
             return {
                 'success': True,

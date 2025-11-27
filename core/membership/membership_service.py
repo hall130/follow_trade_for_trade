@@ -399,16 +399,224 @@ class MembershipService:
             self.db_pool.execute(sql, (user_id, level_id, expires_at))
             
             # 同步权限（通过触发器自动完成，但也可以手动调用）
-            self.db_pool.execute(
-                "CALL sync_user_membership_permissions(%s)",
-                (user_id,)
-            )
+            try:
+                self.db_pool.execute(
+                    "CALL sync_user_membership_permissions(%s)",
+                    (user_id,)
+                )
+            except Exception as proc_error:
+                logger.warning(f"调用存储过程失败，尝试直接同步权限: {proc_error}")
+                # 如果存储过程失败，手动同步权限
+                level_permissions = self.get_membership_level_permissions(level_id)
+                for module_code, permission_level in level_permissions.items():
+                    try:
+                        self.db_pool.execute("""
+                            INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
+                            VALUES (%s, %s, %s, NULL, NOW())
+                            ON DUPLICATE KEY UPDATE 
+                                permission_level = VALUES(permission_level),
+                                granted_at = NOW()
+                        """, (user_id, module_code, permission_level))
+                    except Exception as perm_error:
+                        logger.warning(f"插入权限失败 {module_code}: {perm_error}")
             
-            logger.info(f"用户 {user_id} 会员激活成功，等级ID: {level_id}")
+            logger.info(f"用户 {user_id} 会员激活成功，等级ID: {level_id}，权限已同步")
             return True
             
         except Exception as e:
             logger.error(f"激活会员失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def renew_membership(
+        self,
+        user_id: int,
+        billing_period: str = 'monthly',
+        auto_renew: bool = False
+    ) -> bool:
+        """
+        续费会员（延长当前会员的到期时间）
+        
+        Args:
+            user_id: 用户ID
+            billing_period: 续费周期 ('monthly' 或 'yearly')
+            auto_renew: 是否开启自动续费
+            
+        Returns:
+            是否成功
+        """
+        try:
+            # 获取用户当前会员信息
+            membership = self.get_user_membership(user_id)
+            
+            if not membership or not membership.get('level_id'):
+                logger.error(f"用户 {user_id} 没有激活的会员，无法续费")
+                return False
+            
+            level_id = membership['level_id']
+            current_expires_at = membership.get('expires_at')
+            
+            # 计算新的到期时间
+            if current_expires_at:
+                if isinstance(current_expires_at, str):
+                    from datetime import datetime
+                    current_expires_at = datetime.fromisoformat(current_expires_at.replace('Z', '+00:00'))
+                # 从当前到期时间开始延长
+                if billing_period == 'monthly':
+                    new_expires_at = current_expires_at + timedelta(days=30)
+                elif billing_period == 'yearly':
+                    new_expires_at = current_expires_at + timedelta(days=365)
+                else:
+                    logger.error(f"无效的续费周期: {billing_period}")
+                    return False
+            else:
+                # 如果没有到期时间（永久会员），从当前时间开始计算
+                if billing_period == 'monthly':
+                    new_expires_at = datetime.now() + timedelta(days=30)
+                elif billing_period == 'yearly':
+                    new_expires_at = datetime.now() + timedelta(days=365)
+                else:
+                    logger.error(f"无效的续费周期: {billing_period}")
+                    return False
+            
+            # 更新会员到期时间和自动续费设置
+            sql = """
+                UPDATE user_memberships 
+                SET expires_at = %s, 
+                    auto_renew = %s,
+                    updated_at = NOW()
+                WHERE user_id = %s AND status = 'active'
+            """
+            
+            self.db_pool.execute(sql, (new_expires_at, auto_renew, user_id))
+            
+            # 续费后同步权限（确保权限与会员等级一致）
+            try:
+                self.db_pool.execute(
+                    "CALL sync_user_membership_permissions(%s)",
+                    (user_id,)
+                )
+            except Exception as proc_error:
+                logger.warning(f"调用存储过程失败，尝试直接同步权限: {proc_error}")
+                # 如果存储过程失败，手动同步权限
+                level_permissions = self.get_membership_level_permissions(level_id)
+                for module_code, permission_level in level_permissions.items():
+                    try:
+                        self.db_pool.execute("""
+                            INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
+                            VALUES (%s, %s, %s, NULL, NOW())
+                            ON DUPLICATE KEY UPDATE 
+                                permission_level = VALUES(permission_level),
+                                granted_at = NOW()
+                        """, (user_id, module_code, permission_level))
+                    except Exception as perm_error:
+                        logger.warning(f"插入权限失败 {module_code}: {perm_error}")
+            
+            logger.info(f"用户 {user_id} 会员续费成功，新到期时间: {new_expires_at}, 自动续费: {auto_renew}，权限已同步")
+            return True
+            
+        except Exception as e:
+            logger.error(f"续费会员失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def set_auto_renew(self, user_id: int, auto_renew: bool) -> bool:
+        """
+        设置自动续费
+        
+        Args:
+            user_id: 用户ID
+            auto_renew: 是否开启自动续费
+            
+        Returns:
+            是否成功
+        """
+        try:
+            sql = """
+                UPDATE user_memberships 
+                SET auto_renew = %s, updated_at = NOW()
+                WHERE user_id = %s AND status = 'active'
+            """
+            
+            self.db_pool.execute(sql, (auto_renew, user_id))
+            
+            logger.info(f"用户 {user_id} 自动续费设置已更新: {auto_renew}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"设置自动续费失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+    
+    def cleanup_expired_membership_permissions(self, user_id: int) -> bool:
+        """
+        清理过期会员的权限（当会员到期时，删除自动授予的权限）
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            是否成功
+        """
+        try:
+            # 获取用户当前会员信息
+            membership = self.get_user_membership(user_id)
+            
+            # 如果用户没有激活的会员，或者会员已过期，清理自动授予的权限
+            if not membership or not membership.get('level_id') or membership.get('membership_status_display') != 'active':
+                # 删除所有自动授予的权限（granted_by IS NULL）
+                self.db_pool.execute("""
+                    DELETE FROM user_permissions
+                    WHERE user_id = %s
+                    AND granted_by IS NULL
+                """, (user_id,))
+                
+                logger.info(f"用户 {user_id} 过期会员权限已清理")
+                return True
+            
+            # 如果会员仍然有效，确保权限与会员等级一致
+            level_id = membership['level_id']
+            try:
+                self.db_pool.execute(
+                    "CALL sync_user_membership_permissions(%s)",
+                    (user_id,)
+                )
+            except Exception as proc_error:
+                logger.warning(f"调用存储过程失败，尝试直接同步权限: {proc_error}")
+                # 如果存储过程失败，手动同步权限
+                level_permissions = self.get_membership_level_permissions(level_id)
+                
+                # 先删除该会员等级的所有自动权限
+                if level_permissions:
+                    module_codes = list(level_permissions.keys())
+                    placeholders = ','.join(['%s'] * len(module_codes))
+                    self.db_pool.execute(f"""
+                        DELETE FROM user_permissions
+                        WHERE user_id = %s
+                        AND module_code IN ({placeholders})
+                        AND granted_by IS NULL
+                    """, (user_id, *module_codes))
+                
+                # 重新插入会员权限
+                for module_code, permission_level in level_permissions.items():
+                    try:
+                        self.db_pool.execute("""
+                            INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
+                            VALUES (%s, %s, %s, NULL, NOW())
+                            ON DUPLICATE KEY UPDATE 
+                                permission_level = VALUES(permission_level),
+                                granted_at = NOW()
+                        """, (user_id, module_code, permission_level))
+                    except Exception as perm_error:
+                        logger.warning(f"插入权限失败 {module_code}: {perm_error}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"清理过期会员权限失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
