@@ -610,6 +610,53 @@ class AuthService:
             
             if user_id:
                 logger.info(f"用户创建成功: {username} (ID: {user_id}, 客户UID: {customer_uid})")
+                
+                # 为新用户自动分配免费会员
+                try:
+                    from core.membership.membership_service import MembershipService
+                    membership_service = MembershipService()
+                    
+                    # 获取免费会员等级ID
+                    free_level = db_pool.query_one(
+                        "SELECT id FROM membership_levels WHERE level_code = 'free' LIMIT 1",
+                        ()
+                    )
+                    
+                    if free_level:
+                        # 创建免费会员记录（永久有效，expires_at为NULL）
+                        db_pool.execute("""
+                            INSERT INTO user_memberships (user_id, level_id, started_at, expires_at, status, auto_renew)
+                            VALUES (%s, %s, NOW(), NULL, 'active', 0)
+                        """, (user_id, free_level['id']))
+                        
+                        # 同步会员权限
+                        try:
+                            db_pool.execute("CALL sync_user_membership_permissions(%s)", (user_id,))
+                        except Exception as proc_error:
+                            logger.warning(f"调用存储过程失败，尝试直接同步权限: {proc_error}")
+                            # 如果存储过程失败，手动同步权限
+                            level_permissions = membership_service.get_membership_level_permissions(free_level['id'])
+                            for module_code, permission_level in level_permissions.items():
+                                try:
+                                    db_pool.execute("""
+                                        INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
+                                        VALUES (%s, %s, %s, NULL, NOW())
+                                        ON DUPLICATE KEY UPDATE 
+                                            permission_level = VALUES(permission_level),
+                                            granted_at = NOW()
+                                    """, (user_id, module_code, permission_level))
+                                except Exception as perm_error:
+                                    logger.warning(f"插入权限失败 {module_code}: {perm_error}")
+                        
+                        logger.info(f"✅ 用户 {user_id} 已自动分配免费会员")
+                    else:
+                        logger.warning(f"未找到免费会员等级，跳过自动分配")
+                except Exception as e:
+                    logger.error(f"为用户分配免费会员失败: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 即使会员分配失败，用户创建仍然成功
+                
                 return self.get_user_by_id(user_id)
             else:
                 logger.error(f"用户创建失败: {username}")

@@ -828,12 +828,29 @@ def get_customers():
             
             # 添加权限过滤
             if AUTH_MODULE_AVAILABLE and hasattr(g, 'customer_filter') and g.customer_filter:
-                # g.customer_filter 可能是完整的SQL条件片段
-                if 'owner_user_id' in g.customer_filter:
-                    where_conditions.append("owner_user_id=%s")
-                    query_params.append(int(g.customer_filter.split('=')[-1].strip()))
+                # g.customer_filter 可能是完整的SQL条件片段，如 " AND owner_user_id = 6"
+                # 或者只是条件部分，如 "owner_user_id = 6"
+                customer_filter = g.customer_filter.strip()
+                
+                # 如果包含 "owner_user_id"，提取用户ID
+                if 'owner_user_id' in customer_filter:
+                    # 尝试从字符串中提取用户ID
+                    import re
+                    match = re.search(r'owner_user_id\s*=\s*(\d+)', customer_filter)
+                    if match:
+                        user_id = int(match.group(1))
+                        where_conditions.append("owner_user_id=%s")
+                        query_params.append(user_id)
+                    else:
+                        # 如果无法解析，直接使用过滤条件（移除开头的 AND）
+                        filter_condition = customer_filter.lstrip(' AND').strip()
+                        if filter_condition:
+                            where_conditions.append(filter_condition)
                 else:
-                    where_conditions.append(g.customer_filter)
+                    # 如果不是 owner_user_id 过滤，直接使用（移除开头的 AND）
+                    filter_condition = customer_filter.lstrip(' AND').strip()
+                    if filter_condition:
+                        where_conditions.append(filter_condition)
         
             if name:
                 where_conditions.append("name LIKE %s")
@@ -964,12 +981,29 @@ def get_customer(customer_uid):
         
         # 添加权限过滤
         if AUTH_MODULE_AVAILABLE and hasattr(g, 'customer_filter') and g.customer_filter:
-            # g.customer_filter 可能是完整的SQL条件片段
-            if 'owner_user_id' in g.customer_filter:
-                where_conditions.append("owner_user_id=%s")
-                query_params.append(int(g.customer_filter.split('=')[-1].strip()))
+            # g.customer_filter 可能是完整的SQL条件片段，如 " AND owner_user_id = 6"
+            # 或者只是条件部分，如 "owner_user_id = 6"
+            customer_filter = g.customer_filter.strip()
+            
+            # 如果包含 "owner_user_id"，提取用户ID
+            if 'owner_user_id' in customer_filter:
+                # 尝试从字符串中提取用户ID
+                import re
+                match = re.search(r'owner_user_id\s*=\s*(\d+)', customer_filter)
+                if match:
+                    user_id = int(match.group(1))
+                    where_conditions.append("owner_user_id=%s")
+                    query_params.append(user_id)
+                else:
+                    # 如果无法解析，直接使用过滤条件（移除开头的 AND）
+                    filter_condition = customer_filter.lstrip(' AND').strip()
+                    if filter_condition:
+                        where_conditions.append(filter_condition)
             else:
-                where_conditions.append(g.customer_filter)
+                # 如果不是 owner_user_id 过滤，直接使用（移除开头的 AND）
+                filter_condition = customer_filter.lstrip(' AND').strip()
+                if filter_condition:
+                    where_conditions.append(filter_condition)
         
         where_clause = " AND ".join(where_conditions)
         
@@ -1057,6 +1091,78 @@ def update_customer(customer_uid):
     except Exception as e:
         logger.error(f"更新客户信息失败: {e}")
         raise APIError(f"更新客户信息失败: {str(e)}")
+
+@app.route('/api/v1/customers/<customer_uid>', methods=['DELETE'])
+@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@require_permission('customers', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@filter_customers if AUTH_MODULE_AVAILABLE else lambda f: f
+@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
+@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+def delete_customer(customer_uid):
+    """删除客户账户"""
+    try:
+        is_demo = get_global_is_demo()
+        
+        # 构建查询条件
+        where_conditions = ["customer_uid=%s", "is_demo=%s"]
+        query_params = [customer_uid, is_demo]
+        
+        # 添加权限过滤（确保用户只能删除自己的客户）
+        if AUTH_MODULE_AVAILABLE and hasattr(g, 'customer_filter') and g.customer_filter:
+            customer_filter = g.customer_filter.strip()
+            
+            # 如果包含 "owner_user_id"，提取用户ID
+            if 'owner_user_id' in customer_filter:
+                import re
+                match = re.search(r'owner_user_id\s*=\s*(\d+)', customer_filter)
+                if match:
+                    user_id = int(match.group(1))
+                    where_conditions.append("owner_user_id=%s")
+                    query_params.append(user_id)
+                else:
+                    # 如果无法解析，直接使用过滤条件（移除开头的 AND）
+                    filter_condition = customer_filter.lstrip(' AND').strip()
+                    if filter_condition:
+                        where_conditions.append(filter_condition)
+            else:
+                # 如果不是 owner_user_id 过滤，直接使用（移除开头的 AND）
+                filter_condition = customer_filter.lstrip(' AND').strip()
+                if filter_condition:
+                    where_conditions.append(filter_condition)
+        
+        where_clause = " AND ".join(where_conditions)
+        
+        # 检查客户是否存在
+        existing_customer = db_pool.query(
+            f"SELECT customer_uid, owner_user_id FROM customers WHERE {where_clause}",
+            tuple(query_params)
+        )
+        
+        if not existing_customer:
+            raise APIError("客户不存在或无权限删除", 404)
+        
+        # 删除客户记录
+        delete_sql = f"DELETE FROM customers WHERE {where_clause}"
+        result = db_pool.execute(delete_sql, tuple(query_params))
+        
+        if result == 0:
+            raise APIError("删除失败，客户不存在或无权限", 404)
+        
+        # 重新加载客户信息
+        try:
+            trade_service = get_trade_service()
+            trade_service.reload_customers_from_db()
+            logger.info("[API] 客户信息已重新加载")
+        except Exception as e:
+            logger.warning(f"[API] 重新加载客户信息失败: {e}")
+        
+        return jsonify({
+            'success': 200,
+            'message': '客户账户删除成功'
+        })
+    except Exception as e:
+        logger.error(f"删除客户账户失败: {e}")
+        raise APIError(f"删除客户账户失败: {str(e)}")
 
 @app.route('/api/v1/customers/<customer_uid>/leverage', methods=['POST'])
 def set_customer_leverage(customer_uid):
@@ -13918,8 +14024,11 @@ def create_forward_trade_config():
         try:
             message_forward_service = get_message_forward_service()
             if message_forward_service and message_forward_service.manager and message_forward_service.manager._forward_trade_service:
-                import asyncio
-                asyncio.create_task(message_forward_service.manager._forward_trade_service._refresh_configs_cache())
+                # 使用 run_async_safe 安全调用异步函数
+                run_async_safe(
+                    message_forward_service.manager._forward_trade_service._refresh_configs_cache(),
+                    timeout=10
+                )
         except Exception as e:
             logger.warning(f"刷新转发交易配置缓存失败: {e}")
         
@@ -14030,8 +14139,11 @@ def update_forward_trade_config(config_id):
         try:
             message_forward_service = get_message_forward_service()
             if message_forward_service and message_forward_service.manager and message_forward_service.manager._forward_trade_service:
-                import asyncio
-                asyncio.create_task(message_forward_service.manager._forward_trade_service._refresh_configs_cache())
+                # 使用 run_async_safe 安全调用异步函数
+                run_async_safe(
+                    message_forward_service.manager._forward_trade_service._refresh_configs_cache(),
+                    timeout=10
+                )
         except Exception as e:
             logger.warning(f"刷新转发交易配置缓存失败: {e}")
         
@@ -14083,8 +14195,11 @@ def delete_forward_trade_config(config_id):
         try:
             message_forward_service = get_message_forward_service()
             if message_forward_service and message_forward_service.manager and message_forward_service.manager._forward_trade_service:
-                import asyncio
-                asyncio.create_task(message_forward_service.manager._forward_trade_service._refresh_configs_cache())
+                # 使用 run_async_safe 安全调用异步函数
+                run_async_safe(
+                    message_forward_service.manager._forward_trade_service._refresh_configs_cache(),
+                    timeout=10
+                )
         except Exception as e:
             logger.warning(f"刷新转发交易配置缓存失败: {e}")
         
@@ -15753,7 +15868,7 @@ else:
             )
             
             if user:
-                # 如果提供了会员等级，为用户创建会员记录
+                # 如果提供了会员等级，为用户创建会员记录（否则使用默认的免费会员）
                 membership_level_id = data.get('membership_level_id')
                 if membership_level_id:
                     try:
@@ -16410,6 +16525,362 @@ else:
                 'message': '获取会员服务信息失败',
                 'code': 'GET_MEMBERSHIP_SERVICE_ERROR'
             }), 500
+    
+    @app.route('/api/v1/membership/subscribe', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def subscribe_membership():
+        """订阅会员（升级会员等级）"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            data = request.get_json()
+            level_id = data.get('level_id')
+            billing_period = data.get('billing_period', 'monthly')  # monthly 或 yearly
+            
+            if not level_id:
+                return jsonify({
+                    'success': False,
+                    'message': '请选择会员等级'
+                }), 400
+            
+            from core.membership.membership_service import MembershipService
+            from datetime import datetime, timedelta
+            
+            membership_service = MembershipService()
+            
+            # 获取会员等级信息
+            levels = membership_service.get_all_membership_levels()
+            target_level = None
+            for level in levels:
+                if level.get('id') == level_id:
+                    target_level = level
+                    break
+            
+            if not target_level:
+                return jsonify({
+                    'success': False,
+                    'message': '会员等级不存在'
+                }), 400
+            
+            # 计算到期时间
+            expires_at = None
+            if billing_period == 'monthly':
+                expires_at = datetime.now() + timedelta(days=30)
+            elif billing_period == 'yearly':
+                expires_at = datetime.now() + timedelta(days=365)
+            
+            # 激活会员（会自动取消旧的会员并同步权限）
+            success = membership_service.activate_membership(
+                user_id=user_id,
+                level_id=level_id,
+                expires_at=expires_at
+            )
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'会员订阅成功，已升级为{target_level.get("level_name", "会员")}',
+                    'data': {
+                        'level_id': level_id,
+                        'level_name': target_level.get('level_name'),
+                        'expires_at': expires_at.isoformat() if expires_at else None
+                    }
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '会员订阅失败，请稍后重试'
+                }), 500
+                
+        except Exception as e:
+            logger.error(f"订阅会员失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '订阅会员失败',
+                'error': str(e)
+            }), 500
+    
+    @app.route('/api/v1/membership/renew', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def renew_membership():
+        """续费会员（延长当前会员的到期时间）"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            data = request.get_json()
+            billing_period = data.get('billing_period', 'monthly')  # monthly 或 yearly
+            
+            from core.membership.membership_service import MembershipService
+            membership_service = MembershipService()
+            
+            # 续费会员
+            success = membership_service.renew_membership(
+                user_id=user_id,
+                billing_period=billing_period,
+                auto_renew=False  # 续费时不自动开启自动续费
+            )
+            
+            if success:
+                # 获取更新后的会员信息
+                membership = membership_service.get_user_membership(user_id)
+                return jsonify({
+                    'success': True,
+                    'message': f'会员续费成功（{billing_period == "monthly" and "月付" or "年付"}）',
+                    'data': {
+                        'expires_at': membership.get('expires_at').isoformat() if membership.get('expires_at') else None,
+                        'auto_renew': membership.get('auto_renew', False)
+                    }
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '续费失败，请检查您是否有激活的会员'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"续费会员失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '续费会员失败',
+                'error': str(e)
+            }), 500
+    
+    @app.route('/api/v1/membership/auto-renew', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def set_auto_renew():
+        """设置自动续费"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            data = request.get_json()
+            auto_renew = data.get('auto_renew', False)  # True 或 False
+            
+            from core.membership.membership_service import MembershipService
+            membership_service = MembershipService()
+            
+            # 设置自动续费
+            success = membership_service.set_auto_renew(
+                user_id=user_id,
+                auto_renew=auto_renew
+            )
+            
+            if success:
+                return jsonify({
+                    'success': True,
+                    'message': f'自动续费已{"开启" if auto_renew else "关闭"}',
+                    'data': {
+                        'auto_renew': auto_renew
+                    }
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '设置自动续费失败，请检查您是否有激活的会员'
+                }), 400
+                
+        except Exception as e:
+            logger.error(f"设置自动续费失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '设置自动续费失败',
+                'error': str(e)
+            }), 500
+    
+    # ==================== 支付系统API ====================
+    
+    @app.route('/api/v1/payment/create-order', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('payment') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def create_payment_order():
+        """创建支付订单"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            data = request.get_json()
+            level_id = data.get('level_id')
+            order_type = data.get('order_type', 'subscribe')  # 'subscribe' 或 'renew'
+            billing_period = data.get('billing_period', 'monthly')
+            payment_method = data.get('payment_method', 'usdt_trc20')
+            discount_code = data.get('discount_code')
+            
+            if not level_id:
+                return jsonify({
+                    'success': False,
+                    'message': '请选择会员等级'
+                }), 400
+            
+            # 获取会员等级信息
+            from core.membership.membership_service import MembershipService
+            membership_service = MembershipService()
+            levels = membership_service.get_all_membership_levels()
+            target_level = None
+            for level in levels:
+                if level.get('id') == level_id:
+                    target_level = level
+                    break
+            
+            if not target_level:
+                return jsonify({
+                    'success': False,
+                    'message': '会员等级不存在'
+                }), 400
+            
+            # 计算价格
+            from decimal import Decimal
+            if billing_period == 'yearly':
+                original_amount = Decimal(str(target_level.get('price_yearly', 0)))
+            else:
+                original_amount = Decimal(str(target_level.get('price_monthly', 0)))
+            
+            # TODO: 验证优惠码并计算折扣
+            discount_amount = Decimal('0.00')
+            
+            # 创建支付订单
+            from core.payment.order_service import PaymentOrderService
+            order_service = PaymentOrderService()
+            
+            order_result = order_service.create_order(
+                user_id=user_id,
+                membership_level_id=level_id,
+                order_type=order_type,
+                billing_period=billing_period,
+                original_amount=original_amount,
+                payment_method=payment_method,
+                discount_code=discount_code,
+                discount_amount=discount_amount
+            )
+            
+            return jsonify({
+                'success': True,
+                'message': '订单创建成功',
+                'data': order_result
+            })
+            
+        except Exception as e:
+            logger.error(f"创建支付订单失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': '创建支付订单失败',
+                'error': str(e)
+            }), 500
+    
+    @app.route('/api/v1/payment/order/<order_no>', methods=['GET'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('payment') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def get_payment_order(order_no):
+        """查询订单状态"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            from core.payment.order_service import PaymentOrderService
+            order_service = PaymentOrderService()
+            
+            order = order_service.get_order(order_no)
+            if not order:
+                return jsonify({
+                    'success': False,
+                    'message': '订单不存在'
+                }), 404
+            
+            # 验证订单属于当前用户
+            if order['user_id'] != user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '无权访问此订单'
+                }), 403
+            
+            return jsonify({
+                'success': True,
+                'data': order
+            })
+            
+        except Exception as e:
+            logger.error(f"查询订单失败: {e}")
+            return jsonify({
+                'success': False,
+                'message': '查询订单失败',
+                'error': str(e)
+            }), 500
+    
+    @app.route('/api/v1/payment/callback/alipay', methods=['POST'])
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def alipay_callback():
+        """支付宝支付回调"""
+        try:
+            # 获取回调数据
+            callback_data = request.form.to_dict() or request.get_json() or {}
+            
+            # TODO: 验证支付宝签名
+            # TODO: 处理支付成功逻辑
+            
+            logger.info(f"收到支付宝回调: {callback_data}")
+            
+            return 'success'  # 支付宝要求返回 'success'
+            
+        except Exception as e:
+            logger.error(f"处理支付宝回调失败: {e}")
+            return 'fail', 500
+    
+    @app.route('/api/v1/payment/callback/binance', methods=['POST'])
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def binance_callback():
+        """Binance Pay 支付回调"""
+        try:
+            # 获取回调数据
+            callback_data = request.get_json()
+            signature = request.headers.get('BinancePay-Signature', '')
+            
+            # TODO: 验证 Binance Pay 签名
+            # TODO: 处理支付成功逻辑
+            
+            logger.info(f"收到Binance Pay回调: {callback_data}")
+            
+            return jsonify({'status': 'success'})
+            
+        except Exception as e:
+            logger.error(f"处理Binance Pay回调失败: {e}")
+            return jsonify({'status': 'error', 'message': str(e)}), 500
     
     # ==================== 做市模块API ====================
     
