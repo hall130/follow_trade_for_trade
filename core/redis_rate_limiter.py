@@ -46,7 +46,7 @@ class RedisRateLimiter:
         检查是否允许请求
         
         Args:
-            key: 限流键（可以按用户ID、IP等区分）
+            key: 限流键(可以按用户ID、IP等区分)
             
         Returns:
             (是否允许, 剩余请求次数)

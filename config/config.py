@@ -99,10 +99,16 @@ def get_okx_config():
 PAYMENT_CONFIG = {
     'usdt_trc20': {
         'enabled': True,
-        'receive_address': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',  # 收款地址（需要替换为实际地址）
+        'receive_address': 'TBeMAbJP5xnJKRHoYJLHn3dDFXZdvsiTcH',  # 单个收款地址（向后兼容，如果地址池为空则使用此地址）
+        'address_pool': [  # 地址池（推荐使用，随机选择）
+            'TBeMAbJP5xnJKRHoYJLHn3dDFXZdvsiTcH',  # 地址1
+            'TRhNdZ95Br4VmQsTri9vK1QPGwc2k3P8cX',  # 地址2
+            # 'TYourAddress3HereXXXXXXXXXXXXXXXXXX',  # 地址3
+            # 可以添加更多地址...
+        ],
         'api_url': 'https://api.trongrid.io',
         'poll_interval': 30,  # 轮询间隔（秒）
-        'order_expire_minutes': 30,  # 订单过期时间（分钟）
+        'order_expire_minutes': 15,  # 订单过期时间（分钟）
     },
     'alipay': {
         'enabled': True,

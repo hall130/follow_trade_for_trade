@@ -34,11 +34,13 @@ class USDTTRC20Listener(BasePaymentListener):
         检查 USDT TRC20 支付
         
         通过 TronGrid API 查询收款地址的 TRC20 交易
+        只检查单笔交易，金额必须精确匹配订单金额（允许很小的误差）
         """
         try:
             receive_address = payment_info.get('address')
             expected_amount = Decimal(payment_info.get('amount', '0'))
             memo = payment_info.get('memo', '')
+            order_created_at = payment_info.get('order_created_at')  # 订单创建时间
             
             if not receive_address:
                 logger.error(f"订单 {order_no} 缺少收款地址")
@@ -61,28 +63,48 @@ class USDTTRC20Listener(BasePaymentListener):
                     data = await response.json()
                     transactions = data.get('data', [])
                     
-                    # 查找匹配的交易
+                    # 只查找单笔精确匹配的交易（不能累加多笔）
+                    matched_tx = None
                     for tx in transactions:
                         # 检查交易方向（to 必须是收款地址）
                         if tx.get('to') != receive_address:
                             continue
                         
-                        # 检查金额（考虑网络费用，允许略大于订单金额）
+                        # 检查交易时间（必须在订单创建后）
+                        tx_timestamp = tx.get('block_timestamp', 0)
+                        if order_created_at:
+                            # 将订单创建时间转换为时间戳（毫秒）
+                            if isinstance(order_created_at, str):
+                                order_created_ts = int(datetime.fromisoformat(order_created_at.replace('Z', '+00:00')).timestamp() * 1000)
+                            else:
+                                order_created_ts = int(order_created_at.timestamp() * 1000)
+                            
+                            # 交易时间必须晚于订单创建时间
+                            if tx_timestamp < order_created_ts:
+                                continue
+                        
+                        # 计算交易金额
                         tx_amount = Decimal(str(tx.get('value', 0))) / Decimal('1000000')  # USDT 6位小数
-                        if tx_amount < expected_amount * Decimal('0.99'):  # 允许1%误差
+                        
+                        # 金额必须精确匹配（允许0.01%的误差，用于处理精度问题）
+                        amount_diff = abs(tx_amount - expected_amount)
+                        if amount_diff > expected_amount * Decimal('0.0001'):  # 允许0.01%误差
                             continue
                         
                         # 检查备注（如果有）
                         if memo and memo not in str(tx.get('memo', '')):
                             continue
                         
-                        # 检查交易时间（应该在订单创建后）
-                        tx_timestamp = tx.get('block_timestamp', 0)
-                        # TODO: 验证交易时间在订单创建后
+                        # 找到精确匹配的单笔交易
+                        matched_tx = tx
+                        break  # 只取第一笔匹配的交易
+                    
+                    if matched_tx:
+                        tx_hash = matched_tx.get('transaction_id', '')
+                        tx_amount = Decimal(str(matched_tx.get('value', 0))) / Decimal('1000000')
+                        tx_timestamp = matched_tx.get('block_timestamp', 0)
                         
-                        # 找到匹配的交易
-                        tx_hash = tx.get('transaction_id', '')
-                        logger.info(f"找到匹配的USDT交易: order_no={order_no}, tx_hash={tx_hash}, amount={tx_amount}")
+                        logger.info(f"找到精确匹配的USDT交易: order_no={order_no}, tx_hash={tx_hash}, amount={tx_amount}, expected={expected_amount}")
                         
                         return {
                             'tx_hash': tx_hash,
@@ -125,9 +147,10 @@ class USDTTRC20Listener(BasePaymentListener):
             expected_amount = Decimal(str(order['final_amount']))
             actual_amount = payment_data.get('amount', Decimal('0'))
             
-            # 允许1%误差（考虑网络费用）
-            if actual_amount < expected_amount * Decimal('0.99'):
-                logger.warning(f"支付金额不足: expected={expected_amount}, actual={actual_amount}")
+            # 金额必须精确匹配（允许0.01%的误差，用于处理精度问题）
+            amount_diff = abs(actual_amount - expected_amount)
+            if amount_diff > expected_amount * Decimal('0.0001'):  # 允许0.01%误差
+                logger.warning(f"支付金额不匹配: expected={expected_amount}, actual={actual_amount}, diff={amount_diff}")
                 return False
             
             return True

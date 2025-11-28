@@ -13,6 +13,9 @@ class OKXTradingApp {
         
         // 防重复点击标志
         this.isUpdatingAssets = false;
+        this.isEditingTrader = false;
+        this.isTogglingTrader = false;
+        this.isDeletingTrader = false;
         // 系统日志分页
         this.systemLogsPage = 1;
         this.systemLogsPageSize = 10;
@@ -22,6 +25,8 @@ class OKXTradingApp {
         this.popularTradersPageSize = 20; // 默认每页显示20个
         this.popularTradersAllData = [];
         this.popularTradersCurrentPage = 1;
+        this._loadingPopularTraders = false; // 加载标志，防止重复加载
+        this._popularTradersCache = null; // 缓存数据，避免重复请求
         
         // 自动刷新配置 - 完全后台运行，无需用户控制
         this.autoRefreshConfig = {
@@ -7785,7 +7790,9 @@ class OKXTradingApp {
                 const traderId = e.target.dataset.traderId;
                 self.toggleLimitFollowTrader(traderId);
             } else if (e.target.matches('#refreshPopularTradersBtn') || e.target.closest('#refreshPopularTradersBtn')) {
-                self.loadPopularTraders();
+                // 刷新时清除缓存，强制重新加载
+                self._popularTradersCache = null;
+                self.loadPopularTraders(1);
             } else if (e.target.matches('.add-to-limit-follow') || e.target.closest('.add-to-limit-follow')) {
                 const btn = e.target.closest('.add-to-limit-follow') || e.target;
                 const traderData = JSON.parse(btn.dataset.trader);
@@ -7793,43 +7800,28 @@ class OKXTradingApp {
             }
         });
         
-        // 热门带单员筛选变化事件
+        // 热门带单员筛选变化事件（清除缓存并重新加载）
         const exchangeSelect = document.getElementById('popularTradersExchange');
         const sortBySelect = document.getElementById('popularTradersSortBy');
-        
-        // 当筛选条件改变时，重置页码
-        if (exchangeSelect) {
-            exchangeSelect.addEventListener('change', () => {
-                this.popularTradersCurrentPage = 1;
-                this.loadPopularTraders(1);
-            });
-        }
-        if (sortBySelect) {
-            sortBySelect.addEventListener('change', () => {
-                this.popularTradersCurrentPage = 1;
-                this.loadPopularTraders(1);
-            });
-        }
         const limitSelect = document.getElementById('popularTradersLimit');
         const fetchAllCheckbox = document.getElementById('popularTradersFetchAll');
         
+        // 清除缓存并重新加载的函数
+        const clearCacheAndReload = () => {
+            self._popularTradersCache = null; // 清除缓存
+            self.popularTradersCurrentPage = 1; // 重置页码
+            self.loadPopularTraders(1);
+        };
+        
+        // 当筛选条件改变时，清除缓存并重新加载
         if (exchangeSelect) {
-            exchangeSelect.addEventListener('change', () => {
-                self.popularTradersCurrentPage = 1;
-                self.loadPopularTraders(1);
-            });
+            exchangeSelect.addEventListener('change', clearCacheAndReload);
         }
         if (sortBySelect) {
-            sortBySelect.addEventListener('change', () => {
-                self.popularTradersCurrentPage = 1;
-                self.loadPopularTraders(1);
-            });
-        }
-        if (sortBySelect) {
-            sortBySelect.addEventListener('change', () => self.loadPopularTraders());
+            sortBySelect.addEventListener('change', clearCacheAndReload);
         }
         if (limitSelect) {
-            limitSelect.addEventListener('change', () => self.loadPopularTraders());
+            limitSelect.addEventListener('change', clearCacheAndReload);
         }
         if (fetchAllCheckbox) {
             fetchAllCheckbox.addEventListener('change', () => {
@@ -9429,28 +9421,48 @@ class OKXTradingApp {
         const collectorType = document.getElementById('traderCollectorType').value;
         const okxGroup = document.getElementById('okxIdentifierGroup');
         const binanceGroup = document.getElementById('binanceIdentifierGroup');
+        const hyperliquidGroup = document.getElementById('hyperliquidIdentifierGroup');
         const okxConfig = document.getElementById('okxCollectorConfig');
         const binanceConfig = document.getElementById('binanceCollectorConfig');
+        const hyperliquidConfig = document.getElementById('hyperliquidCollectorConfig');
         
         // 显示/隐藏标识符输入框
         if (collectorType === 'okx') {
             okxGroup.style.display = 'block';
             binanceGroup.style.display = 'none';
+            hyperliquidGroup.style.display = 'none';
             okxConfig.style.display = 'block';
             binanceConfig.style.display = 'none';
+            hyperliquidConfig.style.display = 'none';
             
             // 设置必填属性
             document.getElementById('traderUniqueName').required = true;
             document.getElementById('traderPortfolioId').required = false;
+            document.getElementById('traderAddress').required = false;
         } else if (collectorType === 'binance') {
             okxGroup.style.display = 'none';
             binanceGroup.style.display = 'block';
+            hyperliquidGroup.style.display = 'none';
             okxConfig.style.display = 'none';
             binanceConfig.style.display = 'block';
+            hyperliquidConfig.style.display = 'none';
             
             // 设置必填属性
             document.getElementById('traderUniqueName').required = false;
             document.getElementById('traderPortfolioId').required = true;
+            document.getElementById('traderAddress').required = false;
+        } else if (collectorType === 'hyperliquid') {
+            okxGroup.style.display = 'none';
+            binanceGroup.style.display = 'none';
+            hyperliquidGroup.style.display = 'block';
+            okxConfig.style.display = 'none';
+            binanceConfig.style.display = 'none';
+            hyperliquidConfig.style.display = 'block';
+            
+            // 设置必填属性
+            document.getElementById('traderUniqueName').required = false;
+            document.getElementById('traderPortfolioId').required = false;
+            document.getElementById('traderAddress').required = true;
         }
     }
     
@@ -9463,6 +9475,8 @@ class OKXTradingApp {
             uniqueName = document.getElementById('traderUniqueName').value;
         } else if (collectorType === 'binance') {
             uniqueName = document.getElementById('traderPortfolioId').value;
+        } else if (collectorType === 'hyperliquid') {
+            uniqueName = document.getElementById('traderAddress').value;
         }
         
         // 构建采集器配置
@@ -9476,6 +9490,13 @@ class OKXTradingApp {
             const apiBaseUrl = document.getElementById('binanceApiBaseUrl').value.trim();
             const timeout = document.getElementById('binanceTimeout').value;
             const defaultDays = document.getElementById('binanceDefaultDays').value;
+            if (apiBaseUrl) collectorConfig.api_base_url = apiBaseUrl;
+            if (timeout) collectorConfig.timeout = parseInt(timeout);
+            if (defaultDays) collectorConfig.default_days = parseInt(defaultDays);
+        } else if (collectorType === 'hyperliquid') {
+            const apiBaseUrl = document.getElementById('hyperliquidApiBaseUrl').value.trim();
+            const timeout = document.getElementById('hyperliquidTimeout').value;
+            const defaultDays = document.getElementById('hyperliquidDefaultDays').value;
             if (apiBaseUrl) collectorConfig.api_base_url = apiBaseUrl;
             if (timeout) collectorConfig.timeout = parseInt(timeout);
             if (defaultDays) collectorConfig.default_days = parseInt(defaultDays);
@@ -9547,6 +9568,8 @@ class OKXTradingApp {
                 document.getElementById('traderUniqueName').value = trader.unique_name || '';
             } else if (collectorType === 'binance') {
                 document.getElementById('traderPortfolioId').value = trader.unique_name || '';
+            } else if (collectorType === 'hyperliquid') {
+                document.getElementById('traderAddress').value = trader.unique_name || '';
             }
             
             // 填充采集器配置
@@ -9567,6 +9590,16 @@ class OKXTradingApp {
                 }
                 if (collectorConfig.default_days) {
                     document.getElementById('binanceDefaultDays').value = collectorConfig.default_days;
+                }
+            } else if (collectorType === 'hyperliquid') {
+                if (collectorConfig.api_base_url) {
+                    document.getElementById('hyperliquidApiBaseUrl').value = collectorConfig.api_base_url;
+                }
+                if (collectorConfig.timeout) {
+                    document.getElementById('hyperliquidTimeout').value = collectorConfig.timeout;
+                }
+                if (collectorConfig.default_days) {
+                    document.getElementById('hyperliquidDefaultDays').value = collectorConfig.default_days;
                 }
             }
             
@@ -9594,6 +9627,60 @@ class OKXTradingApp {
     }
     
     // 切换限价跟单员启用状态
+    async deleteLimitFollowTrader(traderId) {
+        // 确认删除
+        if (!confirm('确定要删除这个跟单员吗？删除后无法恢复。')) {
+            return;
+        }
+        
+        // 防止重复点击
+        if (this.isDeletingTrader) {
+            this.showToast('提示', '正在处理中，请稍候...', 'info');
+            return;
+        }
+        
+        this.isDeletingTrader = true;
+        
+        try {
+            // 显示加载状态
+            this.showToast('信息', '正在删除跟单员...', 'info');
+            
+            // 添加超时控制
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
+            
+            const response = await fetch(`${this.apiBaseUrl}/limit-follow/traders/${traderId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.ok) {
+                const result = await response.json();
+                this.showToast('成功', result.message || '跟单员删除成功', 'success');
+                
+                // 重新加载跟单员列表
+                await this.loadLimitFollowTraders();
+            } else {
+                const errorData = await response.json().catch(() => ({}));
+                this.showToast('错误', errorData.message || '删除失败', 'danger');
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                this.showToast('错误', '请求超时，请重试', 'danger');
+            } else {
+                console.error('删除跟单员失败:', error);
+                this.showToast('错误', '删除失败: ' + error.message, 'danger');
+            }
+        } finally {
+            this.isDeletingTrader = false;
+        }
+    }
+    
     async toggleLimitFollowTrader(traderId) {
         // 防止重复点击
         if (this.isTogglingTrader) {
@@ -9655,9 +9742,20 @@ class OKXTradingApp {
     // ==================== 热门带单员模块 ====================
     
     async loadPopularTraders(page = 1) {
+        // 防止重复加载：如果正在加载，直接返回
+        if (this._loadingPopularTraders) {
+            return;
+        }
+        
         try {
+            // 设置加载标志
+            this._loadingPopularTraders = true;
+            
             const container = document.getElementById('popularTradersContainer');
-            if (!container) return;
+            if (!container) {
+                this._loadingPopularTraders = false;
+                return;
+            }
             
             // 显示加载状态
             container.innerHTML = `
@@ -9683,6 +9781,22 @@ class OKXTradingApp {
             const limitValue = document.getElementById('popularTradersLimit')?.value || '';
             const limit = limitValue ? parseInt(limitValue) : undefined; // 如果为空字符串，则不传limit参数
             const fetchAll = document.getElementById('popularTradersFetchAll')?.checked !== false; // 默认获取所有数据
+            
+            // 检查是否有缓存数据且参数未变化
+            const cacheKey = `popularTraders_${exchange}_${sortBy}_${limit || 'all'}_${fetchAll}`;
+            if (this._popularTradersCache && this._popularTradersCache.key === cacheKey && this._popularTradersCache.data) {
+                // 使用缓存数据，只更新分页显示
+                this.popularTradersAllData = this._popularTradersCache.data;
+                this.popularTradersCurrentPage = page;
+                
+                if (!limit || limit <= 0) {
+                    this.renderPopularTradersWithPagination(this.popularTradersAllData, page);
+                } else {
+                    this.renderPopularTraders(this.popularTradersAllData);
+                }
+                this._loadingPopularTraders = false;
+                return;
+            }
             
             // 更新加载提示
             if (fetchAll) {
@@ -9781,6 +9895,13 @@ class OKXTradingApp {
                 this.popularTradersAllData = tradersList;
                 this.popularTradersCurrentPage = page;
                 
+                // 缓存数据（用于避免重复请求）
+                this._popularTradersCache = {
+                    key: cacheKey,
+                    data: tradersList,
+                    timestamp: Date.now()
+                };
+                
                 // 如果没有设置limit，启用分页
                 if (!limit || limit <= 0) {
                     // 使用分页渲染
@@ -9816,6 +9937,9 @@ class OKXTradingApp {
                 `;
             }
             this.showToast('错误', '加载热门带单员失败', 'error');
+        } finally {
+            // 清除加载标志
+            this._loadingPopularTraders = false;
         }
     }
     
@@ -13676,6 +13800,16 @@ class OKXTradingApp {
     // 订阅会员
     async subscribeMembership(levelId, billingPeriod) {
         try {
+            
+            // 检查会员等级数据是否已加载
+            if (!this.membershipLevels || this.membershipLevels.length === 0) {
+                this.showToast('提示', '正在加载会员信息，请稍候...', 'info');
+                // 重新加载会员数据
+                await this.loadMembershipServiceData();
+                // 等待渲染完成
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
             // 查找会员等级信息
             const level = this.membershipLevels.find(l => l.id === levelId);
             if (!level) {
@@ -13702,60 +13836,82 @@ class OKXTradingApp {
         const { type, levelId, levelName, billingPeriod, price } = options;
         
         // 检查支付弹窗是否存在
-        const paymentModal = document.getElementById('paymentModal');
-        if (!paymentModal) {
+        const paymentModalEl = document.getElementById('paymentModal');
+        if (!paymentModalEl) {
             console.error('支付弹窗元素不存在');
             this.showToast('错误', '支付弹窗未找到，请刷新页面重试', 'danger');
             return;
         }
         
-        // 设置订单信息
-        const duration = billingPeriod === 'yearly' ? '365天' : '30天';
-        const priceUSD = price || 0;
+        // 先关闭可能已经打开的弹窗（包括支付信息弹窗）
+        const existingPaymentModal = bootstrap.Modal.getInstance(paymentModalEl);
+        if (existingPaymentModal) {
+            existingPaymentModal.hide();
+        }
         
-        // 更新弹窗内容（添加空值检查）
-        const paymentDurationEl = document.getElementById('paymentDuration');
-        const paymentPriceEl = document.getElementById('paymentPrice');
-        const finalPaymentAmountEl = document.getElementById('finalPaymentAmount');
-        const confirmPaymentTextEl = document.getElementById('confirmPaymentText');
-        const discountCodeEl = document.getElementById('discountCode');
-        const usdtBtn = document.querySelector('[data-method="usdt_trc20"]');
+        const existingUsdtModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+        if (existingUsdtModal) {
+            existingUsdtModal.hide();
+        }
         
-        if (paymentDurationEl) paymentDurationEl.textContent = duration;
-        if (paymentPriceEl) paymentPriceEl.textContent = `$${priceUSD.toFixed(2)}`;
-        if (finalPaymentAmountEl) finalPaymentAmountEl.textContent = `$${priceUSD.toFixed(2)}`;
-        if (confirmPaymentTextEl) confirmPaymentTextEl.textContent = `支付 $${priceUSD.toFixed(2)}`;
-        
-        // 重置优惠码
-        if (discountCodeEl) discountCodeEl.value = '';
-        
-        // 重置支付方式（默认USDT TRC20）
-        document.querySelectorAll('.payment-method-btn').forEach(btn => {
-            btn.classList.remove('active');
-        });
-        if (usdtBtn) usdtBtn.classList.add('active');
-        
-        // 存储订单信息
-        this.currentPaymentOrder = {
-            type: type, // 'subscribe' 或 'renew'
-            levelId: levelId,
-            levelName: levelName,
-            billingPeriod: billingPeriod,
-            price: priceUSD,
-            discountCode: '',
-            paymentMethod: 'usdt_trc20',
-            discountAmount: 0
-        };
-        
-        // 更新支付提示
-        this.updatePaymentTips('usdt_trc20');
-        
-        // 显示弹窗
-        const modal = new bootstrap.Modal(document.getElementById('paymentModal'));
-        modal.show();
-        
-        // 绑定事件
-        this.bindPaymentModalEvents();
+        // 等待弹窗完全关闭
+        setTimeout(() => {
+            // 设置订单信息
+            const duration = billingPeriod === 'yearly' ? '365天' : '30天';
+            const priceUSD = price || 0;
+            
+            // 更新弹窗内容（添加空值检查）
+            const paymentDurationEl = document.getElementById('paymentDuration');
+            const paymentPriceEl = document.getElementById('paymentPrice');
+            const finalPaymentAmountEl = document.getElementById('finalPaymentAmount');
+            const confirmPaymentTextEl = document.getElementById('confirmPaymentText');
+            const discountCodeEl = document.getElementById('discountCode');
+            const usdtBtn = document.querySelector('[data-method="usdt_trc20"]');
+            
+            if (paymentDurationEl) paymentDurationEl.textContent = duration;
+            if (paymentPriceEl) paymentPriceEl.textContent = `$${priceUSD.toFixed(2)}`;
+            if (finalPaymentAmountEl) finalPaymentAmountEl.textContent = `$${priceUSD.toFixed(2)}`;
+            if (confirmPaymentTextEl) confirmPaymentTextEl.textContent = `支付 $${priceUSD.toFixed(2)}`;
+            
+            // 重置优惠码
+            if (discountCodeEl) discountCodeEl.value = '';
+            
+            // 重置支付方式（默认USDT TRC20）
+            document.querySelectorAll('.payment-method-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            if (usdtBtn) usdtBtn.classList.add('active');
+            
+            // 存储订单信息
+            this.currentPaymentOrder = {
+                type: type, // 'subscribe' 或 'renew'
+                levelId: levelId,
+                levelName: levelName,
+                billingPeriod: billingPeriod,
+                price: priceUSD,
+                discountCode: '',
+                paymentMethod: 'usdt_trc20',
+                discountAmount: 0
+            };
+            
+            // 更新支付提示
+            this.updatePaymentTips('usdt_trc20');
+            
+            // 重置按钮状态
+            this.resetPaymentButton();
+            
+            // 绑定事件（在显示弹窗之前绑定）
+            this.bindPaymentModalEvents();
+            
+            // 获取或创建Modal实例
+            let modal = bootstrap.Modal.getInstance(paymentModalEl);
+            if (!modal) {
+                modal = new bootstrap.Modal(paymentModalEl);
+            } else {
+            }
+            
+            modal.show();
+        }, 100); // 等待100ms确保之前的弹窗完全关闭
     }
     
     // 绑定支付弹窗事件
@@ -13782,6 +13938,27 @@ class OKXTradingApp {
             });
         });
         
+        // 支付弹窗关闭时重置按钮状态
+        const paymentModal = document.getElementById('paymentModal');
+        if (paymentModal) {
+            // 移除旧的事件监听器（使用 off 方法）
+            const modalElement = paymentModal;
+            // 创建新的事件处理函数
+            const handleModalHidden = () => {
+                // 弹窗关闭时重置按钮状态
+                this.resetPaymentButton();
+                // 如果订单还未创建（没有orderNo），清除订单信息
+                if (this.currentPaymentOrder && !this.currentPaymentOrder.orderNo) {
+                    this.currentPaymentOrder = null;
+                }
+            };
+            
+            // 移除旧的事件监听器（如果存在）
+            modalElement.removeEventListener('hidden.bs.modal', handleModalHidden);
+            // 添加新的事件监听器
+            modalElement.addEventListener('hidden.bs.modal', handleModalHidden);
+        }
+        
         // 优惠码应用
         const applyDiscountBtn = document.getElementById('applyDiscountBtn');
         if (applyDiscountBtn) {
@@ -13797,7 +13974,16 @@ class OKXTradingApp {
             // 移除旧的事件监听器
             const newBtn = confirmPaymentBtn.cloneNode(true);
             confirmPaymentBtn.parentNode.replaceChild(newBtn, confirmPaymentBtn);
-            document.getElementById('confirmPaymentBtn').onclick = () => this.confirmPayment();
+            const newConfirmBtn = document.getElementById('confirmPaymentBtn');
+            if (newConfirmBtn) {
+                newConfirmBtn.onclick = () => {
+                    this.confirmPayment();
+                };
+            } else {
+                console.error('确认支付按钮未找到');
+            }
+        } else {
+            console.error('确认支付按钮元素不存在');
         }
     }
     
@@ -13875,68 +14061,412 @@ class OKXTradingApp {
     async confirmPayment() {
         const order = this.currentPaymentOrder;
         
+        if (!order) {
+            console.error('订单信息不存在');
+            this.showToast('错误', '订单信息不存在', 'danger');
+            return;
+        }
+        
+        
         // 确认支付
         const confirmMessage = `确定要使用${this.getPaymentMethodName(order.paymentMethod)}支付吗？\n\n金额: ${this.getPaymentAmountDisplay(order)}`;
         if (!confirm(confirmMessage)) {
             return;
         }
         
-        try {
-            // 根据订单类型调用不同的API
-            let apiUrl, requestBody;
-            
-            if (order.type === 'subscribe') {
-                apiUrl = `${this.apiBaseUrl}/membership/subscribe`;
-                requestBody = {
-                    level_id: order.levelId,
-                    billing_period: order.billingPeriod,
-                    payment_method: order.paymentMethod,
-                    discount_code: order.discountCode || null
-                };
-            } else if (order.type === 'renew') {
-                apiUrl = `${this.apiBaseUrl}/membership/renew`;
-                requestBody = {
-                    billing_period: order.billingPeriod,
-                    payment_method: order.paymentMethod,
-                    discount_code: order.discountCode || null
-                };
+        
+        // 显示加载状态
+        const confirmBtn = document.getElementById('confirmPaymentBtn');
+        if (confirmBtn) {
+            // 保存原始文本
+            if (!confirmBtn.getAttribute('data-original-text')) {
+                const originalText = confirmBtn.textContent.trim();
+                confirmBtn.setAttribute('data-original-text', originalText);
             }
+            confirmBtn.disabled = true;
+            confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>创建订单中...';
+        }
+        
+        try {
             
-            // 调用API
-            const response = await this.apiRequest(apiUrl, {
+            // 创建支付订单
+            const orderType = order.type === 'subscribe' ? 'subscribe' : 'renew';
+            const response = await this.apiRequest(`${this.apiBaseUrl}/payment/create-order`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify({
+                    level_id: order.levelId,
+                    order_type: orderType,
+                    billing_period: order.billingPeriod,
+                    payment_method: order.paymentMethod,
+                    discount_code: order.discountCode || null
+                })
             });
             
             if (response && response.ok) {
                 const result = await response.json();
-                if (result.success) {
-                    // 关闭弹窗
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('paymentModal'));
-                    if (modal) {
-                        modal.hide();
+                if (result.success && result.data) {
+                    // 存储订单信息
+                    this.currentPaymentOrder.orderNo = result.data.order_no;
+                    this.currentPaymentOrder.paymentInfo = result.data.payment_info;
+                    this.currentPaymentOrder.expiresAt = result.data.expires_at;
+                    
+                    // 先关闭支付方式选择弹窗
+                    const paymentModal = bootstrap.Modal.getInstance(document.getElementById('paymentModal'));
+                    if (paymentModal) {
+                        paymentModal.hide();
                     }
                     
-                    this.showToast('成功', result.message || '支付成功', 'success');
-                    
-                    // 重新加载会员服务数据和"我的"页面数据
-                    await this.loadMembershipServiceData();
-                    if (this.currentPage === 'my-profile') {
-                        await this.loadMyProfileData();
-                    }
+                    // 等待弹窗完全关闭后再显示支付信息弹窗
+                    setTimeout(() => {
+                        // 根据支付方式显示不同的支付界面
+                        if (order.paymentMethod === 'usdt_trc20') {
+                            // USDT TRC20: 显示支付地址和二维码
+                            this.showUSDTPaymentInfo(result.data);
+                        } else if (order.paymentMethod === 'alipay') {
+                            // 支付宝: 显示二维码
+                            this.showAlipayPaymentInfo(result.data);
+                        } else if (order.paymentMethod === 'binance') {
+                            // Binance Pay: 显示支付链接
+                            this.showBinancePaymentInfo(result.data);
+                        }
+                    }, 300); // 等待300ms确保弹窗完全关闭
                 } else {
-                    this.showToast('错误', result.message || '支付失败', 'danger');
+                    this.showToast('错误', result.message || '创建订单失败', 'danger');
+                    this.resetPaymentButton();
                 }
             } else {
                 const errorData = await response.json().catch(() => ({}));
-                this.showToast('错误', errorData.message || '支付失败', 'danger');
+                this.showToast('错误', errorData.message || '创建订单失败', 'danger');
+                this.resetPaymentButton();
             }
         } catch (error) {
-            console.error('支付失败:', error);
-            this.showToast('错误', '支付失败: ' + error.message, 'danger');
+            console.error('创建支付订单失败:', error);
+            this.showToast('错误', '创建订单失败: ' + error.message, 'danger');
+            this.resetPaymentButton();
+        }
+    }
+    
+    // 显示USDT TRC20支付信息
+    showUSDTPaymentInfo(orderData) {
+        const paymentInfo = orderData.payment_info;
+        const address = paymentInfo.address;
+        const amount = paymentInfo.amount;
+        const orderNo = orderData.order_no;
+        const expiresAt = new Date(orderData.expires_at);
+        
+        // 显示支付地址弹窗
+        const usdtPaymentModal = document.getElementById('usdtPaymentModal');
+        if (!usdtPaymentModal) {
+            this.showToast('错误', '支付地址弹窗未找到', 'danger');
+            return;
+        }
+        
+        // 填充支付信息
+        const addressEl = document.getElementById('usdtPaymentAddress');
+        const amountEl = document.getElementById('usdtPaymentAmount');
+        const orderNoEl = document.getElementById('usdtPaymentOrderNo');
+        const expiresAtEl = document.getElementById('usdtPaymentExpiresAt');
+        const memoEl = document.getElementById('usdtPaymentMemo');
+        const copyAddressBtn = document.getElementById('copyUsdtAddressBtn');
+        
+        if (addressEl) addressEl.value = address;
+        if (amountEl) amountEl.textContent = `${amount} USDT`;
+        if (orderNoEl) orderNoEl.textContent = orderNo;
+        if (memoEl) memoEl.textContent = orderNo;
+        if (expiresAtEl) {
+            const minutes = Math.floor((expiresAt - new Date()) / 1000 / 60);
+            expiresAtEl.textContent = `${minutes} 分钟`;
+        }
+        
+        // 复制地址功能
+        if (copyAddressBtn) {
+            // 移除旧的事件监听器
+            const newBtn = copyAddressBtn.cloneNode(true);
+            copyAddressBtn.parentNode.replaceChild(newBtn, copyAddressBtn);
+            
+            document.getElementById('copyUsdtAddressBtn').onclick = () => {
+                const addressInput = document.getElementById('usdtPaymentAddress');
+                if (addressInput) {
+                    addressInput.select();
+                    navigator.clipboard.writeText(address).then(() => {
+                        this.showToast('成功', '地址已复制到剪贴板', 'success');
+                    }).catch(() => {
+                        // 降级方案
+                        document.execCommand('copy');
+                        this.showToast('成功', '地址已复制到剪贴板', 'success');
+                    });
+                }
+            };
+        }
+        
+        // 开始轮询订单状态
+        this.startPaymentStatusPolling(orderNo);
+        
+        // 显示弹窗
+        const modal = new bootstrap.Modal(usdtPaymentModal);
+        modal.show();
+        
+        // 设置过期时间倒计时
+        this.startPaymentCountdown(expiresAt, () => {
+            const modalInstance = bootstrap.Modal.getInstance(usdtPaymentModal);
+            if (modalInstance) {
+                modalInstance.hide();
+            }
+            this.showToast('提示', '订单已过期，请重新创建订单', 'warning');
+        });
+    }
+    
+    // 开始支付状态轮询
+    startPaymentStatusPolling(orderNo) {
+        // 清除之前的轮询
+        if (this.paymentPollingTimer) {
+            clearInterval(this.paymentPollingTimer);
+        }
+        
+        // 每5秒轮询一次订单状态
+        this.paymentPollingTimer = setInterval(async () => {
+            try {
+                const response = await this.apiRequest(`${this.apiBaseUrl}/payment/order/${orderNo}`);
+                if (response && response.ok) {
+                    const result = await response.json();
+                    if (result.success && result.data) {
+                        const order = result.data;
+                        
+                        if (order.status === 'paid') {
+                            // 支付成功
+                            clearInterval(this.paymentPollingTimer);
+                            this.paymentPollingTimer = null;
+                            
+                            // 关闭支付地址弹窗
+                            const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+                            if (usdtPaymentModal) {
+                                usdtPaymentModal.hide();
+                            }
+                            
+                            this.showToast('成功', '支付成功，会员已激活', 'success');
+                            
+                            // 重新加载会员服务数据和"我的"页面数据
+                            await this.loadMembershipServiceData();
+                            if (this.currentPage === 'my-profile') {
+                                await this.loadMyProfileData();
+                            }
+                        } else if (order.status === 'expired' || order.status === 'cancelled') {
+                            // 订单已过期或取消
+                            clearInterval(this.paymentPollingTimer);
+                            this.paymentPollingTimer = null;
+                            
+                            const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+                            if (usdtPaymentModal) {
+                                usdtPaymentModal.hide();
+                            }
+                            
+                            this.showToast('提示', '订单已过期或取消', 'warning');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('轮询订单状态失败:', error);
+            }
+        }, 5000); // 每5秒轮询一次
+    }
+    
+    // 开始支付倒计时
+    startPaymentCountdown(expiresAt, onExpire) {
+        if (this.paymentCountdownTimer) {
+            clearInterval(this.paymentCountdownTimer);
+        }
+        
+        this.paymentCountdownTimer = setInterval(() => {
+            const now = new Date();
+            const remaining = expiresAt - now;
+            
+            if (remaining <= 0) {
+                clearInterval(this.paymentCountdownTimer);
+                this.paymentCountdownTimer = null;
+                if (onExpire) onExpire();
+            } else {
+                // 更新倒计时显示（格式：XX分XX秒）
+                const expiresAtEl = document.getElementById('usdtPaymentExpiresAt');
+                if (expiresAtEl) {
+                    const minutes = Math.floor(remaining / 1000 / 60);
+                    const seconds = Math.floor((remaining / 1000) % 60);
+                    // 格式化：确保分钟和秒都是两位数
+                    const minutesStr = minutes.toString().padStart(2, '0');
+                    const secondsStr = seconds.toString().padStart(2, '0');
+                    expiresAtEl.textContent = `${minutesStr}分${secondsStr}秒`;
+                }
+            }
+        }, 1000);
+    }
+    
+    // 显示支付宝支付信息（TODO）
+    showAlipayPaymentInfo(orderData) {
+        this.showToast('提示', '支付宝支付功能开发中', 'info');
+    }
+    
+    // 显示Binance Pay支付信息（TODO）
+    showBinancePaymentInfo(orderData) {
+        this.showToast('提示', 'Binance Pay支付功能开发中', 'info');
+    }
+    
+    // 取消支付轮询
+    cancelPaymentPolling() {
+        if (this.paymentPollingTimer) {
+            clearInterval(this.paymentPollingTimer);
+            this.paymentPollingTimer = null;
+        }
+        if (this.paymentCountdownTimer) {
+            clearInterval(this.paymentCountdownTimer);
+            this.paymentCountdownTimer = null;
+        }
+    }
+    
+    // 重置支付按钮状态
+    resetPaymentButton() {
+        const confirmBtn = document.getElementById('confirmPaymentBtn');
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            const originalText = confirmBtn.getAttribute('data-original-text') || '确认支付';
+            confirmBtn.innerHTML = `<i class="bi bi-wallet2"></i> ${originalText}`;
+        }
+    }
+    
+    // 取消支付订单
+    async cancelPaymentOrder() {
+        // 如果订单还未创建（只有订单信息但没有orderNo），直接清除状态
+        if (!this.currentPaymentOrder) {
+            // 重置按钮状态
+            this.resetPaymentButton();
+            // 关闭支付弹窗
+            const paymentModal = bootstrap.Modal.getInstance(document.getElementById('paymentModal'));
+            if (paymentModal) {
+                paymentModal.hide();
+            }
+            const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+            if (usdtPaymentModal) {
+                usdtPaymentModal.hide();
+            }
+            return;
+        }
+        
+        // 如果订单已创建，需要调用API取消
+        if (!this.currentPaymentOrder.orderNo) {
+            // 订单信息存在但没有orderNo，说明订单创建失败或未完成
+            // 直接清除状态，重置按钮
+            this.resetPaymentButton();
+            this.cancelPaymentPolling();
+            this.currentPaymentOrder = null;
+            
+            // 关闭支付弹窗
+            const paymentModal = bootstrap.Modal.getInstance(document.getElementById('paymentModal'));
+            if (paymentModal) {
+                paymentModal.hide();
+            }
+            const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+            if (usdtPaymentModal) {
+                usdtPaymentModal.hide();
+            }
+            return;
+        }
+        
+        const orderNo = this.currentPaymentOrder.orderNo;
+        
+        // 确认取消
+        if (!confirm('确定要取消此支付订单吗？取消后需要重新创建订单。')) {
+            return;
+        }
+        
+        try {
+            const response = await this.apiRequest(
+                `${this.apiBaseUrl}/payment/order/${orderNo}/cancel`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+            
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    // 停止轮询和倒计时
+                    this.cancelPaymentPolling();
+                    
+                    // 关闭支付弹窗
+                    const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+                    if (usdtPaymentModal) {
+                        usdtPaymentModal.hide();
+                    }
+                    
+                    // 重置支付按钮状态
+                    this.resetPaymentButton();
+                    
+                    // 清除当前订单信息
+                    this.currentPaymentOrder = null;
+                    
+                    this.showToast('成功', '订单已取消', 'success');
+                } else {
+                    this.showToast('错误', result.message || '取消订单失败', 'danger');
+                }
+            } else {
+                const errorText = await response.text();
+                this.showToast('错误', `取消订单失败: ${errorText}`, 'danger');
+            }
+        } catch (error) {
+            console.error('取消订单失败:', error);
+            this.showToast('错误', '取消订单失败', 'danger');
+        }
+    }
+    
+    // 手动检查支付状态
+    async checkPaymentStatus() {
+        if (!this.currentPaymentOrder || !this.currentPaymentOrder.orderNo) {
+            this.showToast('错误', '订单信息不存在', 'danger');
+            return;
+        }
+        
+        try {
+            const response = await this.apiRequest(`${this.apiBaseUrl}/payment/order/${this.currentPaymentOrder.orderNo}`);
+            if (response && response.ok) {
+                const result = await response.json();
+                if (result.success && result.data) {
+                    const order = result.data;
+                    
+                    if (order.status === 'paid') {
+                        // 支付成功
+                        this.cancelPaymentPolling();
+                        
+                        const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+                        if (usdtPaymentModal) {
+                            usdtPaymentModal.hide();
+                        }
+                        
+                        this.showToast('成功', '支付成功，会员已激活', 'success');
+                        
+                        // 重新加载会员服务数据和"我的"页面数据
+                        await this.loadMembershipServiceData();
+                        if (this.currentPage === 'my-profile') {
+                            await this.loadMyProfileData();
+                        }
+                    } else if (order.status === 'pending') {
+                        this.showToast('提示', '支付尚未确认，请稍候...', 'info');
+                    } else if (order.status === 'expired' || order.status === 'cancelled') {
+                        this.cancelPaymentPolling();
+                        const usdtPaymentModal = bootstrap.Modal.getInstance(document.getElementById('usdtPaymentModal'));
+                        if (usdtPaymentModal) {
+                            usdtPaymentModal.hide();
+                        }
+                        this.showToast('提示', '订单已过期或取消', 'warning');
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('检查支付状态失败:', error);
+            this.showToast('错误', '检查支付状态失败', 'danger');
         }
     }
     
@@ -13974,6 +14504,15 @@ class OKXTradingApp {
     // 续费会员
     async renewMembership(levelId, billingPeriod) {
         try {
+            // 检查会员数据是否已加载
+            if (!this.membershipLevels || this.membershipLevels.length === 0) {
+                this.showToast('提示', '正在加载会员信息，请稍候...', 'info');
+                // 重新加载会员数据
+                await this.loadMembershipServiceData();
+                // 等待渲染完成
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
             // 获取当前会员信息
             const membership = this.currentMembership;
             if (!membership || !membership.level_id) {
@@ -16056,14 +16595,35 @@ class OKXTradingApp {
             // 统计权限数量
             const permissionCount = user.permission_count || (user.permissions ? Object.keys(user.permissions).length : 0);
             
+            // 统计不同来源的权限数量
+            let customCount = 0;
+            let membershipCount = 0;
+            let roleCount = 0;
+            
+            if (user.permissions && typeof user.permissions === 'object') {
+                Object.values(user.permissions).forEach(perm => {
+                    if (perm.source === 'custom') {
+                        customCount++;
+                    } else if (perm.source === 'membership') {
+                        membershipCount++;
+                    } else if (perm.source === 'role') {
+                        roleCount++;
+                    }
+                });
+            }
+            
             // 权限来源（根据 permission_source 字段）
             let permissionSource = '';
+            let permissionSourceTooltip = '';
             if (user.permission_source === 'custom') {
-                permissionSource = '<span class="badge bg-warning text-dark">自定义</span>';
+                permissionSource = '<span class="badge bg-warning text-dark" title="包含自定义权限">自定义</span>';
+                permissionSourceTooltip = `自定义: ${customCount} | 会员: ${membershipCount} | 角色: ${roleCount}`;
             } else if (user.permission_source === 'membership') {
-                permissionSource = '<span class="badge bg-success">会员</span>';
+                permissionSource = '<span class="badge bg-success" title="来自会员等级">会员</span>';
+                permissionSourceTooltip = `会员: ${membershipCount} | 角色: ${roleCount}`;
             } else {
-                permissionSource = '<span class="badge bg-secondary">角色</span>';
+                permissionSource = '<span class="badge bg-secondary" title="来自角色默认权限">角色</span>';
+                permissionSourceTooltip = `角色: ${roleCount}`;
             }
             
             // 状态
@@ -16093,6 +16653,11 @@ class OKXTradingApp {
                 ? `<span class="text-muted">${user.customer_uid}</span>` 
                 : '<span class="text-muted">-</span>';
             
+            // 权限数量显示（带提示）
+            const permissionCountDisplay = customCount > 0 
+                ? `<span class="badge bg-info" title="${permissionSourceTooltip}">${permissionCount} 个权限 <small>(含${customCount}个自定义)</small></span>`
+                : `<span class="badge bg-info" title="${permissionSourceTooltip}">${permissionCount} 个权限</span>`;
+            
             return `
                 <tr>
                     <td>${user.id}</td>
@@ -16101,7 +16666,7 @@ class OKXTradingApp {
                     <td>${customerInfo}</td>
                     <td>${permissionSource}</td>
                     <td>
-                        <span class="badge bg-info">${permissionCount} 个权限</span>
+                        ${permissionCountDisplay}
                     </td>
                     <td>${statusBadge}</td>
                     <td>

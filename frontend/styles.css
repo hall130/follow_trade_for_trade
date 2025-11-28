@@ -2706,6 +2706,47 @@ html {
     line-height: 1.5;
 }
 
+/* USDT支付提示优化样式 */
+#usdtPaymentModal .alert-info {
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(6, 182, 212, 0.05) 100%);
+    border: 1px solid rgba(6, 182, 212, 0.2);
+    border-radius: 0.5rem;
+    padding: 1.25rem;
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+#usdtPaymentModal .alert-info .badge {
+    min-width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+#usdtPaymentModal .alert-info code {
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.25rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #495057;
+    word-break: break-all;
+}
+
+#usdtPaymentModal .alert-info .text-danger {
+    color: #dc3545 !important;
+    font-weight: 600;
+}
+
+#usdtPaymentModal .alert-info .text-muted {
+    color: #6c757d !important;
+    font-size: 0.85rem;
+}
+
 #paymentModal #confirmPaymentBtn {
     min-width: 150px;
     font-weight: 600;

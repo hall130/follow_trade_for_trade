@@ -7,6 +7,7 @@
 
 import uuid
 import logging
+import random
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from decimal import Decimal
@@ -64,8 +65,8 @@ class PaymentOrderService:
                 payment_method, final_amount
             )
             
-            # 设置订单过期时间（30分钟）
-            expires_at = datetime.now() + timedelta(minutes=30)
+            # 设置订单过期时间（15分钟）
+            expires_at = datetime.now() + timedelta(minutes=15)
             
             # 插入订单
             insert_sql = """
@@ -189,9 +190,21 @@ class PaymentOrderService:
         from config.config import PAYMENT_CONFIG
         
         if payment_method == 'usdt_trc20':
-            # USDT TRC20: 返回收款地址和金额
+            # USDT TRC20: 从地址池随机选择收款地址
             config = PAYMENT_CONFIG.get('usdt_trc20', {})
-            receive_address = config.get('receive_address', '')
+            
+            # 优先使用地址池，如果地址池为空则使用单个地址（向后兼容）
+            address_pool = config.get('address_pool', [])
+            if address_pool and len(address_pool) > 0:
+                # 从地址池中随机选择一个地址
+                receive_address = random.choice(address_pool)
+                logger.info(f"从地址池随机选择地址: {receive_address} (订单: {order_no}, 地址池大小: {len(address_pool)})")
+            else:
+                # 使用单个地址（向后兼容）
+                receive_address = config.get('receive_address', '')
+                if not receive_address:
+                    raise ValueError("USDT TRC20 收款地址未配置，请配置 receive_address 或 address_pool")
+                logger.info(f"使用单个收款地址: {receive_address} (订单: {order_no})")
             
             return {
                 'type': 'address',
