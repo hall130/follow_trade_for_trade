@@ -626,10 +626,18 @@ class PermissionService:
                 # 统计权限
                 if row['module_code']:
                     if row['module_code'] not in users_dict[user_id]['permissions']:
+                        # 确定权限来源
+                        if row['granted_by'] is not None:
+                            source = 'custom'  # 管理员手动授予
+                        elif row['level_code']:
+                            source = 'membership'  # 来自会员等级
+                        else:
+                            source = 'role'  # 来自角色
+                        
                         users_dict[user_id]['permissions'][row['module_code']] = {
                             'permission_level': row['permission_level'],
                             'granted_at': row['granted_at'],
-                            'source': 'custom' if row['granted_by'] is not None else 'membership'
+                            'source': source
                         }
                         users_dict[user_id]['permission_count'] += 1
                         

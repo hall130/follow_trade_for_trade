@@ -6541,13 +6541,24 @@ def create_limit_follow_trader():
         if existing_trader:
             raise APIError("跟单员已存在")
         
+        # 获取采集器类型和配置
+        collector_type = data.get('collector_type', 'okx')  # 默认使用 okx
+        collector_config = data.get('collector_config')
+        
+        # 将 collector_config 转换为 JSON 字符串（如果是字典）
+        collector_config_json = None
+        if collector_config:
+            import json
+            collector_config_json = json.dumps(collector_config) if isinstance(collector_config, dict) else collector_config
+        
         # 创建跟单员
         trader_id = db_pool.execute(
             """INSERT INTO limit_follow_traders 
-               (unique_name, name, description, enabled) 
-               VALUES (%s, %s, %s, %s)""",
+               (unique_name, name, description, enabled, collector_type, collector_config) 
+               VALUES (%s, %s, %s, %s, %s, %s)""",
             (data['unique_name'], data['name'], 
-             data.get('description', ''), data.get('enabled', True))
+             data.get('description', ''), data.get('enabled', True),
+             collector_type, collector_config_json)
         )
         
         return jsonify({
@@ -6604,13 +6615,33 @@ def update_limit_follow_trader(trader_id):
                 raise APIError(f"切换跟单员状态失败: {str(e)}")
         else:
             # 普通更新
-            db_pool.execute(
-                """UPDATE limit_follow_traders 
-                   SET name=%s, description=%s, enabled=%s, updated_at=CURRENT_TIMESTAMP
-                   WHERE id=%s""",
-                (data.get('name'), data.get('description'), 
-                 data.get('enabled', True), trader_id)
-            )
+            # 处理 collector_type 和 collector_config
+            collector_type = data.get('collector_type')
+            collector_config = data.get('collector_config')
+            collector_config_json = None
+            if collector_config is not None:
+                import json
+                collector_config_json = json.dumps(collector_config) if isinstance(collector_config, dict) else collector_config
+            
+            # 构建更新SQL（动态包含 collector_type 和 collector_config）
+            update_fields = ['name=%s', 'description=%s', 'enabled=%s', 'updated_at=CURRENT_TIMESTAMP']
+            update_values = [data.get('name'), data.get('description'), data.get('enabled', True)]
+            
+            if collector_type is not None:
+                update_fields.append('collector_type=%s')
+                update_values.append(collector_type)
+            
+            if collector_config_json is not None:
+                update_fields.append('collector_config=%s')
+                update_values.append(collector_config_json)
+            
+            update_values.append(trader_id)
+            
+            sql = f"""UPDATE limit_follow_traders 
+                      SET {', '.join(update_fields)}
+                      WHERE id=%s"""
+            
+            db_pool.execute(sql, tuple(update_values))
             
             return jsonify({
                 'success': 200,
@@ -16783,6 +16814,49 @@ else:
                 discount_amount=discount_amount
             )
             
+            # 启动订单监听（异步，不阻塞响应）
+            try:
+                from core.payment.payment_listener_service import PaymentListenerService
+                import asyncio
+                
+                payment_listener = PaymentListenerService()
+                payment_info = order_result.get('payment_info', {})
+                
+                # 在后台启动监听任务
+                def start_listening_async():
+                    try:
+                        # 创建新的事件循环（每个线程独立）
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        
+                        # 启动监听任务
+                        loop.run_until_complete(
+                            payment_listener.start_order_listening(
+                                order_result['order_no'],
+                                payment_info
+                            )
+                        )
+                        
+                        # 保持事件循环运行（监听任务会在后台运行）
+                        # 注意：这里不能使用 run_forever()，因为会阻塞线程
+                        # 监听任务本身会持续运行，直到订单完成或过期
+                        
+                    except Exception as e:
+                        logger.error(f"启动订单监听失败: order_no={order_result['order_no']}, error={e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                
+                import threading
+                listener_thread = threading.Thread(target=start_listening_async, daemon=True)
+                listener_thread.start()
+                
+                logger.info(f"已为订单 {order_result['order_no']} 启动支付监听")
+            except Exception as e:
+                logger.error(f"启动订单监听异常: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # 监听启动失败不影响订单创建
+            
             return jsonify({
                 'success': True,
                 'message': '订单创建成功',
@@ -16881,6 +16955,94 @@ else:
         except Exception as e:
             logger.error(f"处理Binance Pay回调失败: {e}")
             return jsonify({'status': 'error', 'message': str(e)}), 500
+    
+    @app.route('/api/v1/payment/order/<order_no>/cancel', methods=['POST'])
+    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+    @log_api_access('payment') if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    def cancel_payment_order(order_no):
+        """取消支付订单"""
+        try:
+            user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
+            if not user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '未登录'
+                }), 401
+            
+            from core.payment.order_service import PaymentOrderService
+            from core.payment.payment_listener_service import PaymentListenerService
+            import asyncio
+            import threading
+            
+            order_service = PaymentOrderService()
+            order = order_service.get_order(order_no)
+            
+            if not order:
+                return jsonify({
+                    'success': False,
+                    'message': '订单不存在'
+                }), 404
+            
+            # 验证订单所有者
+            if order['user_id'] != user_id:
+                return jsonify({
+                    'success': False,
+                    'message': '无权操作此订单'
+                }), 403
+            
+            # 只能取消待支付状态的订单
+            if order['status'] != 'pending':
+                return jsonify({
+                    'success': False,
+                    'message': f'订单状态为 {order["status"]}，无法取消'
+                }), 400
+            
+            # 更新订单状态为已取消
+            success = order_service.update_order_status(order_no, 'cancelled')
+            if not success:
+                return jsonify({
+                    'success': False,
+                    'message': '更新订单状态失败'
+                }), 500
+            
+            # 停止支付监听
+            try:
+                payment_listener = PaymentListenerService()
+                # 在后台线程中运行异步函数
+                def stop_listening():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(payment_listener.stop_order_listening(order_no))
+                    finally:
+                        loop.close()
+                
+                thread = threading.Thread(target=stop_listening, daemon=True)
+                thread.start()
+                logger.info(f"已启动后台线程停止订单 {order_no} 的监听")
+            except Exception as e:
+                logger.warning(f"停止订单监听失败（订单可能未启动监听）: {e}")
+            
+            logger.info(f"订单 {order_no} 已成功取消（状态已更新，监听已停止）")
+            
+            return jsonify({
+                'success': True,
+                'message': '订单已取消',
+                'data': {
+                    'order_no': order_no,
+                    'status': 'cancelled'
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"取消支付订单失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': f'取消订单失败: {str(e)}'
+            }), 500
     
     # ==================== 做市模块API ====================
     
