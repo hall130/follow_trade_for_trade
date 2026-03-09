@@ -1,4 +1,4 @@
-# 🚀 千里金量化交易系统
+# 🚀 量化交易系统
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-2.0+-green.svg)](https://flask.palletsprojects.com/)
@@ -31,7 +31,7 @@
 
 ## 🎯 项目概述
 
-千里金量化交易系统是一个**企业级的量化交易平台**，采用现代化微服务架构，专为专业交易机构和量化交易者设计。
+量化交易系统是一个**企业级的量化交易平台**，采用现代化微服务架构，专为专业交易机构和量化交易者设计。
 
 ### 🎪 核心能力
 
