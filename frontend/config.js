@@ -1,4 +1,4 @@
-// OKX跟单交易系统前端配置文件
+// 跟单交易系统前端配置文件
 window.APP_CONFIG = {
     // API配置
     api: {
@@ -10,7 +10,7 @@ window.APP_CONFIG = {
 
     // 应用配置
     app: {
-        name: 'OKX跟单交易系统',
+        name: '跟单交易系统',
         version: '1.0.0',
         language: 'zh-CN',
         timezone: 'Asia/Shanghai',
