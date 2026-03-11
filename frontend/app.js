@@ -1,4 +1,4 @@
-// OKX跟单交易系统前端应用
+// 跟单交易系统前端应用
 class OKXTradingApp {
     constructor() {
         this.apiBaseUrl = window.APP_CONFIG?.api?.baseUrl || '/api/v1';
