@@ -101,13 +101,8 @@ class MarketMakerStrategy(StrategyBase):
             self._check_rebalance()
     
     def get_signals(self) -> List[Signal]:
-        """获取交易信号"""
-        signals = []
-        
-        # 做市商策略通过订单管理实现，信号主要用于记录
-        # 实际交易通过_update_orders()中的订单管理实现
-        
-        return signals
+        """获取交易信号（由_update_orders生成并存入self.signals）"""
+        return list(getattr(self, 'signals', []))
     
     def _update_orders(self) -> None:
         """更新订单（维持做市报价）"""

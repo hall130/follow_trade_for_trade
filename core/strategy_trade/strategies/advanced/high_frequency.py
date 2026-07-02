@@ -76,8 +76,8 @@ class HighFrequencyStrategy(StrategyBase):
     def _generate_signals(self, data: MarketData) -> None:
         """生成交易信号"""
         # 获取技术指标
-        fast_ema = self.get_indicator('ema', -1)
-        slow_ema = self.get_indicator('ema', -1)
+        fast_ema = self.get_indicator(f'ema_{self.fast_ema_period}', -1)
+        slow_ema = self.get_indicator(f'ema_{self.slow_ema_period}', -1)
         rsi = self.get_indicator('rsi', -1)
         
         if not all([fast_ema, slow_ema, rsi]):

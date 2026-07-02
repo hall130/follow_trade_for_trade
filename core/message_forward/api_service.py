@@ -8,17 +8,9 @@ from datetime import datetime, timezone, timedelta
 import json
 from utils.logger import get_logger
 
-# 根据环境选择数据库操作层
-try:
-    # 尝试导入MySQL版本
-    from core.message_forward.db_operations_mysql import get_message_forward_db
-    logger = get_logger(__name__)
-    logger.info("✅ 使用MySQL数据库操作层")
-except ImportError:
-    # 回退到SQLite版本
-    from core.message_forward.db_operations import get_message_forward_db
-    logger = get_logger(__name__)
-    logger.info("✅ 使用SQLite数据库操作层")
+# 数据库操作层（MySQL）
+from core.message_forward.db_operations_mysql import get_message_forward_db
+logger = get_logger(__name__)
 
 from core.message_forward.manager import MessageForwardManager
 from core.message_forward.models import PlatformConfig, ForwardRule

@@ -6,7 +6,6 @@
 - 限价跟单服务
 - 信号处理服务
 - 交易执行服务
-- 模块管理器
 """
 
 # 延迟导入，避免在导入core包时立即触发所有依赖
@@ -17,7 +16,6 @@ try:
     from .market_trade.trade_server import TradeServer
     from .limit_trade.limit_follow_service import LimitFollowService
     from .limit_trade.limit_follow_executor import LimitFollowExecutor
-    from .module_manager import ModuleManager, get_module_manager, initialize_system, cleanup_system
 except ImportError as e:
     # 如果导入失败，不影响其他模块的使用
     # 静默处理，不阻止其他模块的导入
@@ -31,9 +29,5 @@ __all__ = [
     "SignalService", 
     "TradeServer",
     "LimitFollowService",
-    "LimitFollowExecutor",
-    "ModuleManager",
-    "get_module_manager",
-    "initialize_system",
-    "cleanup_system"
-] 
+    "LimitFollowExecutor"
+]

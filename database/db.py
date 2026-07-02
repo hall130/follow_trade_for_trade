@@ -377,6 +377,14 @@ def get_open_trades_by_symbol_pos(db_pool, symbol, pos_side, is_demo):
     """获取指定品种和持仓方向的所有未平仓客户跟单交易"""
     return db_pool.query("SELECT * FROM customer_trades WHERE symbol=%s AND pos_side=%s AND status='open' AND is_demo=%s", (symbol, pos_side, is_demo))
 
+def close_trader_trade(db_pool, trade_uid, close_order_id, close_px, profit):
+    """平仓带单员成交记录，更新平仓订单ID、平仓均价、盈亏与状态"""
+    db_pool.execute(
+        "UPDATE trader_trades SET close_order_id=%s, close_px=%s, profit=%s, "
+        "status='closed', closed_at=NOW() WHERE trade_uid=%s",
+        (close_order_id, close_px, profit, trade_uid)
+    )
+
 def get_customer_by_id(db_pool, customer_uid, is_demo):
     """根据客户UID获取客户信息"""
     rows = db_pool.query("SELECT * FROM customers WHERE customer_uid=%s AND is_demo=%s", (customer_uid, is_demo))
@@ -681,6 +689,10 @@ def get_db_pool():
     """获取全局数据库连接池实例"""
     from database.global_db_manager import get_global_db_pool
     return get_global_db_pool()
+
+def get_db_connection():
+    """获取一个原始数据库连接（供脚本使用 cursor 直接操作）"""
+    return get_db_pool().get_conn()
 
 def set_db_pool(db_pool):
     """设置全局数据库连接池实例"""

@@ -5,11 +5,9 @@
 
 from .process_manager import MarketMakerProcessManager
 from .config_manager import MarketMakerConfigManager
-from .strategies.base_market_maker import BaseMarketMaker
 
 __all__ = [
     'MarketMakerProcessManager',
     'MarketMakerConfigManager',
-    'BaseMarketMaker',
 ]
 

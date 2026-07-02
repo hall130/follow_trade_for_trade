@@ -292,7 +292,8 @@ class MessageForwardDB:
                 AND table_name = 'message_forward_rules'
                 AND column_name = 'target_platform_ids'
                 """
-                result = self.db_pool.fetchone(check_sql)
+                rows = self.db_pool.query(check_sql)
+                result = rows[0] if rows else None
                 has_target_platform_ids = result and result.get('cnt', 0) > 0
             except:
                 has_target_platform_ids = False

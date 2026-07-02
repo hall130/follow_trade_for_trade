@@ -349,3 +349,30 @@ class HyperliquidRESTClient(BaseRESTClient):
             logger.error(f"获取Hyperliquid元数据失败: {e}")
             return {}
 
+    # ── 以下为BaseRESTClient要求的抽象方法存根 ──────────────────────────
+    # Hyperliquid不支持这些接口，返回空/None保证可实例化
+
+    async def get_mark_price(self, symbol: str):
+        """Hyperliquid暂不支持标记价格接口"""
+        return None
+
+    async def get_liquidation_orders(self, symbol=None, limit: int = 100):
+        """Hyperliquid暂不支持强平订单查询"""
+        return []
+
+    async def get_trade_fee(self, symbol: str, category: str = "spot"):
+        """Hyperliquid暂不支持手续费查询接口"""
+        return None
+
+    async def get_margin_balance(self, asset=None):
+        """Hyperliquid暂不支持保证金余额查询"""
+        return []
+
+    async def get_instruments(self, inst_type: str = "SPOT"):
+        """Hyperliquid暂不支持交易产品列表接口"""
+        return []
+
+    async def get_bill_details(self, asset=None, limit: int = 100):
+        """Hyperliquid暂不支持账单详情接口"""
+        return []
+
