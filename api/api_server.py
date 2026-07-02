@@ -729,6 +729,34 @@ def format_response(success=True, data=None, message="", status_code=200):
     }), status_code if success else 400
 
 
+def ok(data=None, message='', code=200):
+    """成功响应的简化辅助函数
+
+    使用示例:
+        return ok(data={'users': users}, message='查询成功')
+        return ok(message='操作完成')
+    """
+    return jsonify({
+        'success': code,
+        'data': data,
+        'message': message
+    }), code
+
+
+def fail(message, code=400, data=None):
+    """失败响应的简化辅助函数
+
+    使用示例:
+        return fail('参数错误', code=400)
+        return fail('未找到资源', code=404)
+    """
+    return jsonify({
+        'success': code,
+        'data': data,
+        'message': message
+    }), code
+
+
 def safe_get_json():
     """安全获取JSON数据"""
     try:
@@ -798,11 +826,11 @@ def format_datetime(obj):
 # ==================== 客户账户管理API ====================
 
 @app.route('/api/v1/customers', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('customers', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-@filter_customers if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('customers', 'read')
+@filter_customers
+@log_api_access('customers')
+@handle_exceptions
 def get_customers():
     """获取客户账户列表（RESTful风格）"""
     try:
@@ -919,11 +947,11 @@ def get_customers():
         raise APIError(f"获取客户账户失败: {str(e)}")
 
 @app.route('/api/v1/customers', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('customers', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@validate_json_data(['name', 'api_key', 'api_secret', 'passphrase', 'exchange', 'enabled', 'init_asset', 'leverage']) if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('customers', 'write')
+@validate_json_data(['name', 'api_key', 'api_secret', 'passphrase', 'exchange', 'enabled', 'init_asset', 'leverage'])
+@log_api_access('customers')
+@handle_exceptions
 def create_customer():
     """创建客户账户"""
     try:
@@ -966,10 +994,10 @@ def create_customer():
         raise APIError(f"创建客户账户失败: {str(e)}")
 
 @app.route('/api/v1/customers/<customer_uid>', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('customers', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('customers', 'read')
+@log_api_access('customers')
+@handle_exceptions
 def get_customer(customer_uid):
     """获取单个客户信息"""
     try:
@@ -1093,11 +1121,11 @@ def update_customer(customer_uid):
         raise APIError(f"更新客户信息失败: {str(e)}")
 
 @app.route('/api/v1/customers/<customer_uid>', methods=['DELETE'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('customers', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@filter_customers if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('customers') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('customers', 'write')
+@filter_customers
+@log_api_access('customers')
+@handle_exceptions
 def delete_customer(customer_uid):
     """删除客户账户"""
     try:
@@ -1288,10 +1316,10 @@ def set_customer_leverage(customer_uid):
 # ==================== 信号源管理API ====================
 
 @app.route('/api/v1/signal_sources', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('signal_sources', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('signal_sources') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('signal_sources', 'read')
+@log_api_access('signal_sources')
+@handle_exceptions
 def get_signal_sources():
     """获取所有信号源（支持搜索和筛选）"""
     try:
@@ -1351,11 +1379,11 @@ def get_signal_sources():
         raise APIError(f"获取信号源失败: {str(e)}")
 
 @app.route('/api/v1/signal_sources', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('signal_sources', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@validate_json_data(['name', 'api_key', 'api_secret', 'passphrase']) if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('signal_sources') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('signal_sources', 'write')
+@validate_json_data(['name', 'api_key', 'api_secret', 'passphrase'])
+@log_api_access('signal_sources')
+@handle_exceptions
 def create_signal_source():
     """创建信号源"""
     try:
@@ -1972,10 +2000,10 @@ def delete_strategy(strategy_uid):
 # ==================== 规则管理API ====================
 
 @app.route('/api/v1/rules', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('rules', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('rules', 'read')
+@log_api_access('rules')
+@handle_exceptions
 def get_rules():
     """获取所有规则（支持搜索和筛选）"""
     try:
@@ -2013,11 +2041,11 @@ def get_rules():
         raise APIError(f"获取规则失败: {str(e)}")
 
 @app.route('/api/v1/rules', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@validate_json_data(['rule_uid', 'strategy_uid', 'name', 'position_ratio', 'max_leverage']) if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('rules', 'write')
+@validate_json_data(['rule_uid', 'strategy_uid', 'name', 'position_ratio', 'max_leverage'])
+@log_api_access('rules')
+@handle_exceptions
 def create_rule():
     """创建规则"""
     try:
@@ -2062,10 +2090,10 @@ def create_rule():
         raise APIError(f"创建规则失败: {str(e)}")
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['PUT'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('rules', 'write')
+@log_api_access('rules')
+@handle_exceptions
 def update_rule(rule_uid):
     """更新规则（RESTful风格）"""
     try:
@@ -2632,7 +2660,7 @@ def get_system_stats():
         })
 
 @app.route('/api/v1/trades', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def get_trades():
     """获取交易记录列表"""
     try:
@@ -6681,11 +6709,11 @@ def delete_limit_follow_trader(trader_id):
         raise APIError(f"删除限价跟单跟单员失败: {str(e)}")
 
 @app.route('/api/v1/limit-follow/strategies', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('limit_follow', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-@filter_strategies if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('limit_follow') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('limit_follow', 'read')
+@filter_strategies
+@log_api_access('limit_follow')
+@handle_exceptions
 def get_limit_follow_strategies():
     """获取限价跟单策略列表"""
     try:
@@ -6810,11 +6838,11 @@ def get_limit_follow_strategies():
         raise APIError(f"获取限价跟单策略失败: {str(e)}")
 
 @app.route('/api/v1/limit-follow/strategies', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('limit_follow', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@validate_json_data(['strategy_name', 'trader_unique_name', 'customer_uid', 'symbol', 'follow_type', 'follow_value']) if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('limit_follow') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('limit_follow', 'write')
+@validate_json_data(['strategy_name', 'trader_unique_name', 'customer_uid', 'symbol', 'follow_type', 'follow_value'])
+@log_api_access('limit_follow')
+@handle_exceptions
 def create_limit_follow_strategy():
     """创建限价跟单策略"""
     try:
@@ -9591,10 +9619,10 @@ def get_all_customer_positions():
         raise APIError(f"获取客户持仓失败: {str(e)}")
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('rules', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('rules', 'read')
+@log_api_access('rules')
+@handle_exceptions
 def get_rule(rule_uid):
     """获取单个规则详情"""
     try:
@@ -9617,10 +9645,10 @@ def get_rule(rule_uid):
         return jsonify({'success': 500, 'data': None, 'message': str(e)}), 500
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['PUT'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('rules', 'write')
+@log_api_access('rules')
+@handle_exceptions
 def update_rule_simple(rule_uid):
     """更新规则（简化版本）"""
     try:
@@ -9661,10 +9689,10 @@ def update_rule_simple(rule_uid):
         return jsonify({'success': 500, 'data': None, 'message': str(e)}), 500
 
 @app.route('/api/v1/rules/<rule_uid>', methods=['DELETE'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('rules', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-@log_api_access('rules') if AUTH_MODULE_AVAILABLE else lambda f: f
-@handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('rules', 'write')
+@log_api_access('rules')
+@handle_exceptions
 def delete_rule(rule_uid):
     """删除规则"""
     try:
@@ -11884,8 +11912,8 @@ class MyStrategy(BaseStrategy):
 # ========== 用户策略管理API ==========
 
 @app.route('/api/v1/strategy/user/upload', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('strategies', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('strategies', 'write')
 def upload_user_strategy():
     """上传用户自定义策略"""
     try:
@@ -12005,8 +12033,8 @@ def list_user_strategies():
         }), 500
 
 @app.route('/api/v1/strategy/user/<strategy_id>', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('strategies', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('strategies', 'read')
 def get_user_strategy(strategy_id):
     """获取用户策略详情"""
     try:
@@ -12046,8 +12074,8 @@ def get_user_strategy(strategy_id):
         }), 500
 
 @app.route('/api/v1/strategy/user/<strategy_id>', methods=['DELETE'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('strategies', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('strategies', 'write')
 def delete_user_strategy(strategy_id):
     """删除用户策略"""
     try:
@@ -12081,8 +12109,8 @@ def delete_user_strategy(strategy_id):
         }), 500
 
 @app.route('/api/v1/strategy/user/<strategy_id>/reload', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('strategies', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('strategies', 'write')
 def reload_user_strategy(strategy_id):
     """重新加载用户策略"""
     try:
@@ -12120,8 +12148,8 @@ def reload_user_strategy(strategy_id):
         }), 500
 
 @app.route('/api/v1/strategy/all', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-@require_permission('strategies', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
+@require_permission('strategies', 'read')
 def list_all_strategies():
     """列出所有策略（系统策略+用户策略）"""
     try:
@@ -12243,7 +12271,7 @@ def create_live_strategy():
         }), 500
 
 @app.route('/api/v1/strategy-live/strategies/<strategy_id>/start', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def start_live_strategy(strategy_id):
     """
     启动策略实盘交易（带权限控制）
@@ -13471,7 +13499,7 @@ def delete_subscription():
 # ==================== 兑换码管理 API ====================
 
 @app.route('/api/v1/redemption-codes', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def get_redemption_codes():
     """获取兑换码列表（支持分页和筛选）
     普通用户可以查看：
@@ -13552,7 +13580,7 @@ def get_redemption_codes():
         }), 500
 
 @app.route('/api/v1/redemption-codes', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def create_redemption_code():
     """创建兑换码"""
     try:
@@ -13630,7 +13658,7 @@ def create_redemption_code():
         }), 500
 
 @app.route('/api/v1/redemption-codes/batch', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def batch_create_redemption_codes():
     """批量创建兑换码"""
     try:
@@ -13701,7 +13729,7 @@ def batch_create_redemption_codes():
         }), 500
 
 @app.route('/api/v1/redemption-codes/<int:code_id>', methods=['PUT'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def update_redemption_code(code_id):
     """更新兑换码"""
     try:
@@ -13764,7 +13792,7 @@ def update_redemption_code(code_id):
         }), 500
 
 @app.route('/api/v1/redemption-codes/<int:code_id>', methods=['DELETE'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def delete_redemption_code(code_id):
     """删除兑换码"""
     try:
@@ -13807,7 +13835,7 @@ def delete_redemption_code(code_id):
         }), 500
 
 @app.route('/api/v1/redemption-codes/use', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def use_redemption_code():
     """用户使用兑换码"""
     try:
@@ -13854,7 +13882,7 @@ def use_redemption_code():
         }), 500
 
 @app.route('/api/v1/redemption-codes/statistics', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def get_redemption_codes_statistics():
     """获取兑换码统计信息
     普通用户只能查看未使用的兑换码统计，管理员可以查看完整统计
@@ -13898,7 +13926,7 @@ def get_redemption_codes_statistics():
 # ==================== 转发交易 API ====================
 
 @app.route('/api/v1/forward-trade/configs', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def get_forward_trade_configs():
     """获取转发交易配置列表"""
     try:
@@ -13978,7 +14006,7 @@ def get_forward_trade_configs():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/v1/forward-trade/configs', methods=['POST'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def create_forward_trade_config():
     """创建转发交易配置"""
     try:
@@ -14073,7 +14101,7 @@ def create_forward_trade_config():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/v1/forward-trade/configs/<int:config_id>', methods=['PUT'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def update_forward_trade_config(config_id):
     """更新转发交易配置"""
     try:
@@ -14187,7 +14215,7 @@ def update_forward_trade_config(config_id):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/v1/forward-trade/configs/<int:config_id>', methods=['DELETE'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def delete_forward_trade_config(config_id):
     """删除转发交易配置"""
     try:
@@ -14243,7 +14271,7 @@ def delete_forward_trade_config(config_id):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/v1/forward-trade/records', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def get_forward_trade_records():
     """获取转发交易执行记录"""
     try:
@@ -14890,7 +14918,7 @@ def get_telegram_bot_subscriptions(platform_id):
         }), 500
 
 @app.route('/api/v1/telegram-bot/<int:platform_id>/subscriptions/<int:subscription_id>', methods=['GET'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def get_telegram_bot_subscription_detail(platform_id, subscription_id):
     """
     获取 Telegram Bot 订阅详情（管理员）
@@ -14951,7 +14979,7 @@ def get_telegram_bot_subscription_detail(platform_id, subscription_id):
         }), 500
 
 @app.route('/api/v1/telegram-bot/<int:platform_id>/subscriptions/<int:subscription_id>', methods=['DELETE'])
-@login_required if AUTH_MODULE_AVAILABLE else lambda f: f
+@login_required
 def delete_telegram_bot_subscription(platform_id, subscription_id):
     """
     删除 Telegram Bot 订阅（管理员）
@@ -15835,10 +15863,10 @@ else:
 
     # 用户管理API
     @app.route('/api/v1/auth/users', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('users')
+    @handle_exceptions
     def get_users():
         """获取用户列表"""
         try:
@@ -15865,11 +15893,11 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @validate_json_data(['username', 'password', 'role']) if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @validate_json_data(['username', 'password', 'role'])
+    @log_api_access('users')
+    @handle_exceptions
     def create_user():
         """创建用户"""
         try:
@@ -15976,10 +16004,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('users')
+    @handle_exceptions
     def get_user(user_id):
         """获取用户详情"""
         try:
@@ -16022,10 +16050,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>', methods=['PUT'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('users')
+    @handle_exceptions
     def update_user(user_id):
         """更新用户"""
         try:
@@ -16068,10 +16096,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>', methods=['DELETE'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('users')
+    @handle_exceptions
     def delete_user(user_id):
         """删除用户"""
         try:
@@ -16114,10 +16142,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>/reset-password', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('users')
+    @handle_exceptions
     def reset_user_password(user_id):
         """重置用户密码"""
         try:
@@ -16161,10 +16189,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>/toggle-status', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('users') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('users')
+    @handle_exceptions
     def toggle_user_status(user_id):
         """切换用户状态"""
         try:
@@ -16209,10 +16237,10 @@ else:
 
     # 权限管理API
     @app.route('/api/v1/auth/permissions/matrix', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def get_permissions_matrix():
         """获取权限矩阵"""
         try:
@@ -16239,10 +16267,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/permissions/templates', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def get_permission_templates():
         """获取权限模板"""
         try:
@@ -16269,10 +16297,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/permissions/roles/<role>', methods=['PUT'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def update_role_permissions(role):
         """更新角色权限"""
         try:
@@ -16309,10 +16337,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/permissions/templates/<int:template_id>/apply', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def apply_permission_template(template_id):
         """应用权限模板"""
         try:
@@ -16347,10 +16375,10 @@ else:
 
     # 用户权限管理API
     @app.route('/api/v1/auth/users/with-permissions', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def get_users_with_permissions():
         """获取所有用户及其权限（包括会员信息）"""
         try:
@@ -16382,10 +16410,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>/permissions', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def get_user_permissions(user_id):
         """获取用户权限（用于编辑）"""
         try:
@@ -16420,10 +16448,10 @@ else:
             }), 500
 
     @app.route('/api/v1/auth/users/<int:user_id>/permissions', methods=['PUT'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('permissions') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('permissions')
+    @handle_exceptions
     def update_user_permissions(user_id):
         """更新用户权限"""
         try:
@@ -16472,10 +16500,10 @@ else:
     # ==================== 会员系统API ====================
     
     @app.route('/api/v1/membership/levels', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @admin_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @admin_required
+    @log_api_access('membership')
+    @handle_exceptions
     def get_membership_levels():
         """获取所有会员等级（管理员）"""
         try:
@@ -16500,9 +16528,9 @@ else:
             }), 500
     
     @app.route('/api/v1/membership/service', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('membership')
+    @handle_exceptions
     def get_membership_service():
         """获取会员服务信息（所有用户可访问）"""
         try:
@@ -16558,9 +16586,9 @@ else:
             }), 500
     
     @app.route('/api/v1/membership/subscribe', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('membership')
+    @handle_exceptions
     def subscribe_membership():
         """订阅会员（升级会员等级）"""
         try:
@@ -16641,9 +16669,9 @@ else:
             }), 500
     
     @app.route('/api/v1/membership/renew', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('membership')
+    @handle_exceptions
     def renew_membership():
         """续费会员（延长当前会员的到期时间）"""
         try:
@@ -16695,9 +16723,9 @@ else:
             }), 500
     
     @app.route('/api/v1/membership/auto-renew', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('membership') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('membership')
+    @handle_exceptions
     def set_auto_renew():
         """设置自动续费"""
         try:
@@ -16747,9 +16775,9 @@ else:
     # ==================== 支付系统API ====================
     
     @app.route('/api/v1/payment/create-order', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('payment') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('payment')
+    @handle_exceptions
     def create_payment_order():
         """创建支付订单"""
         try:
@@ -16874,9 +16902,9 @@ else:
             }), 500
     
     @app.route('/api/v1/payment/order/<order_no>', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('payment') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('payment')
+    @handle_exceptions
     def get_payment_order(order_no):
         """查询订单状态"""
         try:
@@ -16918,7 +16946,7 @@ else:
             }), 500
     
     @app.route('/api/v1/payment/callback/alipay', methods=['POST'])
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions
     def alipay_callback():
         """支付宝支付回调"""
         try:
@@ -16937,7 +16965,7 @@ else:
             return 'fail', 500
     
     @app.route('/api/v1/payment/callback/binance', methods=['POST'])
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @handle_exceptions
     def binance_callback():
         """Binance Pay 支付回调"""
         try:
@@ -16957,9 +16985,9 @@ else:
             return jsonify({'status': 'error', 'message': str(e)}), 500
     
     @app.route('/api/v1/payment/order/<order_no>/cancel', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('payment') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @log_api_access('payment')
+    @handle_exceptions
     def cancel_payment_order(order_no):
         """取消支付订单"""
         try:
@@ -17047,10 +17075,10 @@ else:
     # ==================== 做市模块API ====================
     
     @app.route('/api/v1/market-maker/accounts', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @require_permission('market_maker', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @require_permission('market_maker', 'read')
+    @log_api_access('market_maker')
+    @handle_exceptions
     def get_market_maker_accounts():
         """获取当前用户的做市账号列表"""
         try:
@@ -17164,10 +17192,10 @@ else:
             }), 500
     
     @app.route('/api/v1/market-maker/accounts', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @require_permission('market_maker', 'write')
+    @log_api_access('market_maker')
+    @handle_exceptions
     def add_market_maker_account():
         """添加做市账号"""
         try:
@@ -17285,10 +17313,10 @@ else:
             }), 500
     
     @app.route('/api/v1/market-maker/accounts/<account_name>/start', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @require_permission('market_maker', 'write')
+    @log_api_access('market_maker')
+    @handle_exceptions
     def start_market_maker_account(account_name):
         """启动做市账号"""
         try:
@@ -17403,10 +17431,10 @@ else:
             }), 500
     
     @app.route('/api/v1/market-maker/accounts/<account_name>/stop', methods=['POST'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @require_permission('market_maker', 'write')
+    @log_api_access('market_maker')
+    @handle_exceptions
     def stop_market_maker_account(account_name):
         """停止做市账号"""
         try:
@@ -17493,10 +17521,10 @@ else:
             }), 500
     
     @app.route('/api/v1/market-maker/accounts/<account_name>', methods=['DELETE'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @require_permission('market_maker', 'write') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @require_permission('market_maker', 'write')
+    @log_api_access('market_maker')
+    @handle_exceptions
     def delete_market_maker_account(account_name):
         """删除做市账号"""
         try:
@@ -17583,10 +17611,10 @@ else:
             }), 500
     
     @app.route('/api/v1/market-maker/stats', methods=['GET'])
-    @login_required if AUTH_MODULE_AVAILABLE else lambda f: f
-    @require_permission('market_maker', 'read') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @log_api_access('market_maker') if AUTH_MODULE_AVAILABLE else lambda f: f
-    @handle_exceptions if AUTH_MODULE_AVAILABLE else lambda f: f
+    @login_required
+    @require_permission('market_maker', 'read')
+    @log_api_access('market_maker')
+    @handle_exceptions
     def get_market_maker_stats():
         """获取当前用户的做市统计"""
         try:
