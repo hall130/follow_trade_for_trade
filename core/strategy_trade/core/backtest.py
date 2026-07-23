@@ -115,13 +115,21 @@ class BacktestEngine(IBacktestEngine):
         self.positions: List[Position] = []
         self.trades: List[Dict[str, Any]] = []
         self.equity_curve: List[Dict[str, Any]] = []
-        
+
+        # 永续做空模式：策略声明 allow_short=True 时启用保证金权益模型
+        self.short_mode = False
+        self.leverage = 1.0
+
         logger.info("回测引擎初始化完成")
-    
+
     def run(self, strategy: IStrategy, data: pd.DataFrame, config: BacktestConfig) -> BacktestResult:
         """运行回测"""
         # 初始化回测状态
         self._initialize_backtest(config)
+
+        # 根据策略能力确定权益核算模型
+        self.short_mode = getattr(strategy, 'allow_short', False)
+        self.leverage = float(getattr(strategy, 'leverage', 1.0) or 1.0)
         
         # 注册事件处理器
         self.event_engine.register("market_data", self._handle_market_data_event)
@@ -203,18 +211,22 @@ class BacktestEngine(IBacktestEngine):
                 positions_to_close = self.positions.copy()
                 for position in positions_to_close:
                     if position.size > 0:
-                        # 创建平仓信号
+                        # 平仓方向与持仓方向相反：多头用 SELL 平，空头用 BUY 平
+                        close_direction = 'BUY' if position.side == 'SHORT' else 'SELL'
                         close_signal = Signal(
                             symbol=position.symbol,
-                            direction='SELL',
+                            direction=close_direction,
                             price=final_market_data.close,
                             volume=position.size,
                             timestamp=final_market_data.timestamp,
                             strength=1.0,
                             reason=f"回测结束时强制平仓"
                         )
-                        self._execute_sell_order(strategy, close_signal, final_market_data, config)
-                        logger.info(f"回测结束，强制平仓: {position.symbol} 数量={position.size:.4f} @ {final_market_data.close:.2f}")
+                        if self.short_mode:
+                            self._execute_perp_order(strategy, close_signal, final_market_data, config)
+                        else:
+                            self._execute_sell_order(strategy, close_signal, final_market_data, config)
+                        logger.info(f"回测结束，强制平仓: {position.symbol} {position.side} 数量={position.size:.4f} @ {final_market_data.close:.2f}")
                 
                 # 更新最后一次权益曲线
                 self._update_account(final_market_data)
@@ -371,11 +383,18 @@ class BacktestEngine(IBacktestEngine):
             total_stocks = sum(pos.size for pos in self.positions if pos.symbol == market_data.symbol)
             strategy.account['stocks'] = total_stocks
             strategy.account['frozen_stocks'] = 0.0
-        
+
+        # 策略可通过 allow_short=True 声明支持做空（永续合约类策略）
+        # 未声明的策略走原有"只做多"逻辑，行为完全不变
+        allow_short = getattr(strategy, 'allow_short', False)
+
         signals = strategy.get_signals()
-        
+
         for signal in signals:
-            if signal.direction == 'BUY':
+            if allow_short:
+                # 永续合约净持仓模型：BUY/SELL 均可开/平/反向
+                self._execute_perp_order(strategy, signal, market_data, config)
+            elif signal.direction == 'BUY':
                 logger.info(f"执行买入订单: {signal.symbol} @ {signal.price:.2f}, volume={signal.volume}")
                 self._execute_buy_order(strategy, signal, market_data, config)
             elif signal.direction == 'SELL':
@@ -502,18 +521,140 @@ class BacktestEngine(IBacktestEngine):
         self.trades.append(trade)
         
         logger.info(f"✅ 卖出成功: {signal.symbol} 数量={volume:.4f} @ {sell_price:.2f}, 手续费={commission:.2f}, 盈亏={pnl:.2f}, 剩余资金={self.available_cash:.2f}")
-    
+
+    def _execute_perp_order(self, strategy: IStrategy, signal: Signal, market_data: MarketData,
+                            config: BacktestConfig) -> None:
+        """
+        执行永续合约订单（净持仓模型，支持做空）
+
+        与只做多的现货模型不同：
+        - 维护单一净持仓（LONG 或 SHORT），BUY 增加多头敞口，SELL 增加空头敞口
+        - 反向信号先平旧仓（结算已实现盈亏）再开新仓
+        - 保证金模型：开仓占用 名义价值/杠杆 的现金，平仓释放保证金并结算盈亏
+        - 仅对声明 allow_short=True 的策略生效
+        """
+        if signal.direction not in ('BUY', 'SELL'):
+            return
+
+        volume = signal.volume
+        if volume is None or volume <= 0:
+            return
+
+        leverage = float(getattr(strategy, 'leverage', 1.0) or 1.0)
+        slippage = config.slippage_rate
+        # 成交价：买入吃滑点上侧，卖出吃滑点下侧
+        exec_price = market_data.close * (1 + slippage) if signal.direction == 'BUY' else market_data.close * (1 - slippage)
+        if exec_price <= 0:
+            return
+
+        # 查找当前净持仓（永续模型下同一 symbol 只维护一个持仓对象）
+        position = next((p for p in self.positions if p.symbol == signal.symbol), None)
+
+        # 信号方向对应的持仓 side
+        signal_side = 'LONG' if signal.direction == 'BUY' else 'SHORT'
+        remaining = volume
+
+        # ── 1) 若已有反向持仓，先平仓 ──────────────────────
+        if position is not None and position.side != signal_side and position.size > 0:
+            close_volume = min(remaining, position.size)
+            close_commission = exec_price * close_volume * config.commission_rate
+
+            # 已实现盈亏：多头 (exit-entry)*size，空头 (entry-exit)*size
+            if position.side == 'LONG':
+                pnl = (exec_price - position.entry_price) * close_volume
+            else:
+                pnl = (position.entry_price - exec_price) * close_volume
+
+            # 释放保证金 + 结算盈亏 - 手续费
+            released_margin = (position.entry_price * close_volume) / leverage
+            self.available_cash += released_margin + pnl - close_commission
+
+            position.size -= close_volume
+            remaining -= close_volume
+
+            self.trades.append({
+                'symbol': signal.symbol or '',
+                'side': 'SELL' if signal.direction == 'SELL' else 'BUY',
+                'size': float(close_volume),
+                'price': float(exec_price),
+                'commission': float(close_commission),
+                'pnl': float(pnl),
+                'timestamp': market_data.timestamp.isoformat() if hasattr(market_data.timestamp, 'isoformat') else str(market_data.timestamp),
+                'reason': (signal.reason or '') + ' [平仓]',
+                'entry_price': float(position.entry_price),
+            })
+            logger.info(f"✅ 永续平仓: {signal.symbol} {position.side} 数量={close_volume:.4f} @ {exec_price:.2f}, 盈亏={pnl:.2f}")
+
+            if position.size <= 1e-12:
+                self.positions.remove(position)
+                position = None
+
+        # ── 2) 剩余数量开新仓（同向加仓或反向新开）──────────
+        if remaining > 1e-12:
+            open_commission = exec_price * remaining * config.commission_rate
+            required_margin = (exec_price * remaining) / leverage
+
+            if required_margin + open_commission > self.available_cash:
+                # 资金不足，按可用保证金缩减开仓量
+                affordable_notional = max(0.0, self.available_cash - open_commission) * leverage
+                remaining = affordable_notional / exec_price if exec_price > 0 else 0.0
+                if remaining <= 1e-12:
+                    logger.debug(f"永续开仓失败: 保证金不足 (available_cash={self.available_cash:.2f})")
+                    return
+                open_commission = exec_price * remaining * config.commission_rate
+                required_margin = (exec_price * remaining) / leverage
+
+            self.available_cash -= (required_margin + open_commission)
+
+            if position is not None and position.side == signal_side:
+                # 同向加仓：按加权平均更新开仓价
+                total_size = position.size + remaining
+                position.entry_price = (position.entry_price * position.size + exec_price * remaining) / total_size
+                position.size = total_size
+            else:
+                # 新开仓
+                position = Position(
+                    symbol=signal.symbol,
+                    side=signal_side,
+                    size=remaining,
+                    entry_price=exec_price,
+                    entry_time=market_data.timestamp,
+                )
+                self.positions.append(position)
+
+            self.trades.append({
+                'symbol': signal.symbol or '',
+                'side': signal.direction,
+                'size': float(remaining),
+                'price': float(exec_price),
+                'commission': float(open_commission),
+                'timestamp': market_data.timestamp.isoformat() if hasattr(market_data.timestamp, 'isoformat') else str(market_data.timestamp),
+                'reason': (signal.reason or '') + ' [开仓]',
+            })
+            logger.info(f"✅ 永续开仓: {signal.symbol} {signal_side} 数量={remaining:.4f} @ {exec_price:.2f}, 占用保证金={required_margin:.2f}")
+
+        # 同步账户信息到策略
+        if hasattr(strategy, 'account') and isinstance(strategy.account, dict):
+            strategy.account['balance'] = self.available_cash
+
     def _update_account(self, market_data: MarketData) -> None:
         """更新账户"""
-        # 更新持仓价格
+        # 更新持仓价格（Position.update_price 已按 side 正确计算未实现盈亏）
         for position in self.positions:
             position.update_price(market_data.close)
-        
-        # 计算总权益
+
         total_equity = self.available_cash
-        for position in self.positions:
-            total_equity += position.size * market_data.close
-        
+        if self.short_mode:
+            # 永续保证金模型：权益 = 现金 + Σ(占用保证金 + 未实现盈亏)
+            # 现金在开仓时已扣除保证金，故此处需加回保证金再叠加浮动盈亏
+            for position in self.positions:
+                margin = (position.entry_price * position.size) / self.leverage
+                total_equity += margin + position.unrealized_pnl
+        else:
+            # 现货只做多模型：现金已扣全额买入成本，权益 = 现金 + 持仓市值
+            for position in self.positions:
+                total_equity += position.size * market_data.close
+
         self.current_capital = total_equity
     
     def _update_equity_curve(self, timestamp: datetime) -> None:

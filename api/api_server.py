@@ -324,6 +324,26 @@ def convert_strategy_config_types(config, strategy_type):
         if 'max_trades_per_day' in converted and isinstance(converted['max_trades_per_day'], str):
             converted['max_trades_per_day'] = int(converted['max_trades_per_day'])
     
+    elif strategy_type == 'PerpGrid_Strategy':
+        # 永续网格策略参数转换
+        float_params = [
+            'grid_value', 'grid_spacing', 'base_price', 'leverage',
+            'upper_bound', 'lower_bound', 'max_position_value'
+        ]
+        int_params = ['amount_precision']
+        for param in float_params:
+            if param in converted and isinstance(converted[param], str):
+                try:
+                    converted[param] = float(converted[param])
+                except (ValueError, TypeError):
+                    logger.warning(f"无法转换参数 {param} 为float: {converted[param]}")
+        for param in int_params:
+            if param in converted and isinstance(converted[param], str):
+                try:
+                    converted[param] = int(converted[param])
+                except (ValueError, TypeError):
+                    logger.warning(f"无法转换参数 {param} 为int: {converted[param]}")
+
     elif strategy_type == 'FMZGrid_Strategy':
         # 发明者网格策略参数转换
         if 'ratio' in converted and isinstance(converted['ratio'], str):
