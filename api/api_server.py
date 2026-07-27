@@ -583,11 +583,15 @@ def get_strategy_trade_integration():
                 trade_service = get_trade_service()
             
             # 创建策略交易集成实例
+            # 复用全局共享的 strategy_manager，确保 /strategy/create、/strategy/instances
+            # 与 /strategy-live/.../start 操作的是同一个内存管理器（否则启动时按名称查不到策略）
+            shared_manager = get_strategy_manager()
             strategy_trade_integration = StrategyTradeIntegration(
                 db_pool=db_pool,
-                trade_service=trade_service
+                trade_service=trade_service,
+                strategy_manager=shared_manager
             )
-            logger.info("✅ StrategyTradeIntegration 已创建")
+            logger.info("✅ StrategyTradeIntegration 已创建（复用共享策略管理器）")
             
             # 在后台线程中启动策略交易服务
             import threading
@@ -2517,7 +2521,7 @@ def get_stats_overview():
         # 获取今日交易数量
         try:
             today_trades_count = db_pool.query(
-                "SELECT COUNT(*) as count FROM customer_trades WHERE DATE(created_at)=CURDATE()"
+                "SELECT COUNT(*) as count FROM customer_trades WHERE DATE(created_at)=CURRENT_DATE"
             )
             today_trades = today_trades_count[0]['count'] if today_trades_count else 0
         except Exception as e:
@@ -4068,7 +4072,7 @@ def manual_close_position_internal(account_type):
                         
                         # 更新平仓数量 - 累加到现有的close_volume_contract
                         db_pool.execute(
-                            "UPDATE signal_account_trades SET close_volume_contract = IFNULL(close_volume_contract, 0) + %s WHERE trade_uid=%s",
+                            "UPDATE signal_account_trades SET close_volume_contract = COALESCE(close_volume_contract, 0) + %s WHERE trade_uid=%s",
                             (trade_close_sz, trade['trade_uid'])
                         )
                         
@@ -4743,8 +4747,8 @@ def cleanup_duplicate_orders():
         
         # 查找重复的订单记录
         duplicate_orders = db_pool.query("""
-            SELECT order_id, COUNT(*) as count, GROUP_CONCAT(id) as ids
-            FROM manual_operations 
+            SELECT order_id, COUNT(*) as count, string_agg(id::text, ',') as ids
+            FROM manual_operations
             WHERE operation_type='open' AND order_id IS NOT NULL
             GROUP BY order_id 
             HAVING COUNT(*) > 1
@@ -4796,7 +4800,7 @@ def cleanup_invalid_orders():
             FROM manual_operations 
             WHERE operation_type='open' 
                 AND execution_status='pending'
-                AND created_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                AND created_at < NOW() - INTERVAL '1 hour'
             ORDER BY created_at ASC
             LIMIT 50
         """)
@@ -4895,7 +4899,7 @@ def auto_cleanup_invalid_orders():
             FROM manual_operations 
             WHERE operation_type='open' 
                 AND execution_status='pending'
-                AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+                AND created_at < NOW() - INTERVAL '30 minute'
             ORDER BY created_at ASC
             LIMIT 20
         """)
@@ -8759,9 +8763,9 @@ def update_limit_follow_config():
             db_pool.execute(
                 """INSERT INTO limit_follow_configs (config_key, config_value, config_type) 
                    VALUES (%s, %s, %s)
-                   ON DUPLICATE KEY UPDATE 
-                   config_value = VALUES(config_value), 
-                   config_type = VALUES(config_type),
+                   ON CONFLICT (config_key) DO UPDATE SET 
+                   config_value = EXCLUDED.config_value, 
+                   config_type = EXCLUDED.config_type,
                    updated_at = CURRENT_TIMESTAMP""",
                 (key, str(value), config_type)
             )
@@ -8873,7 +8877,7 @@ def limit_follow_health_check():
         recent_updates_result = db_pool.query("""
             SELECT COUNT(*) as count, MAX(updated_at) as last_update
             FROM limit_follow_orders 
-            WHERE updated_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            WHERE updated_at > NOW() - INTERVAL '10 minute'
         """)
         recent_updates = recent_updates_result[0] if recent_updates_result else {'count': 0, 'last_update': None}
         
@@ -8883,7 +8887,7 @@ def limit_follow_health_check():
             FROM limit_follow_orders 
             WHERE status = 'live' 
             AND exchange_order_id IS NOT NULL
-            AND created_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            AND created_at < NOW() - INTERVAL '1 hour'
         """)
         problematic_orders = problematic_orders_result[0] if problematic_orders_result else {'count': 0}
         
@@ -8894,7 +8898,7 @@ def limit_follow_health_check():
                    SUM(CASE WHEN status = 'filled' THEN 1 ELSE 0 END) as filled_count,
                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
             FROM limit_follow_orders 
-            WHERE created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            WHERE created_at > NOW() - INTERVAL '24 hour'
         """)
         total_orders = total_orders_result[0] if total_orders_result else {
             'total': 0, 'live_count': 0, 'filled_count': 0, 'pending_count': 0
@@ -8987,7 +8991,7 @@ def fix_limit_follow_position_status():
                 AND ct.symbol = lfo.symbol 
                 AND ct.pos_side = lfo.pos_side
                 AND ct.status = 'open'
-                AND (ct.volume_contract - IFNULL(ct.close_volume_contract, 0)) > 0
+                AND (ct.volume_contract - COALESCE(ct.close_volume_contract, 0)) > 0
             )
             AND NOT EXISTS (
                 SELECT 1 FROM signal_account_trades sat
@@ -8995,7 +8999,7 @@ def fix_limit_follow_position_status():
                 AND sat.symbol = lfo.symbol
                 AND sat.pos_side = lfo.pos_side
                 AND sat.status = 'open'
-                AND (sat.volume_contract - IFNULL(sat.close_volume_contract, 0)) > 0
+                AND (sat.volume_contract - COALESCE(sat.close_volume_contract, 0)) > 0
             )
         """)
         
@@ -9166,7 +9170,7 @@ def sync_limit_follow_status():
                 SELECT * FROM limit_follow_orders 
                 WHERE status = 'live' 
                 AND exchange_order_id IS NOT NULL
-                AND updated_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+                AND updated_at < NOW() - INTERVAL '30 minute'
                 ORDER BY updated_at ASC
                 LIMIT %s
             """
@@ -9330,7 +9334,7 @@ def get_limit_follow_metrics():
                 AVG(CASE WHEN status = 'filled' AND filled_price > 0 THEN filled_price ELSE NULL END) as avg_fill_price,
                 SUM(CASE WHEN status = 'filled' AND filled_size > 0 THEN filled_size ELSE 0 END) as total_filled_size
             FROM limit_follow_orders 
-            WHERE created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            WHERE created_at > NOW() - INTERVAL '24 hour'
         """)[0]
         
         # 获取策略统计
@@ -9539,7 +9543,7 @@ def get_all_signal_positions():
         # 获取所有信号源的当前持仓
         signal_positions = db_pool.query(
             "SELECT signal_source_uid, symbol, pos_side, SUM(volume_contract) as total_volume, " +
-            "SUM(IFNULL(close_volume_contract, 0)) as closed_volume, " +
+            "SUM(COALESCE(close_volume_contract, 0)) as closed_volume, " +
             "AVG(open_px) as avg_open_price, " +
             "MIN(created_at) as first_open_time, " +
             "MAX(created_at) as last_open_time " +
@@ -9593,7 +9597,7 @@ def get_all_customer_positions():
         # 获取所有客户的当前持仓
         customer_positions = db_pool.query(
             "SELECT customer_uid, symbol, pos_side, SUM(volume_contract) as total_volume, " +
-            "SUM(IFNULL(close_volume_contract, 0)) as closed_volume, " +
+            "SUM(COALESCE(close_volume_contract, 0)) as closed_volume, " +
             "AVG(open_px) as avg_open_price, " +
             "MIN(created_at) as first_open_time, " +
             "MAX(created_at) as last_open_time " +
@@ -10501,11 +10505,55 @@ def create_strategy_trade():
                 symbol=data.get('symbol', 'BTC-USDT'),
                 config=data['config']
             )
-            
+
             if strategy_id:
+                # 持久化到数据库，避免重启后丢失
+                try:
+                    import json
+                    from database.db import get_db_pool
+
+                    db_pool = get_db_pool()
+                    if db_pool:
+                        # 获取当前用户ID（可选，用于记录创建者）
+                        user_id = None
+                        if AUTH_MODULE_AVAILABLE:
+                            user_id = get_current_user_id()
+
+                        # 检查是否已存在（幂等性）
+                        existing = db_pool.query(
+                            "SELECT id FROM strategy_instances WHERE instance_name = %s",
+                            (strategy_id,)
+                        )
+
+                        if not existing:
+                            db_pool.execute(
+                                """INSERT INTO strategy_instances
+                                   (instance_name, strategy_name, symbol, timeframe, status,
+                                    config_json, user_id, created_at, updated_at)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())""",
+                                (
+                                    strategy_id,
+                                    data['strategy_type'],
+                                    data.get('symbol', 'BTC-USDT'),
+                                    data['config'].get('timeframe', '1h'),
+                                    'STOPPED',
+                                    json.dumps(data['config'], ensure_ascii=False),
+                                    user_id
+                                )
+                            )
+                            logger.info(f"策略 {strategy_id} 已保存到数据库")
+                        else:
+                            logger.debug(f"策略 {strategy_id} 已存在于数据库，跳过插入")
+                    else:
+                        logger.warning("数据库连接不可用，策略仅保存到内存（重启后将丢失）")
+                except Exception as db_error:
+                    logger.error(f"保存策略到数据库失败: {db_error}")
+                    # 不阻断返回，策略已在内存中创建成功
+
                 return jsonify({
                     'success': True,
-                    'message': f'策略 {data["name"]} 创建成功'
+                    'message': f'策略 {data["name"]} 创建成功',
+                    'strategy_id': strategy_id
                 })
             else:
                 return jsonify({
@@ -11284,9 +11332,10 @@ def run_backtest():
                         if db_pool:
                             # 先插入策略配置到 strategy_configs 表
                             config_insert_query = """
-                            INSERT IGNORE INTO strategy_configs 
+                            INSERT INTO strategy_configs
                             (strategy_name, strategy_type, config_json, is_template, created_at, created_by)
                             VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (strategy_name) DO NOTHING
                             """
                             
                             db_pool.execute(config_insert_query, (
@@ -11654,20 +11703,35 @@ def run_backtest():
                                 return str(obj)
                         
                         result_data = ensure_serializable(result_data)
-                        
+
+                        # 将 numpy 标量(np.float64/np.int64 等)转换为原生 Python 类型，
+                        # 否则 psycopg2 无法适配，其 repr（如 "np.float64(...)"）会被当作
+                        # SQL 文本注入，导致 "模式 np 不存在" 之类的错误。
+                        def _to_native_float(v):
+                            try:
+                                return float(v) if v is not None else None
+                            except (TypeError, ValueError):
+                                return None
+
+                        def _to_native_int(v):
+                            try:
+                                return int(v) if v is not None else None
+                            except (TypeError, ValueError):
+                                return None
+
                         db_pool.execute(insert_query, (
                             strategy_name,
                             backtest_name,
                             start_date,
                             end_date,
-                            backtest_config.initial_capital,
-                            final_capital,
-                            backtest_result.total_return,
-                            backtest_result.max_drawdown,
-                            backtest_result.sharpe_ratio,
-                            backtest_result.total_trades,
-                            backtest_result.win_rate,
-                            profit_factor,
+                            _to_native_float(backtest_config.initial_capital),
+                            _to_native_float(final_capital),
+                            _to_native_float(backtest_result.total_return),
+                            _to_native_float(backtest_result.max_drawdown),
+                            _to_native_float(backtest_result.sharpe_ratio),
+                            _to_native_int(backtest_result.total_trades),
+                            _to_native_float(backtest_result.win_rate),
+                            _to_native_float(profit_factor),
                             json.dumps(converted_config),
                             json.dumps(result_data),
                             'COMPLETED',
@@ -12309,7 +12373,16 @@ def start_live_strategy(strategy_id):
             }), 503
         
         data = request.get_json() or {}
-        
+
+        # 在请求线程内提取用户身份（run_async_safe 会在独立线程中运行协程，
+        # 那里访问不到 Flask 的 session/request，因此必须在此处先取出并透传）
+        try:
+            data['_auth_user_id'] = getattr(g, 'current_user_id', None)
+            current_user = getattr(g, 'current_user', None) or {}
+            data['_auth_is_admin'] = (current_user.get('role') == 'admin')
+        except Exception:
+            pass
+
         # 运行异步函数（使用安全的方法，兼容 gevent）
         result = run_async_safe(
             integration.api_start_strategy(
@@ -12318,9 +12391,9 @@ def start_live_strategy(strategy_id):
             ),
             timeout=30
         )
-        
+
         return jsonify(result)
-        
+
     except Exception as e:
         logger.error(f"启动策略失败: {e}")
         import traceback
@@ -14128,7 +14201,17 @@ def update_forward_trade_config(config_id):
         user_id = get_current_user_id() if AUTH_MODULE_AVAILABLE else None
         if not user_id:
             return jsonify({'success': False, 'message': '未登录'}), 401
-        
+
+        # 🔧 检查是否为管理员（管理员可使用所有客户账号，普通用户只能用自己的）
+        is_admin = False
+        if AUTH_MODULE_AVAILABLE:
+            try:
+                from auth.permission_service import permission_service
+                if permission_service:
+                    is_admin = permission_service.is_admin(user_id)
+            except Exception as e:
+                logger.debug(f"检查管理员权限失败: {e}")
+
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'message': '请求数据为空'}), 400
@@ -15159,7 +15242,7 @@ def get_telegram_bot_stats(platform_id):
             FROM telegram_user_subscriptions
             WHERE target_platform_id = %s
             AND last_message_at IS NOT NULL
-            AND DATE(last_message_at) = CURDATE()
+            AND DATE(last_message_at) = CURRENT_DATE
         """
         today_result = db_pool.query(today_messages_sql, (platform_id,))
         if today_result and today_result[0].get('total') is not None:
@@ -15208,7 +15291,7 @@ def receive_wechat_official_message():
         import hashlib
         import xml.etree.ElementTree as ET
         from core.message_forward.models import Message, MessageType
-        from core.message_forward.message_forward_manager import get_message_forward_manager
+        from core.message_forward.manager import get_message_forward_manager
         
         # 获取配置
         config = get_wechat_official_config()
@@ -15525,45 +15608,107 @@ def remove_user_subscription(openid, subscription_type):
 
 # ==================== OKX 市场数据代理 ====================
 
+def _fetch_okx_candles_paged(instId, bar, target_limit):
+    """通过 OKX /market/history-candles 分页拉取，直到攒够 target_limit 条。
+
+    复用 OKXRESTClient.get_historical_klines（单页最多 300 条，用 after 游标向过去翻页），
+    避免 /market/candles 单次仅 100 条的限制。返回 OKX 数组格式（倒序，最新在前），
+    与前端 fetchKlineData 的解析一致。
+    """
+    import asyncio
+    from exchange.exchange_factory import create_exchange_client
+
+    rest_client = create_exchange_client(exchange='okx', client_type='rest', is_demo=True)
+
+    async def _run():
+        all_rows = []
+        seen_ts = set()
+        current_after = None
+        max_iterations = 20  # 20 * 300 = 6000 条上限，防无限循环
+        for _ in range(max_iterations):
+            batch = await rest_client.get_historical_klines(
+                symbol=instId, interval=bar,
+                start_time=None, end_time=current_after, limit=300)
+            if not batch:
+                break
+            # 去重合并（分页边界 after 是闭区间，可能重复一条）
+            for row in batch:
+                ts = row[0]
+                if ts not in seen_ts:
+                    seen_ts.add(ts)
+                    all_rows.append(row)
+            if len(all_rows) >= target_limit:
+                break
+            # batch 倒序，末尾为最旧，用其时间戳继续向过去翻页
+            oldest_ts = int(batch[-1][0])
+            if current_after is not None and oldest_ts >= int(current_after):
+                break  # 没有更旧的数据了，停止
+            current_after = oldest_ts
+            if len(batch) < 300:
+                break  # 已到数据起点
+        # 保持 OKX 原始倒序（最新在前），截断到 target_limit
+        all_rows.sort(key=lambda r: int(r[0]), reverse=True)
+        return all_rows[:target_limit]
+
+    return asyncio.run(_run())
+
+
 @app.route('/api/v1/market/candles', methods=['GET'])
 def proxy_okx_candles():
     """
     代理 OKX K线数据请求（解决前端 CORS 问题）
-    
+
     查询参数:
         instId: 交易对（如 BTC-USDT-SWAP）
         bar: 时间周期（1m, 5m, 15m, 1H, 4H, 1D 等）
         limit: 数据条数（默认 100）
+
+    limit <= 100 时走实时 /market/candles（最新一根更及时）；
+    limit > 100 时走分页历史接口，突破单次 100 条限制。
     """
     try:
         import requests
-        
+
         instId = request.args.get('instId')
         bar = request.args.get('bar', '15m')
         limit = request.args.get('limit', '100')
-        
+
         if not instId:
             return jsonify({
                 'code': '1',
                 'msg': '缺少参数 instId',
                 'data': []
             }), 400
-        
-        # 构建 OKX API URL
+
+        try:
+            limit_int = int(limit)
+        except (TypeError, ValueError):
+            limit_int = 100
+
+        # 需要超过 100 条时，走分页历史接口
+        if limit_int > 100:
+            try:
+                rows = _fetch_okx_candles_paged(instId, bar, limit_int)
+                return jsonify({'code': '0', 'msg': '', 'data': rows}), 200
+            except Exception as e:
+                logger.error(f"分页获取 OKX K线失败，回退单次请求: {e}")
+                # 回退到单次 100 条，避免整个图表空白
+
+        # 构建 OKX API URL（<=100 条或分页回退）
         url = f'https://www.okx.com/api/v5/market/candles'
         params = {
             'instId': instId,
             'bar': bar,
-            'limit': limit
+            'limit': str(min(limit_int, 100))
         }
-        
+
         # 请求 OKX API
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        
+
         # 返回 OKX 的响应
         return jsonify(response.json()), response.status_code
-        
+
     except requests.exceptions.RequestException as e:
         logger.error(f"代理 OKX K线数据请求失败: {e}")
         return jsonify({
@@ -15982,8 +16127,8 @@ else:
                                     db_pool.execute("""
                                         INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
                                         VALUES (%s, %s, %s, NULL, NOW())
-                                        ON DUPLICATE KEY UPDATE 
-                                            permission_level = VALUES(permission_level),
+                                        ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                                            permission_level = EXCLUDED.permission_level,
                                             granted_at = NOW()
                                     """, (user.id, module_code, permission_level))
                                 except Exception as perm_error:

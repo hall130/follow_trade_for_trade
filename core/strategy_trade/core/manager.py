@@ -287,8 +287,20 @@ class StrategyManager(IStrategyManager):
             return False
     
     def get_strategy(self, strategy_id: str) -> Optional[StrategyInfo]:
-        """获取策略信息"""
-        return self.strategies.get(strategy_id)
+        """获取策略信息
+
+        策略在内存中以随机 UUID 作为主键存储，但数据库、前端及各接口都用
+        instance_name（策略名称）作为标识。为兼容两种标识方式：先按 UUID 主键查找，
+        找不到时回退到按 name 匹配。
+        """
+        info = self.strategies.get(strategy_id)
+        if info is not None:
+            return info
+        # 回退：按策略名称匹配（前端/数据库使用 instance_name 作为标识）
+        for candidate in self.strategies.values():
+            if candidate.name == strategy_id:
+                return candidate
+        return None
     
     def get_all_strategies(self) -> List[StrategyInfo]:
         """获取所有策略"""

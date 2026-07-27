@@ -1,7 +1,46 @@
-# 可选导入DBUtils
-import pymysql
+# PostgreSQL 驱动 (psycopg2) + 可选 DBUtils 连接池
+import psycopg2
+import psycopg2.extras
+import psycopg2.errors
+from psycopg2.extensions import register_adapter, AsIs
 import uuid
 from utils.logger import logger
+
+# 兼容 MySQL 语义：原代码大量向 TINYINT(1) 列传 Python bool（True/False）。
+# 迁移到 PostgreSQL 后这些列是 SMALLINT，psycopg2 默认把 bool 适配成 TRUE/FALSE，
+# 导致 "smallint 但表达式类型为 boolean" 错误。这里统一把 bool 适配成 1/0 整数。
+def _adapt_bool(value):
+    return AsIs('1' if value else '0')
+
+register_adapter(bool, _adapt_bool)
+
+# 兼容 numpy 标量：回测/策略计算大量使用 numpy，产生 np.float64 / np.int64 等标量。
+# psycopg2 没有这些类型的适配器，会退化成把它们的 repr（numpy 2.0 下形如
+# "np.float64(...)"）当作 SQL 文本注入，导致 "模式 np 不存在" 之类的错误。
+# 这里把 numpy 整数/浮点/布尔标量统一适配成原生数值。
+try:
+    import numpy as _np
+
+    def _adapt_np_int(value):
+        return AsIs(int(value))
+
+    def _adapt_np_float(value):
+        # NaN/Inf 转成 SQL NULL，避免写入非法数值
+        if not _np.isfinite(value):
+            return AsIs('NULL')
+        return AsIs(repr(float(value)))
+
+    def _adapt_np_bool(value):
+        return AsIs('1' if bool(value) else '0')
+
+    for _int_t in (_np.int8, _np.int16, _np.int32, _np.int64,
+                   _np.uint8, _np.uint16, _np.uint32, _np.uint64):
+        register_adapter(_int_t, _adapt_np_int)
+    for _float_t in (_np.float16, _np.float32, _np.float64):
+        register_adapter(_float_t, _adapt_np_float)
+    register_adapter(_np.bool_, _adapt_np_bool)
+except Exception as _np_adapt_err:  # numpy 未安装或版本差异时静默跳过
+    logger.debug(f"numpy 适配器注册跳过: {_np_adapt_err}")
 
 try:
     from dbutils.pooled_db import PooledDB
@@ -12,27 +51,73 @@ except ImportError:
     logger.warning("DBUtils不可用，将使用简化的数据库连接")
 
 
+# 兼容层：原代码大量捕获 pymysql.* 异常，迁移到 psycopg2 后统一映射到 psycopg2 异常类型
+class _PgErrorAliases:
+    OperationalError = psycopg2.OperationalError
+    InterfaceError = psycopg2.InterfaceError
+    DatabaseError = psycopg2.DatabaseError
+
+
+def _pg_connect(host, user, password, db, port):
+    """创建一个 autocommit + dict 游标的 psycopg2 连接（供连接池 creator 使用）"""
+    conn = psycopg2.connect(
+        host=host, user=user, password=password,
+        dbname=db, port=port,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )
+    conn.autocommit = True  # 与原 pymysql autocommit=True 行为一致
+    return conn
+
+
+def _raw_conn(conn):
+    """
+    取回底层 psycopg2 连接。
+
+    DBUtils 连接池返回的是 PooledDedicatedDBConnection -> SteadyDBConnection 代理，
+    它们不暴露 autocommit 属性；沿 ._con 逐层解包到真正的 psycopg2 连接。
+    """
+    seen = 0
+    cur = conn
+    while not hasattr(cur, 'autocommit') and hasattr(cur, '_con') and seen < 5:
+        cur = cur._con
+        seen += 1
+    return cur
+
+
+def _get_autocommit(conn):
+    return _raw_conn(conn).autocommit
+
+
+def _set_autocommit(conn, value):
+    _raw_conn(conn).autocommit = value
+
+
 class MySQLPool:
-    def __init__(self, host, user, password, db, port=3306, mincached=2, maxcached=10):
+    """
+    数据库连接池（底层已迁移到 PostgreSQL/psycopg2）。
+
+    类名与方法签名保持不变，因此所有调用点（约 800 处）无需改动：
+      * SQL 占位符仍为 %s（psycopg2 与 pymysql 一致）
+      * 游标返回 dict 行（RealDictCursor 等价于 pymysql DictCursor）
+      * autocommit=True，与原行为一致
+    """
+
+    def __init__(self, host, user, password, db, port=5432, mincached=2, maxcached=10):
         self.host = host
         self.user = user
         self.password = password
         self.db = db
         self.port = port
-        
+
         if DBUTILS_AVAILABLE and PooledDB:
-            # 使用连接池，优化配置
+            # DBUtils 支持任意 DB-API 2.0 驱动，creator 用绑定参数的 psycopg2 连接工厂
             self.pool = PooledDB(
-                creator=pymysql,
-                host=host, user=user, password=password, db=db, port=port,
-                charset='utf8mb4', 
-                autocommit=True,  # 查询操作自动提交
-                cursorclass=pymysql.cursors.DictCursor,
-                mincached=mincached, 
+                creator=lambda: _pg_connect(host, user, password, db, port),
+                mincached=mincached,
                 maxcached=maxcached,
-                maxconnections=maxcached * 3,  # 最大连接数（提高以支持更多并发，100用户建议150+）
-                blocking=True,  # 阻塞等待连接
-                ping=7  # 每7次查询ping一次数据库
+                maxconnections=maxcached * 3,  # 最大连接数（100用户建议150+）
+                blocking=True,   # 阻塞等待连接
+                ping=1,          # 每次取用前 ping（psycopg2 用简单查询检测）
             )
         else:
             # Fallback: 使用简单的连接
@@ -44,16 +129,62 @@ class MySQLPool:
             return self.pool.connection()
         else:
             # Fallback: 直接创建连接
-            return pymysql.connect(
-                host=self.host,
-                user=self.user,
-                password=self.password,
-                db=self.db,
-                port=self.port,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=True
-            )
+            return _pg_connect(self.host, self.user, self.password, self.db, self.port)
+
+    @staticmethod
+    def _execute_returning(cursor, sql, args):
+        """
+        执行单条 SQL 并按 pymysql 语义返回结果（psycopg2 无 lastrowid）。
+
+        * UPDATE/DELETE -> rowcount
+        * INSERT        -> 若表含自增 id 列则通过追加 RETURNING id 取回新 id；
+                          该表主键为 uuid（无 id 列）时 RETURNING id 会失败，
+                          回退为再次执行原语句并返回 rowcount。
+        """
+        stmt = sql.strip()
+        head = stmt.upper()
+
+        if head.startswith(('UPDATE', 'DELETE')):
+            cursor.execute(sql, args or ())
+            return cursor.rowcount
+
+        if head.startswith('INSERT') and 'RETURNING' not in head:
+            ret_sql = sql.rstrip().rstrip(';') + ' RETURNING id'
+            try:
+                in_tx = not _get_autocommit(cursor.connection)
+            except Exception:
+                in_tx = False
+            if in_tx:
+                # 显式事务中：SAVEPOINT 包裹，避免 RETURNING id 失败污染外层事务
+                cursor.execute('SAVEPOINT sp_ret')
+                try:
+                    cursor.execute(ret_sql, args or ())
+                    row = cursor.fetchone()
+                    cursor.execute('RELEASE SAVEPOINT sp_ret')
+                except psycopg2.errors.UndefinedColumn:
+                    cursor.execute('ROLLBACK TO SAVEPOINT sp_ret')
+                    cursor.execute(sql, args or ())
+                    return cursor.rowcount
+            else:
+                # autocommit 模式：失败语句自动回滚，连接仍可用，直接重试原语句
+                try:
+                    cursor.execute(ret_sql, args or ())
+                    row = cursor.fetchone()
+                except psycopg2.errors.UndefinedColumn:
+                    cursor.execute(sql, args or ())
+                    return cursor.rowcount
+            if row is None:
+                return None
+            # RealDictCursor -> dict; 普通游标 -> tuple
+            if isinstance(row, dict):
+                return row.get('id')
+            return row[0]
+        # 其它语句（含显式 RETURNING、DDL 等）
+        cursor.execute(sql, args or ())
+        try:
+            return cursor.rowcount
+        except Exception:
+            return None
 
     def query(self, sql, args=None):
         conn = None
@@ -90,24 +221,25 @@ class MySQLPool:
         return None
 
     def execute(self, sql, args=None, max_retries=3):
-        """执行SQL语句，带重试机制和连接异常处理"""
+        """执行SQL语句，带重试机制和连接异常处理
+
+        返回值兼容原 pymysql 语义：
+          * UPDATE/DELETE -> 影响行数 (rowcount)
+          * INSERT        -> 新增自增主键 id（若表有 id 列，通过 RETURNING id 获取）
+                             无自增主键时返回 rowcount
+        """
         for attempt in range(max_retries):
             conn = None
             try:
                 conn = self.get_conn()
                 if conn is None:
                     raise Exception("无法获取数据库连接")
-                
+
                 with conn.cursor() as cursor:
-                    cursor.execute(sql, args or ())
-                    # 对于UPDATE/DELETE操作，返回影响的行数；对于INSERT操作，返回lastrowid
-                    if sql.strip().upper().startswith(('UPDATE', 'DELETE')):
-                        result = cursor.rowcount
-                    else:
-                        result = cursor.lastrowid
+                    result = self._execute_returning(cursor, sql, args)
                     conn.commit()  # 提交执行事务
                     return result
-            except (pymysql.OperationalError, pymysql.InterfaceError, pymysql.DatabaseError) as e:
+            except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
                 if conn:
                     try:
                         conn.rollback()  # 回滚执行事务
@@ -150,22 +282,24 @@ class MySQLPool:
             return cursor.rowcount
 
     def execute_transaction(self, operations, max_retries=3):
-        """执行事务操作，带重试机制"""
+        """执行事务操作，带重试机制
+
+        连接池连接默认 autocommit=True；此处临时关闭以获得真正的事务边界，
+        执行完毕后恢复 autocommit，确保连接归还池时状态一致。
+        """
         for attempt in range(max_retries):
             conn = None
+            prev_autocommit = None
             try:
                 conn = self.get_conn()
-                conn.begin()  # 开始事务
-                
+                prev_autocommit = _get_autocommit(conn)
+                _set_autocommit(conn, False)  # 开启显式事务
+
                 with conn.cursor() as cursor:
                     results = []
                     for sql, args in operations:
-                        cursor.execute(sql, args or ())
-                        if sql.strip().upper().startswith(('UPDATE', 'DELETE')):
-                            results.append(cursor.rowcount)
-                        else:
-                            results.append(cursor.lastrowid)
-                
+                        results.append(self._execute_returning(cursor, sql, args))
+
                 conn.commit()  # 提交事务
                 logger.info(f"✅ 事务执行成功 (尝试 {attempt + 1})")
                 return results
@@ -194,22 +328,33 @@ class MySQLPool:
             finally:
                 if conn:
                     try:
+                        # 恢复 autocommit，避免连接带着事务状态归还池
+                        if prev_autocommit is not None:
+                            _set_autocommit(conn, prev_autocommit)
+                    except:
+                        pass
+                    try:
                         conn.close()
                     except:
                         pass
-    
+
     def _should_not_retry(self, error):
         """判断是否不应该重试的错误"""
         error_str = str(error).lower()
-        # 表不存在、语法错误、权限错误等不应该重试
+        # 表不存在、语法错误、权限错误等不应该重试（含 PostgreSQL 措辞）
         no_retry_errors = [
             "table '",
             "doesn't exist",
+            "does not exist",
             "syntax error",
             "access denied",
+            "permission denied",
             "unknown column",
+            "undefinedcolumn",
             "duplicate key",
-            "foreign key constraint"
+            "foreign key constraint",
+            "violates foreign key",
+            "violates unique",
         ]
         
         for no_retry_error in no_retry_errors:
@@ -228,10 +373,11 @@ def get_enabled_signal_accounts(db_pool, is_demo):
 
 
 def upsert_signal_account_asset(db_pool, signal_source_uid, asset):
+    # asset_uid 每次都是新 uuid，主键不会冲突，等价于插入一条新的资产快照
     asset_uid = uuid.uuid4().hex
     return db_pool.execute(
-        "INSERT INTO signal_account_assets (asset_uid, signal_source_uid, asset) VALUES (%s, %s, %s) "
-        "ON DUPLICATE KEY UPDATE asset_uid=VALUES(asset_uid), asset=VALUES(asset), snapshot_time=NOW()",
+        "INSERT INTO signal_account_assets (asset_uid, signal_source_uid, asset, snapshot_time) "
+        "VALUES (%s, %s, %s, NOW())",
         (asset_uid, signal_source_uid, asset)
     )
 
@@ -341,7 +487,7 @@ def update_customer_trade_close_volume_contract(db_pool, trade_uid, close_sz):
     累加更新客户trade的close_volume_contract字段
     """
     db_pool.execute(
-        "UPDATE customer_trades SET close_volume_contract=IFNULL(close_volume_contract,0)+%s WHERE trade_uid=%s",
+        "UPDATE customer_trades SET close_volume_contract=COALESCE(close_volume_contract,0)+%s WHERE trade_uid=%s",
         (close_sz, trade_uid)
     )
 
@@ -350,7 +496,7 @@ def update_signal_account_trade_close_volume_contract(db_pool, trade_uid, close_
     累加更新信号源trade的close_volume_contract字段
     """
     db_pool.execute(
-        "UPDATE signal_account_trades SET close_volume_contract=IFNULL(close_volume_contract,0)+%s WHERE trade_uid=%s",
+        "UPDATE signal_account_trades SET close_volume_contract=COALESCE(close_volume_contract,0)+%s WHERE trade_uid=%s",
         (close_sz, trade_uid)
     )
 
@@ -458,42 +604,50 @@ def check_customer_trade_updated(db_pool, trade_uid, close_order_id):
     return len(rows) > 0
 
 def get_customer_trades_with_lock(db_pool, customer_uid, symbol, pos_side, is_demo):
-    """获取客户持仓（带锁保护）"""
-    # 使用数据库事务确保数据一致性
-    with db_pool.get_conn() as conn:
+    """获取客户持仓（带锁保护，FOR UPDATE 行锁需真实事务）"""
+    conn = db_pool.get_conn()
+    prev_autocommit = _get_autocommit(conn)
+    _set_autocommit(conn, False)  # 关闭 autocommit 以开启事务
+    try:
         with conn.cursor() as cursor:
-            conn.begin()
-            try:
-                cursor.execute(
-                    "SELECT * FROM customer_trades WHERE customer_uid=%s AND symbol=%s AND pos_side=%s AND status='open' AND is_demo=%s FOR UPDATE",
-                    (customer_uid, symbol, pos_side, is_demo)
-                )
-                result = cursor.fetchall()
-                conn.commit()
-                return result
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"获取客户持仓异常: {e}")
-                raise e
+            cursor.execute(
+                "SELECT * FROM customer_trades WHERE customer_uid=%s AND symbol=%s AND pos_side=%s AND status='open' AND is_demo=%s FOR UPDATE",
+                (customer_uid, symbol, pos_side, is_demo)
+            )
+            result = cursor.fetchall()
+        conn.commit()
+        return result
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"获取客户持仓异常: {e}")
+        raise e
+    finally:
+        _set_autocommit(conn, prev_autocommit)
+        conn.close()
 
 def update_customer_trade_with_lock(db_pool, trade_uid, **kwargs):
     """更新客户交易记录（带锁保护）"""
-    with db_pool.get_conn() as conn:
+    conn = db_pool.get_conn()
+    prev_autocommit = _get_autocommit(conn)
+    _set_autocommit(conn, False)
+    try:
         with conn.cursor() as cursor:
-            conn.begin()
-            try:
-                set_clause = ", ".join([f"{k}=%s" for k in kwargs.keys()])
-                values = list(kwargs.values()) + [trade_uid]
-                cursor.execute(
-                    f"UPDATE customer_trades SET {set_clause} WHERE trade_uid=%s",
-                    values
-                )
-                conn.commit()
-                return cursor.rowcount
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"更新客户交易记录异常: {e}")
-                raise e
+            set_clause = ", ".join([f"{k}=%s" for k in kwargs.keys()])
+            values = list(kwargs.values()) + [trade_uid]
+            cursor.execute(
+                f"UPDATE customer_trades SET {set_clause} WHERE trade_uid=%s",
+                values
+            )
+            rowcount = cursor.rowcount
+        conn.commit()
+        return rowcount
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"更新客户交易记录异常: {e}")
+        raise e
+    finally:
+        _set_autocommit(conn, prev_autocommit)
+        conn.close()
 
 def get_customer_trades_by_symbol_and_pos(db_pool, customer_uid, symbol, pos_side, is_demo):
     """获取客户指定币种和方向的持仓"""

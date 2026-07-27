@@ -62,7 +62,7 @@ class ForwardTradeService:
                     c.passphrase,
                     c.is_demo
                 FROM forward_trade_configs ftc
-                LEFT JOIN customers c ON ftc.customer_uid COLLATE utf8mb4_general_ci = c.customer_uid COLLATE utf8mb4_general_ci
+                LEFT JOIN customers c ON ftc.customer_uid = c.customer_uid
                 WHERE ftc.enabled = 1
             """
             rows = self.db_pool.query(query)

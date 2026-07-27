@@ -351,10 +351,11 @@ class ConnectionManager:
         self._reconnect_cooldown = 300  # 5分钟
         self._customer_reconnect_cooldown = 60  # 1分钟
         
-    async def get_or_create_client(self, client_type: str, client_id: str, 
-                                  is_demo: bool = False, api_key: str = '', 
-                                  api_secret: str = '', passphrase: str = ''):
-        """获取或创建客户端连接"""
+    async def get_or_create_client(self, client_type: str, client_id: str,
+                                  is_demo: bool = False, api_key: str = '',
+                                  api_secret: str = '', passphrase: str = '',
+                                  exchange: str = 'okx'):
+        """获取或创建客户端连接（exchange 决定底层交易所：okx / binance）"""
         client_key = f"{client_type}_{client_id}"
         
         # 检查现有连接
@@ -389,7 +390,8 @@ class ConnectionManager:
                     is_demo=is_demo,
                     api_key=api_key,
                     api_secret=api_secret,
-                    passphrase=passphrase
+                    passphrase=passphrase,
+                    exchange=exchange
                 )
                 
                 # 确保连接建立
@@ -608,6 +610,13 @@ class TradeService:
         self.memory_monitor_task = None
         self.cleanup_task = None
 
+        # 成交处理去重集合（原先散落用 hasattr 惰性初始化，这里统一初始化并加容量上界防无限增长）
+        self._processed_close_orders = set()  # 已处理的平仓订单去重
+        self._updated_trades = set()          # 已更新的 trade 去重
+        self._max_dedup_set_size = 5000       # 去重集合容量上界，超限清空重来
+        # 成交后定向对账节流：{(customer_uid, symbol): last_ts}
+        self._last_reconcile_on_fill = {}
+
         self.last_cleanup_time = time.time()
         self.connection_activity_timestamps = {}  # 记录每个连接的最后活动时间
         self.websocket_health_status = {}  # 记录每个连接的健康状态
@@ -691,14 +700,15 @@ class TradeService:
                     # 不健康，从clients中移除
                     del self.clients[customer_uid]
             
-            # 从connection_manager获取或创建
+            # 从connection_manager获取或创建（带交易所路由：okx / binance）
             client = await self.connection_manager.get_or_create_client(
                 client_type="customer",
                 client_id=customer_uid,
                 is_demo=get_is_demo_from_obj(customer),
                 api_key=getattr(customer, 'api_key', ''),
                 api_secret=getattr(customer, 'api_secret', ''),
-                passphrase=getattr(customer, 'passphrase', '')
+                passphrase=getattr(customer, 'passphrase', ''),
+                exchange=str(getattr(customer, 'exchange', 'okx') or 'okx').lower()
             )
             
             if client:
@@ -2779,6 +2789,264 @@ class TradeService:
         
         await self.batch_close_trades(trades, symbol, pos_side, signal_volume, rule_ratio_map, signal_source_uid)
 
+    def _bounded_set_add(self, s, key):
+        """向去重集合添加元素，超过容量上界时清空重来，防止无限增长。"""
+        if len(s) >= self._max_dedup_set_size:
+            s.clear()
+        s.add(key)
+
+    async def _maybe_reconcile_on_fill(self, customer_uid, symbol):
+        """成交后触发定向对账（带节流）。由配置 reconcile.on_fill 控制。"""
+        try:
+            from config import get_reconcile_config
+            cfg = get_reconcile_config()
+        except Exception:
+            return
+        if not cfg.get('on_fill', True):
+            return
+        if not customer_uid or not symbol:
+            return
+        throttle = float(cfg.get('on_fill_throttle', 10))
+        delay = float(cfg.get('on_fill_delay', 3))
+        now = time.time()
+        key = (customer_uid, symbol)
+        last = self._last_reconcile_on_fill.get(key, 0)
+        if now - last < throttle:
+            return  # 节流：同一 customer+symbol 短时间内不重复触发
+        self._last_reconcile_on_fill[key] = now
+
+        async def _delayed():
+            try:
+                await asyncio.sleep(delay)
+                await self.check_position_anomalies(only_customer_uid=customer_uid, only_symbol=symbol)
+            except Exception as e:
+                logger.error(f"[成交后对账] 定向对账失败 customer={customer_uid} symbol={symbol}: {e}")
+
+        asyncio.create_task(_delayed())
+
+    async def _handle_customer_order_update(self, data):
+        try:
+            if 'data' not in data or not data['data']:
+                return
+            for order in data['data']:
+                ordId = order.get('ordId')
+                target_uid = order.get('clOrdId')
+
+                # 统一通过order_id查找trade_uid，因为clOrdId和trade_uid格式不一致
+                reduceOnly = order.get('reduceOnly', 'false')
+                # 只在filled时写入volume和openPx
+                if order['state'] == 'filled':
+                    # 成交后触发定向对账（节流+延迟，配置控制）：从 trade 行解析 customer_uid
+                    try:
+                        _fill_symbol = order.get('instId')
+                        _cust_row = self.db_pool.query(
+                            "SELECT customer_uid FROM customer_trades WHERE order_id=%s OR trade_uid=%s LIMIT 1",
+                            (ordId, target_uid))
+                        _fill_customer = _cust_row[0]['customer_uid'] if _cust_row else None
+                        if _fill_customer and _fill_symbol:
+                            await self._maybe_reconcile_on_fill(_fill_customer, _fill_symbol)
+                    except Exception as _rec_e:
+                        logger.debug(f"[成交后对账] 触发跳过: {_rec_e}")
+                    avgPx = safe_float(order.get('fillPx')) or safe_float(order.get('avgPx'))
+                    fillSz = safe_float(order.get('accFillSz', order.get('fillSz', order.get('sz'))))
+                    notional_usd = order.get('fillNotionalUsd') or order.get('notionalUsd')
+                    if reduceOnly == 'false':
+                        # 只在开仓时写 volume、openPx
+                        if avgPx:
+                            update_customer_trade_open_px(self.db_pool, target_uid, avgPx)
+                        if notional_usd:
+                            volume = round(float(notional_usd), 3)
+                        elif avgPx and fillSz:
+                            # 计算名义价值：fillSz * multiplier * avgPx
+                            multiplier = get_contract_multiplier(order.get('instId', ''))
+                            volume = round(avgPx * fillSz * multiplier, 3)
+                        else:
+                            volume = 0
+
+                        # 更新volume和volume_contract
+                        self.db_pool.execute("UPDATE customer_trades SET volume=%s, volume_contract=%s WHERE trade_uid=%s", (volume, fillSz, target_uid))
+                        logger.info(f"[开仓成交] trade_uid={target_uid}, volume={volume}, volume_contract={fillSz}, openPx={avgPx}, notional_usd={notional_usd}")
+
+                    elif reduceOnly == 'true':
+                        # 分摊调试日志
+                        order_ordId = order.get('ordId')
+                        order_clOrdId = order.get('clOrdId')
+                        fillSz = safe_float(order.get('accFillSz', order.get('fillSz', order.get('sz'))))
+                        avgPx = safe_float(order.get('fillPx')) or safe_float(order.get('avgPx'))
+                        logger.info(f"[分摊调试] on_order ordId={order_ordId}, clOrdId={order_clOrdId}, fillSz={fillSz}, avgPx={avgPx}")
+
+                        # 检查是否有pending的总单分摊
+                        if hasattr(self, '_pending_total_close'):
+                            pending = self._pending_total_close
+                            pending_ordId = pending.get('ordId')
+                            pending_clOrdId = pending.get('clOrdId')
+                            logger.info(f"[分摊调试] 有pending总单分摊: pending_ordId={pending_ordId}, pending_clOrdId={pending_clOrdId}")
+                        else:
+                            logger.info(f"[分摊调试] 没有pending总单分摊")
+
+                        # 检查是否已经处理过这个平仓订单
+                        processed_close_key = f"{order_ordId}_{order_clOrdId}_{fillSz}_{avgPx}"
+                        if hasattr(self, '_processed_close_orders') and processed_close_key in self._processed_close_orders:
+                            logger.info(f"[平仓去重] 平仓订单已处理过，跳过: {processed_close_key}")
+                            return
+
+                        # 添加到已处理集合（带容量上界）
+                        self._bounded_set_add(self._processed_close_orders, processed_close_key)
+
+                        if hasattr(self, '_pending_total_close'):
+                            pending = self._pending_total_close
+                            pending_ordId = pending.get('ordId')
+                            pending_clOrdId = pending.get('clOrdId')
+                            logger.info(f"[分摊调试] pending_ordId={pending_ordId}, pending_clOrdId={pending_clOrdId}")
+                            # 支持ordId和clOrdId两种方式匹配
+                            if (pending_ordId == order_ordId) or (pending_clOrdId and pending_clOrdId == order_clOrdId):
+                                trades = pending['trades']
+                                total_sz = pending['total_sz']
+                                logger.info(f"[分摊调试] trades count={len(trades)}, trade_uids={[get_trade_field(t, 'trade_uid') for t in trades]}")
+                                for trade in trades:
+                                    volume_contract = safe_float(get_trade_field(trade, 'volume_contract'))
+                                    ratio = volume_contract / total_sz if total_sz > 0 else 0
+                                    closePx = avgPx
+                                    ordId = order_ordId
+                                    openPx = safe_float(get_trade_field(trade, 'open_px'))
+                                    direction_str = get_trade_field(trade, 'direction')
+                                    volume_usdt = safe_float(get_trade_field(trade, 'volume'))
+                                    if openPx == 0 or volume_usdt == 0:
+                                        logger.error(f'[总单分摊] openPx或volume_usdt为0, trade_uid={get_trade_field(trade, "trade_uid")})')
+                                        profit = 0
+                                    else:
+                                        if direction_str == 'buy':
+                                            profit = (closePx - openPx) * (volume_usdt / openPx)
+                                        elif direction_str == 'sell':
+                                            profit = (openPx - closePx) * (volume_usdt / openPx)
+                                        else:
+                                            profit = (closePx - openPx) * (volume_usdt / openPx)
+
+                                    # 检查是否已经更新过这个trade
+                                    trade_uid = get_trade_field(trade, 'trade_uid')
+                                    if hasattr(self, '_updated_trades') and trade_uid in self._updated_trades:
+                                        logger.info(f"[总单分摊] trade_uid={trade_uid}已更新过，跳过")
+                                        continue
+
+                                    self.db_pool.execute(
+                                        "UPDATE customer_trades SET close_px=%s, close_order_id=%s, profit=%s, status='closed', close_volume_contract=volume_contract WHERE trade_uid=%s",
+                                        (closePx, ordId, round(profit, 3), get_trade_field(trade, 'trade_uid'))
+                                    )
+
+                                    # 记录已更新的trade（带容量上界）
+                                    self._bounded_set_add(self._updated_trades, trade_uid)
+
+                                    logger.info(f"[总单分摊] 更新trade: trade_uid={get_trade_field(trade, 'trade_uid')}, closePx={closePx}, openPx={openPx}, fillSz={fillSz}, ratio={ratio:.4f}, profit={round(profit, 3)}, status=closed, close_volume_contract={volume_contract}")
+
+                                    # 移除成功的平仓通知，只在异常情况下发送通知
+                                del self._pending_total_close
+                                return
+                            else:
+                                # 如果没有匹配到总单分摊，检查是否是单个trade的平仓
+                                logger.info(f"[分摊调试] 未匹配到总单分摊，检查单个trade平仓")
+                                # 查询所有使用该order_id的trade
+                                related_trades = self.db_pool.query("SELECT * FROM customer_trades WHERE order_id=%s", (order_ordId,))
+                                logger.info(f"[分摊调试] 单个平仓查询结果: {len(related_trades) if related_trades else 0} 条记录")
+                                if related_trades:
+                                    logger.info(f"[分摊调试] 找到{len(related_trades)}个相关trade")
+                                else:
+                                    # 兜底逻辑：如果都没有匹配到，尝试直接发送通知
+                                    logger.info(f"[分摊调试] 兜底逻辑：尝试直接发送平仓通知")
+                                    try:
+                                        # 通过order_id查找trade记录
+                                        trade_rows = self.db_pool.query("SELECT * FROM customer_trades WHERE order_id=%s", (order_ordId,))
+                                        if trade_rows:
+                                            for trade_row in trade_rows:
+                                                trade_uid = trade_row['trade_uid']
+                                                volume_usdt = safe_float(trade_row['volume'])
+                                                openPx = safe_float(trade_row['open_px'])
+
+                                                # 计算盈亏
+                                                if openPx > 0 and volume_usdt > 0:
+                                                    direction_str = trade_row['direction']
+                                                    if direction_str == 'buy':
+                                                        profit = (avgPx - openPx) * (volume_usdt / openPx)
+                                                    elif direction_str == 'sell':
+                                                        profit = (openPx - avgPx) * (volume_usdt / openPx)
+                                                    else:
+                                                        profit = (avgPx - openPx) * (volume_usdt / openPx)
+                                                else:
+                                                    profit = 0
+
+                                        else:
+                                            logger.warning(f"[分摊调试] 兜底逻辑也未找到相关trade记录: order_id={order_ordId}")
+                                    except Exception as notify_error:
+                                        logger.warning(f"[钉钉通知] 兜底平仓通知发送失败: {notify_error}")
+                                    for trade_row in related_trades:
+                                        trade_uid = trade_row['trade_uid']
+
+                                        # 检查是否已经更新过这个trade
+                                        if hasattr(self, '_updated_trades') and trade_uid in self._updated_trades:
+                                            logger.info(f"[单个平仓] trade_uid={trade_uid}已更新过，跳过")
+                                            continue
+
+                                        openPx = safe_float(trade_row['open_px'])
+                                        direction_str = trade_row['direction']
+                                        volume_usdt = safe_float(trade_row['volume'])
+                                        if openPx == 0 or volume_usdt == 0:
+                                            logger.error(f'[单个平仓] openPx或volume_usdt为0, trade_uid={trade_uid}')
+                                            profit = 0
+                                        else:
+                                            if direction_str == 'buy':
+                                                profit = (avgPx - openPx) * (volume_usdt / openPx)
+                                            elif direction_str == 'sell':
+                                                profit = (openPx - avgPx) * (volume_usdt / openPx)
+                                            else:
+                                                profit = (avgPx - openPx) * (volume_usdt / openPx)
+
+                                        self.db_pool.execute(
+                                            "UPDATE customer_trades SET close_px=%s, close_order_id=%s, profit=%s, status='closed', close_volume_contract=volume_contract WHERE trade_uid=%s",
+                                            (avgPx, order_ordId, round(profit, 3), trade_uid)
+                                        )
+
+                                        # 记录已更新的trade（带容量上界）
+                                        self._bounded_set_add(self._updated_trades, trade_uid)
+
+                                        logger.info(f"[单个平仓] 更新trade: trade_uid={trade_uid}, closePx={avgPx}, openPx={openPx}, profit={round(profit, 3)}, status=closed, close_volume_contract={volume_contract}")
+
+                                        # 发送平仓通知
+                                        # 移除成功的平仓通知，只在异常情况下发送通知
+                                        logger.info(f"[钉钉通知] 平仓成功: trade_uid={trade_uid}, volume_usdt={volume_usdt}, profit={round(profit, 3)}")
+                else:
+                    if reduceOnly == 'false':
+                        if not target_uid:
+                            logger.error(f"[开仓异常] 未找到trade_uid, ordId={ordId}")
+                    elif reduceOnly == 'true':
+                        if not target_uid:
+                            logger.error(f"[平仓异常] 未找到trade_uid, ordId={ordId}")
+                        else:
+                            # 直接发送平仓成交通知（不查询数据库）
+                            # 计算平仓的USDT金额
+                            fillSz = safe_float(order.get('accFillSz', order.get('fillSz', order.get('sz'))))
+                            avgPx = safe_float(order.get('fillPx')) or safe_float(order.get('avgPx'))
+                            volume = fillSz * avgPx if fillSz > 0 and avgPx > 0 else 0
+
+                            logger.info(f"[钉钉通知] 发送平仓成交通知: ordId={ordId}, volume={volume}")
+                            try:
+                                # 从clOrdId中提取客户信息
+                                clOrdId = order.get('clOrdId', '')
+                                if clOrdId and clOrdId.startswith('CREDUCEcust'):
+                                    # 解析客户ID，例如：CREDUCEcust001XRPUSDTSWAPlor1109
+                                    # 提取cust_001，格式是CREDUCEcust001...
+                                    customer_uid = 'cust_' + clOrdId[13:16]  # 提取001并加上cust_前缀
+                                    symbol = order.get('instId', '')
+                                    direction = order.get('side', '')
+                                    pos_side = order.get('posSide', '')
+
+                                    # 移除成功的平仓通知，只在异常情况下发送通知
+                                    logger.info(f"[钉钉通知] 平仓成功: customer_uid={customer_uid}, volume_usdt={volume}")
+                                else:
+                                    logger.warning(f"[钉钉通知] 无法解析平仓客户信息: clOrdId={clOrdId}")
+                            except Exception as notify_error:
+                                logger.warning(f"[钉钉通知] 平仓成交通知发送失败: {notify_error}")
+        except Exception as e:
+            logger.error(f"回调处理异常: {e}, data={data}")
+
     async def listen_customer_account(self, customer: Customer):
         client = await self.get_client(customer)
         if not client:
@@ -2820,13 +3088,23 @@ class TradeService:
                                 (asset, customer_uid, is_demo)
                             )
                             logger.info(f"[客户资产更新] 客户{customer_uid} total_asset为NULL，已更新为: {asset}")
+                        elif float(current_total_asset) == 0:
+                            # 旧值为0，无法计算变动比例；只要新资产非0就直接更新
+                            if asset and float(asset) != 0:
+                                self.db_pool.execute(
+                                    "UPDATE customers SET total_asset=%s WHERE customer_uid=%s AND is_demo=%s",
+                                    (asset, customer_uid, is_demo)
+                                )
+                                logger.info(f"[客户资产更新] 客户{customer_uid} total_asset旧值为0，已更新为: {asset}")
+                            else:
+                                logger.debug(f"[客户资产更新] 客户{customer_uid} total_asset旧值为0且新值为0，跳过更新")
                         else:
                             # 确保类型一致，转换为float进行比较
                             current_total_asset_float = float(current_total_asset)
                             change_ratio = abs(asset - current_total_asset_float) / current_total_asset_float
-                            
+
                             logger.info(f"[客户资产更新] 客户{customer_uid} 资产变动检查: 当前={current_total_asset_float}, 新值={asset}, 变动比例={change_ratio:.4f} ({change_ratio*100:.2f}%)")
-                            
+
                             if change_ratio > 0.01:
                                 # 如果资产变化超过1%，才更新
                                 self.db_pool.execute(
@@ -2847,226 +3125,21 @@ class TradeService:
                 import traceback
                 logger.error(f"[客户资产更新异常] 堆栈信息: {traceback.format_exc()}")
 
+        # 客户订单成交回报处理已提取为实例方法 _handle_customer_order_update，
+        # 供主监听与重连路径共用，避免重连后回补逻辑退化为空壳。
         async def on_order(data):
-            try:
-                if 'data' not in data or not data['data']:
-                    return
-                for order in data['data']:
-                    ordId = order.get('ordId')
-                    target_uid = order.get('clOrdId')
-                    
-                    # 统一通过order_id查找trade_uid，因为clOrdId和trade_uid格式不一致
-                    reduceOnly = order.get('reduceOnly', 'false')
-                    # 只在filled时写入volume和openPx
-                    if order['state'] == 'filled':
-                        avgPx = safe_float(order.get('fillPx')) or safe_float(order.get('avgPx'))
-                        fillSz = safe_float(order.get('accFillSz', order.get('fillSz', order.get('sz'))))
-                        notional_usd = order.get('fillNotionalUsd') or order.get('notionalUsd')
-                        if reduceOnly == 'false':
-                            # 只在开仓时写 volume、openPx
-                            if avgPx:
-                                update_customer_trade_open_px(self.db_pool, target_uid, avgPx)
-                            if notional_usd:
-                                volume = round(float(notional_usd), 3)
-                            elif avgPx and fillSz:
-                                # 计算名义价值：fillSz * multiplier * avgPx
-                                multiplier = get_contract_multiplier(order.get('instId', ''))
-                                volume = round(avgPx * fillSz * multiplier, 3)
-                            else:
-                                volume = 0
-                            
-                            # 更新volume和volume_contract
-                            self.db_pool.execute("UPDATE customer_trades SET volume=%s, volume_contract=%s WHERE trade_uid=%s", (volume, fillSz, target_uid))
-                            logger.info(f"[开仓成交] trade_uid={target_uid}, volume={volume}, volume_contract={fillSz}, openPx={avgPx}, notional_usd={notional_usd}")
-
-                        elif reduceOnly == 'true':
-                            # 分摊调试日志
-                            order_ordId = order.get('ordId')
-                            order_clOrdId = order.get('clOrdId')
-                            fillSz = safe_float(order.get('accFillSz', order.get('fillSz', order.get('sz'))))
-                            avgPx = safe_float(order.get('fillPx')) or safe_float(order.get('avgPx'))
-                            logger.info(f"[分摊调试] on_order ordId={order_ordId}, clOrdId={order_clOrdId}, fillSz={fillSz}, avgPx={avgPx}")
-                            
-                            # 检查是否有pending的总单分摊
-                            if hasattr(self, '_pending_total_close'):
-                                pending = self._pending_total_close
-                                pending_ordId = pending.get('ordId')
-                                pending_clOrdId = pending.get('clOrdId')
-                                logger.info(f"[分摊调试] 有pending总单分摊: pending_ordId={pending_ordId}, pending_clOrdId={pending_clOrdId}")
-                            else:
-                                logger.info(f"[分摊调试] 没有pending总单分摊")
-                            
-                            # 检查是否已经处理过这个平仓订单
-                            processed_close_key = f"{order_ordId}_{order_clOrdId}_{fillSz}_{avgPx}"
-                            if hasattr(self, '_processed_close_orders') and processed_close_key in self._processed_close_orders:
-                                logger.info(f"[平仓去重] 平仓订单已处理过，跳过: {processed_close_key}")
-                                return
-                            
-                            # 添加到已处理集合
-                            if not hasattr(self, '_processed_close_orders'):
-                                self._processed_close_orders = set()
-                            self._processed_close_orders.add(processed_close_key)
-                            
-                            if hasattr(self, '_pending_total_close'):
-                                pending = self._pending_total_close
-                                pending_ordId = pending.get('ordId')
-                                pending_clOrdId = pending.get('clOrdId')
-                                logger.info(f"[分摊调试] pending_ordId={pending_ordId}, pending_clOrdId={pending_clOrdId}")
-                                # 支持ordId和clOrdId两种方式匹配
-                                if (pending_ordId == order_ordId) or (pending_clOrdId and pending_clOrdId == order_clOrdId):
-                                    trades = pending['trades']
-                                    total_sz = pending['total_sz']
-                                    logger.info(f"[分摊调试] trades count={len(trades)}, trade_uids={[get_trade_field(t, 'trade_uid') for t in trades]}")
-                                    for trade in trades:
-                                        volume_contract = safe_float(get_trade_field(trade, 'volume_contract'))
-                                        ratio = volume_contract / total_sz if total_sz > 0 else 0
-                                        closePx = avgPx
-                                        ordId = order_ordId
-                                        openPx = safe_float(get_trade_field(trade, 'open_px'))
-                                        direction_str = get_trade_field(trade, 'direction')
-                                        volume_usdt = safe_float(get_trade_field(trade, 'volume'))
-                                        if openPx == 0 or volume_usdt == 0:
-                                            logger.error(f'[总单分摊] openPx或volume_usdt为0, trade_uid={get_trade_field(trade, "trade_uid")})')
-                                            profit = 0
-                                        else:
-                                            if direction_str == 'buy':
-                                                profit = (closePx - openPx) * (volume_usdt / openPx)
-                                            elif direction_str == 'sell':
-                                                profit = (openPx - closePx) * (volume_usdt / openPx)
-                                            else:
-                                                profit = (closePx - openPx) * (volume_usdt / openPx)
-                                        
-                                        # 检查是否已经更新过这个trade
-                                        trade_uid = get_trade_field(trade, 'trade_uid')
-                                        if hasattr(self, '_updated_trades') and trade_uid in self._updated_trades:
-                                            logger.info(f"[总单分摊] trade_uid={trade_uid}已更新过，跳过")
-                                            continue
-                                        
-                                        self.db_pool.execute(
-                                            "UPDATE customer_trades SET close_px=%s, close_order_id=%s, profit=%s, status='closed', close_volume_contract=volume_contract WHERE trade_uid=%s",
-                                            (closePx, ordId, round(profit, 3), get_trade_field(trade, 'trade_uid'))
-                                        )
-                                        
-                                        # 记录已更新的trade
-                                        if not hasattr(self, '_updated_trades'):
-                                            self._updated_trades = set()
-                                        self._updated_trades.add(trade_uid)
-                                        
-                                        logger.info(f"[总单分摊] 更新trade: trade_uid={get_trade_field(trade, 'trade_uid')}, closePx={closePx}, openPx={openPx}, fillSz={fillSz}, ratio={ratio:.4f}, profit={round(profit, 3)}, status=closed, close_volume_contract={volume_contract}")
-                                        
-                                        # 移除成功的平仓通知，只在异常情况下发送通知
-                                    del self._pending_total_close
-                                    return
-                                else:
-                                    # 如果没有匹配到总单分摊，检查是否是单个trade的平仓
-                                    logger.info(f"[分摊调试] 未匹配到总单分摊，检查单个trade平仓")
-                                    # 查询所有使用该order_id的trade
-                                    related_trades = self.db_pool.query("SELECT * FROM customer_trades WHERE order_id=%s", (order_ordId,))
-                                    logger.info(f"[分摊调试] 单个平仓查询结果: {len(related_trades) if related_trades else 0} 条记录")
-                                    if related_trades:
-                                        logger.info(f"[分摊调试] 找到{len(related_trades)}个相关trade")
-                                    else:
-                                        # 兜底逻辑：如果都没有匹配到，尝试直接发送通知
-                                        logger.info(f"[分摊调试] 兜底逻辑：尝试直接发送平仓通知")
-                                        try:
-                                            # 通过order_id查找trade记录
-                                            trade_rows = self.db_pool.query("SELECT * FROM customer_trades WHERE order_id=%s", (order_ordId,))
-                                            if trade_rows:
-                                                for trade_row in trade_rows:
-                                                    trade_uid = trade_row['trade_uid']
-                                                    volume_usdt = safe_float(trade_row['volume'])
-                                                    openPx = safe_float(trade_row['open_px'])
-                                                    
-                                                    # 计算盈亏
-                                                    if openPx > 0 and volume_usdt > 0:
-                                                        direction_str = trade_row['direction']
-                                                        if direction_str == 'buy':
-                                                            profit = (avgPx - openPx) * (volume_usdt / openPx)
-                                                        elif direction_str == 'sell':
-                                                            profit = (openPx - avgPx) * (volume_usdt / openPx)
-                                                        else:
-                                                            profit = (avgPx - openPx) * (volume_usdt / openPx)
-                                                    else:
-                                                        profit = 0
-
-                                            else:
-                                                logger.warning(f"[分摊调试] 兜底逻辑也未找到相关trade记录: order_id={order_ordId}")
-                                        except Exception as notify_error:
-                                            logger.warning(f"[钉钉通知] 兜底平仓通知发送失败: {notify_error}")
-                                        for trade_row in related_trades:
-                                            trade_uid = trade_row['trade_uid']
-                                            
-                                            # 检查是否已经更新过这个trade
-                                            if hasattr(self, '_updated_trades') and trade_uid in self._updated_trades:
-                                                logger.info(f"[单个平仓] trade_uid={trade_uid}已更新过，跳过")
-                                                continue
-                                            
-                                            openPx = safe_float(trade_row['open_px'])
-                                            direction_str = trade_row['direction']
-                                            volume_usdt = safe_float(trade_row['volume'])
-                                            if openPx == 0 or volume_usdt == 0:
-                                                logger.error(f'[单个平仓] openPx或volume_usdt为0, trade_uid={trade_uid}')
-                                                profit = 0
-                                            else:
-                                                if direction_str == 'buy':
-                                                    profit = (avgPx - openPx) * (volume_usdt / openPx)
-                                                elif direction_str == 'sell':
-                                                    profit = (openPx - avgPx) * (volume_usdt / openPx)
-                                                else:
-                                                    profit = (avgPx - openPx) * (volume_usdt / openPx)
-                                            
-                                            self.db_pool.execute(
-                                                "UPDATE customer_trades SET close_px=%s, close_order_id=%s, profit=%s, status='closed', close_volume_contract=volume_contract WHERE trade_uid=%s",
-                                                (avgPx, order_ordId, round(profit, 3), trade_uid)
-                                            )
-                                            
-                                            # 记录已更新的trade
-                                            if not hasattr(self, '_updated_trades'):
-                                                self._updated_trades = set()
-                                            self._updated_trades.add(trade_uid)
-                                            
-                                            logger.info(f"[单个平仓] 更新trade: trade_uid={trade_uid}, closePx={avgPx}, openPx={openPx}, profit={round(profit, 3)}, status=closed, close_volume_contract={volume_contract}")
-                                            
-                                            # 发送平仓通知
-                                            # 移除成功的平仓通知，只在异常情况下发送通知
-                                            logger.info(f"[钉钉通知] 平仓成功: trade_uid={trade_uid}, volume_usdt={volume_usdt}, profit={round(profit, 3)}")
-                    else:
-                        if reduceOnly == 'false':
-                            if not target_uid:
-                                logger.error(f"[开仓异常] 未找到trade_uid, ordId={ordId}")
-                        elif reduceOnly == 'true':
-                            if not target_uid:
-                                logger.error(f"[平仓异常] 未找到trade_uid, ordId={ordId}")
-                            else:
-                                # 直接发送平仓成交通知（不查询数据库）
-                                # 计算平仓的USDT金额
-                                fillSz = safe_float(order.get('accFillSz', order.get('fillSz', order.get('sz'))))
-                                avgPx = safe_float(order.get('fillPx')) or safe_float(order.get('avgPx'))
-                                volume = fillSz * avgPx if fillSz > 0 and avgPx > 0 else 0
-                                
-                                logger.info(f"[钉钉通知] 发送平仓成交通知: ordId={ordId}, volume={volume}")
-                                try:
-                                    # 从clOrdId中提取客户信息
-                                    clOrdId = order.get('clOrdId', '')
-                                    if clOrdId and clOrdId.startswith('CREDUCEcust'):
-                                        # 解析客户ID，例如：CREDUCEcust001XRPUSDTSWAPlor1109
-                                        # 提取cust_001，格式是CREDUCEcust001...
-                                        customer_uid = 'cust_' + clOrdId[13:16]  # 提取001并加上cust_前缀
-                                        symbol = order.get('instId', '')
-                                        direction = order.get('side', '')
-                                        pos_side = order.get('posSide', '')
-                                        
-                                        # 移除成功的平仓通知，只在异常情况下发送通知
-                                        logger.info(f"[钉钉通知] 平仓成功: customer_uid={customer_uid}, volume_usdt={volume}")
-                                    else:
-                                        logger.warning(f"[钉钉通知] 无法解析平仓客户信息: clOrdId={clOrdId}")
-                                except Exception as notify_error:
-                                    logger.warning(f"[钉钉通知] 平仓成交通知发送失败: {notify_error}")
-            except Exception as e:
-                logger.error(f"回调处理异常: {e}, data={data}")
+            await self._handle_customer_order_update(data)
         
         # 检查连接状态，避免重复连接
-        # 使用客户端的类级别计数器
+        # 使用客户端的认证错误计数器。注意：统一 WS 客户端(UnifiedWebSocketClient)
+        # 与部分底层客户端并未定义该计数器，若直接读取会在 while 条件处抛
+        # AttributeError（且被上层 gather(return_exceptions=True) 静默吞掉，
+        # 导致订单成交回报监听形同虚设）。此处兜底初始化，保证 OKX/Binance 两条
+        # 路径都可用；计数器挂在实例上，跨重试持久累计。
+        if not hasattr(client, '_consecutive_auth_errors'):
+            client._consecutive_auth_errors = 0
+        if not hasattr(client, '_max_auth_errors'):
+            client._max_auth_errors = 5
         while client._consecutive_auth_errors < client._max_auth_errors:
             try:
                 # 检查是否已经连接
@@ -3075,6 +3148,18 @@ class TradeService:
                 
                 # 订阅账户和订单
                 await client.subscribe("account", on_account)
+                # 订阅订单成交回报：用交易所实际累计成交量 accFillSz 实时回补
+                # customer_trades.volume_contract，避免本地记录(下单请求量)与交易所
+                # 真实持仓不一致（部分成交/滑点/拒单等场景）。
+                try:
+                    orders_subscribed = await client.subscribe("orders", on_order, instType="SWAP")
+                    if orders_subscribed:
+                        logger.info(f"✅ 客户{get_customer_uid(customer)}订单成交回报订阅成功")
+                    else:
+                        logger.warning(f"⚠️ 客户{get_customer_uid(customer)}订单成交回报订阅失败，将依赖定时对账补偿")
+                except Exception as sub_err:
+                    # orders 订阅失败不影响 account 监听，持仓一致性仍有定时对账兜底
+                    logger.error(f"❌ 客户{get_customer_uid(customer)}订单成交回报订阅异常: {sub_err}")
                 break  # 连接成功，退出循环
             except Exception as e:
                 error_msg = str(e)
@@ -3489,38 +3574,51 @@ class TradeService:
             logger.error(f"[客户平仓] 客户{get_customer_uid(customer)}平仓异常: {e}")
             return {'success': False, 'error': str(e)}
 
-    async def check_position_anomalies(self):
-        """检查仓位异常并自动修复"""
+    async def check_position_anomalies(self, only_customer_uid=None, only_symbol=None):
+        """检查仓位异常并自动修复。
+
+        可选定向对账：传 only_customer_uid / only_symbol 只检查目标客户/品种，
+        用于成交后快速对账（复用全量逻辑，仅缩小遍历范围）。
+        """
         global _position_check_running
-        
+
         # 使用锁确保只有一个进程在运行仓位检查
         if not _position_check_lock.acquire(blocking=False):
             logger.debug("[仓位检查] 另一个进程正在运行仓位检查，跳过")
             return
-        
+
         try:
             if _position_check_running:
                 logger.debug("[仓位检查] 仓位检查已在运行中，跳过")
                 return
-            
+
             _position_check_running = True
-            logger.info("[仓位检查] 开始检查仓位异常")
-            
+            if only_customer_uid or only_symbol:
+                logger.info(f"[仓位检查] 开始定向对账 customer={only_customer_uid} symbol={only_symbol}")
+            else:
+                logger.info("[仓位检查] 开始检查仓位异常")
+
             is_demo = get_global_is_demo()
-            
+
             # 获取所有启用的客户
             customers = get_enabled_customers(self.db_pool, is_demo)
-            
+
             for customer_data in customers:
                 customer_uid = customer_data['customer_uid']
-                
+                # 定向对账：跳过非目标客户
+                if only_customer_uid and customer_uid != only_customer_uid:
+                    continue
+
                 try:
                     # 获取客户所有持仓
                     trades = self.get_open_trades(customer_uid)
-                    
+
                     for trade in trades:
                         symbol = trade.symbol
                         pos_side = trade.pos_side
+                        # 定向对账：跳过非目标品种
+                        if only_symbol and symbol != only_symbol:
+                            continue
                         
                         # 从交易所获取实际持仓
                         # 获取完整的客户信息
@@ -3576,7 +3674,7 @@ class TradeService:
                                     if not existing_anomaly:
                                         # 检查最近是否已经修复过相同异常（防止频繁修复）
                                         recent_fixed = self.db_pool.query(
-                                            "SELECT * FROM position_anomalies WHERE customer_uid=%s AND symbol=%s AND pos_side=%s AND status='resolved' AND resolved_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)",
+                                            "SELECT * FROM position_anomalies WHERE customer_uid=%s AND symbol=%s AND pos_side=%s AND status='resolved' AND resolved_at > NOW() - INTERVAL '1 hour'",
                                             (customer_uid, symbol, pos_side)
                                         )
                                         
@@ -3641,7 +3739,7 @@ class TradeService:
             
             # 检查最近是否已经修复过（防止频繁修复）
             recent_fixed = self.db_pool.query(
-                "SELECT * FROM position_anomalies WHERE customer_uid=%s AND symbol=%s AND pos_side=%s AND status='resolved' AND resolved_at > DATE_SUB(NOW(), INTERVAL 30 MINUTE)",
+                "SELECT * FROM position_anomalies WHERE customer_uid=%s AND symbol=%s AND pos_side=%s AND status='resolved' AND resolved_at > NOW() - INTERVAL '30 minute'",
                 (customer_uid, symbol, pos_side)
             )
             
@@ -4543,7 +4641,7 @@ class TradeService:
             
             # 查询状态为open的持仓，必须包含trade_uid字段
             positions = db_pool.query(
-                "SELECT trade_uid, symbol, pos_side, (volume_contract - IFNULL(close_volume_contract, 0)) as volume_contract, open_px FROM signal_account_trades WHERE signal_source_uid=%s AND status='open'",
+                "SELECT trade_uid, symbol, pos_side, (volume_contract - COALESCE(close_volume_contract, 0)) as volume_contract, open_px FROM signal_account_trades WHERE signal_source_uid=%s AND status='open'",
                 (source_uid,)
             )
             
@@ -4793,11 +4891,9 @@ class TradeService:
             
             # 重新订阅订单数据（可选）
             try:
+                # 复用与主监听一致的成交回报处理：重连后同样实时回补 volume_contract
                 async def on_order(data):
-                    try:
-                        logger.debug(f"[订单数据] 客户{customer_uid}: {data}")
-                    except Exception as e:
-                        logger.error(f"[订单数据] 处理异常: {e}")
+                    await self._handle_customer_order_update(data)
                 
                 orders_subscribed = await client.subscribe("orders", on_order, instType="SWAP")
                 if orders_subscribed:
@@ -6079,12 +6175,8 @@ class TradeService:
             
                     # 更新或插入USDT总资产记录
                     self.db_pool.execute(
-                        "INSERT INTO signal_account_assets (asset_uid, signal_source_uid, asset) "
-                        "VALUES (%s, %s, %s) "
-                        "ON DUPLICATE KEY UPDATE "
-                        "asset_uid = VALUES(asset_uid), "
-                        "asset = VALUES(asset), "
-                        "snapshot_time = NOW()",
+                        "INSERT INTO signal_account_assets (asset_uid, signal_source_uid, asset, snapshot_time) "
+                        "VALUES (%s, %s, %s, NOW())",
                         (asset_uid, source_uid, usdt_total)
                     )
                     logger.info(f"[资产同步] 止损后信号源 {source_uid} USDT总资产已更新: {usdt_total}")
@@ -6766,7 +6858,7 @@ class TradeService:
         try:
             if signal_trade_uid:
                 position = self.db_pool.query(
-                    """SELECT SUM(volume_contract - IFNULL(close_volume_contract, 0)) as total_volume 
+                    """SELECT SUM(volume_contract - COALESCE(close_volume_contract, 0)) as total_volume 
                     FROM signal_account_trades 
                     WHERE order_id=%s""",
                     (signal_trade_uid, )
@@ -6794,7 +6886,7 @@ class TradeService:
             if signal_trade_uid:
                 # 如果指定了交易ID，只计算该交易的持仓
                 position = self.db_pool.query(
-                    """SELECT SUM(volume_contract - IFNULL(close_volume_contract, 0)) as total_volume 
+                    """SELECT SUM(volume_contract - COALESCE(close_volume_contract, 0)) as total_volume 
                     FROM signal_account_trades 
                     WHERE order_id=%s""",
                     (signal_trade_uid, )
@@ -6804,12 +6896,12 @@ class TradeService:
                 # 1. 先尝试获取最近30分钟内的仓位（最精确）
                 position = self.db_pool.query(
                     """SELECT
-                            ifnull(SUM( volume_contract - IFNULL( close_volume_contract, 0 ) ), 0) AS total_volume 
+                            COALESCE(SUM( volume_contract - COALESCE( close_volume_contract, 0 ) ), 0) AS total_volume 
                         FROM
                             signal_account_trades 
                     WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s 
                     AND status='open' 
-                    AND created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)""",
+                    AND created_at >= NOW() - INTERVAL '30 minute'""",
                     (signal_source_uid, symbol, pos_side)
                 )
                 
@@ -6818,12 +6910,12 @@ class TradeService:
                     logger.info(f"[限价跟单] 最近30分钟内无仓位，查询最近1小时内的仓位")
                     position = self.db_pool.query(
                         """SELECT
-                                ifnull(SUM( volume_contract - IFNULL( close_volume_contract, 0 ) ), 0) AS total_volume 
+                                COALESCE(SUM( volume_contract - COALESCE( close_volume_contract, 0 ) ), 0) AS total_volume 
                             FROM
                                 signal_account_trades 
                         WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s 
                         AND status='open' 
-                        AND created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)""",
+                        AND created_at >= NOW() - INTERVAL '1 hour'""",
                         (signal_source_uid, symbol, pos_side)
                     )
                 
@@ -6832,12 +6924,12 @@ class TradeService:
                     logger.info(f"[限价跟单] 最近1小时内无仓位，查询最近2小时内的仓位")
                     position = self.db_pool.query(
                         """SELECT
-                                ifnull(SUM( volume_contract - IFNULL( close_volume_contract, 0 ) ), 0) AS total_volume 
+                                COALESCE(SUM( volume_contract - COALESCE( close_volume_contract, 0 ) ), 0) AS total_volume 
                             FROM
                                 signal_account_trades 
                         WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s 
                         AND status='open' 
-                        AND created_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)""",
+                        AND created_at >= NOW() - INTERVAL '2 hour'""",
                         (signal_source_uid, symbol, pos_side)
                     )
                 
@@ -6846,12 +6938,12 @@ class TradeService:
                     logger.info(f"[限价跟单] 最近2小时内无仓位，查询最近4小时内的仓位")
                     position = self.db_pool.query(
                         """SELECT
-                                ifnull(SUM( volume_contract - IFNULL( close_volume_contract, 0 ) ), 0) AS total_volume 
+                                COALESCE(SUM( volume_contract - COALESCE( close_volume_contract, 0 ) ), 0) AS total_volume 
                             FROM
                                 signal_account_trades 
                         WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s 
                         AND status='open' 
-                        AND created_at >= DATE_SUB(NOW(), INTERVAL 4 HOUR)""",
+                        AND created_at >= NOW() - INTERVAL '4 hour'""",
                         (signal_source_uid, symbol, pos_side)
                     )
             
@@ -6871,7 +6963,7 @@ class TradeService:
             if signal_trade_uid:
                 # 如果指定了交易ID，只计算该交易的持仓
                 position = self.db_pool.query(
-                    """SELECT SUM(volume_contract - IFNULL(close_volume_contract, 0)) as total_volume 
+                    """SELECT SUM(volume_contract - COALESCE(close_volume_contract, 0)) as total_volume 
                     FROM signal_account_trades 
                     WHERE order_id=%s""",
                     (signal_trade_uid, )
@@ -6900,7 +6992,7 @@ class TradeService:
                 # 查询最近一次开仓的仓位
                 position = self.db_pool.query(
                     """SELECT
-                            ifnull(SUM( volume_contract - IFNULL( close_volume_contract, 0 ) ), 0) AS total_volume 
+                            COALESCE(SUM( volume_contract - COALESCE( close_volume_contract, 0 ) ), 0) AS total_volume 
                         FROM
                             signal_account_trades 
                     WHERE signal_source_uid=%s AND symbol=%s AND pos_side=%s 
@@ -8523,12 +8615,8 @@ class TradeService:
                 # 更新或插入USDT总资产记录
                 asset_uid = f"{uuid.uuid4().hex[:32]}"
                 self.db_pool.execute(
-                    "INSERT INTO signal_account_assets (asset_uid, signal_source_uid, asset) "
-                    "VALUES (%s, %s, %s) "
-                    "ON DUPLICATE KEY UPDATE "
-                    "signal_source_uid = VALUES(signal_source_uid), "
-                    "asset = VALUES(asset), "
-                    "snapshot_time = NOW()",
+                    "INSERT INTO signal_account_assets (asset_uid, signal_source_uid, asset, snapshot_time) "
+                    "VALUES (%s, %s, %s, NOW())",
                     (asset_uid, source_uid, usdt_total)
                 )
                 logger.info(f"[资产同步] 信号源 {source_uid} USDT总资产已更新: {usdt_total}")
@@ -9905,7 +9993,7 @@ class TradeService:
             if execution_type and execution_reason:
                 query = """
                     UPDATE signal_account_trades 
-                    SET close_volume_contract = ifnull(close_volume_contract, 0) + %s, execution_type = %s, execution_reason = %s
+                    SET close_volume_contract = COALESCE(close_volume_contract, 0) + %s, execution_type = %s, execution_reason = %s
                     WHERE trade_uid = %s AND signal_source_uid = %s
                 """
                 self.db_pool.execute(query, (reduced_amount, execution_type, execution_reason, trade_uid, source_uid))

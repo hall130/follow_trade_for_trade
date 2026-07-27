@@ -34,12 +34,14 @@ class StrategyTradeIntegration:
     负责将策略交易服务集成到现有的交易框架中
     """
     
-    def __init__(self, db_pool: MySQLPool, trade_service: TradeService):
+    def __init__(self, db_pool: MySQLPool, trade_service: TradeService, strategy_manager: Optional[StrategyManager] = None):
         self.db_pool = db_pool
         self.trade_service = trade_service
-        
-        # 创建策略管理器
-        self.strategy_manager = StrategyManager()
+
+        # 策略管理器：优先复用外部传入的共享实例（与 /strategy/create、/strategy/instances
+        # 使用同一个管理器），避免"创建/列表"与"启动实盘"读写两个不同的内存管理器，
+        # 导致启动时按名称查不到刚创建的策略（策略 xxx 不存在）。
+        self.strategy_manager = strategy_manager or StrategyManager()
         
         # 创建策略交易服务
         self.strategy_trade_service = StrategyTradeService(
@@ -270,10 +272,17 @@ class StrategyTradeIntegration:
         """
         try:
             # 1. 获取当前用户信息
-            user_id = None
-            is_admin = False
-            if AUTH_AVAILABLE:
+            # 注意：本协程通常由 run_async_safe 在独立线程中执行，那里访问不到
+            # Flask 的 session/request，因此优先使用端点在请求线程内透传进来的身份。
+            user_id = config.get('_auth_user_id')
+            is_admin = config.get('_auth_is_admin')
+
+            if user_id is None and AUTH_AVAILABLE:
+                # 回退：若确实运行在请求线程内，仍尝试从上下文获取
                 user_id = get_current_user_id()
+
+            if is_admin is None:
+                is_admin = False
                 if user_id and permission_service:
                     is_admin = permission_service.is_admin(user_id)
             
@@ -293,13 +302,16 @@ class StrategyTradeIntegration:
                         }
                 else:
                     # 自动选择用户的第一个账号
-                    customer_id = self._get_user_customer_id(user_id, config.get('is_demo', True))
+                    customer_id, selected_is_demo = self._get_user_customer_id(user_id, config.get('is_demo', True))
                     if not customer_id:
                         return {
                             'success': False,
                             'message': '未找到您的账号，请先创建客户账号'
                         }
-                    logger.info(f"普通用户 {user_id} 自动选择客户账号: {customer_id}")
+                    # 以实际选中账号的 is_demo 为准（避免前端传入的模式与账号不一致导致后续校验失败）
+                    if selected_is_demo is not None:
+                        config['is_demo'] = bool(selected_is_demo)
+                    logger.info(f"普通用户 {user_id} 自动选择客户账号: {customer_id} (is_demo={config.get('is_demo')})")
                 
                 # 2.2 普通用户不能选择信号源（如果提供了，忽略）
                 if signal_source_uid:
@@ -310,22 +322,27 @@ class StrategyTradeIntegration:
                 # 2.1 处理customer_id
                 if not customer_id:
                     # 如果没有指定，尝试使用第一个可用账号（可以是任何账号）
-                    customer_id = self._get_default_customer_id(config.get('is_demo', True))
+                    customer_id, selected_is_demo = self._get_default_customer_id(config.get('is_demo', True))
                     if customer_id:
-                        logger.info(f"管理员未指定账号，使用默认账号: {customer_id}")
+                        # 以实际选中账号的 is_demo 为准
+                        if selected_is_demo is not None:
+                            config['is_demo'] = bool(selected_is_demo)
+                        logger.info(f"管理员未指定账号，使用默认账号: {customer_id} (is_demo={config.get('is_demo')})")
                     else:
                         return {
                             'success': False,
                             'message': '未找到可用账号，请指定customer_id'
                         }
                 else:
-                    # 验证账号是否存在
-                    if not self._check_customer_exists(customer_id, config.get('is_demo', True)):
+                    # 验证账号是否存在（不按 is_demo 过滤，存在则以账号真实 is_demo 为准）
+                    existing_is_demo = self._get_customer_is_demo(customer_id)
+                    if existing_is_demo is None:
                         return {
                             'success': False,
                             'message': f'客户账号 {customer_id} 不存在'
                         }
-                    logger.info(f"管理员选择客户账号: {customer_id}")
+                    config['is_demo'] = bool(existing_is_demo)
+                    logger.info(f"管理员选择客户账号: {customer_id} (is_demo={config.get('is_demo')})")
                 
                 # 2.2 管理员可以选择信号源（如果提供了，验证是否存在）
                 if signal_source_uid:
@@ -625,7 +642,7 @@ class StrategyTradeIntegration:
             logger.error(f"检查客户账号所有权失败: {e}")
             return False
     
-    def _get_user_customer_id(self, user_id: Optional[int], is_demo: bool) -> Optional[str]:
+    def _get_user_customer_id(self, user_id: Optional[int], is_demo: bool):
         """
         获取用户的客户账号ID（返回第一个启用的账号）
         
@@ -637,23 +654,31 @@ class StrategyTradeIntegration:
             客户账号ID，如果不存在则返回None
         """
         if not user_id:
-            return None
-        
+            return None, None
+
         try:
             customers = self.db_pool.query(
-                "SELECT customer_uid FROM customers WHERE owner_user_id = %s AND enabled = 1 AND is_demo = %s ORDER BY created_at DESC LIMIT 1",
+                "SELECT customer_uid, is_demo FROM customers WHERE owner_user_id = %s AND enabled = 1 AND is_demo = %s ORDER BY created_at DESC LIMIT 1",
                 (user_id, is_demo)
             )
-            
             if customers:
-                return customers[0].get('customer_uid')
-            return None
-            
+                return customers[0].get('customer_uid'), customers[0].get('is_demo')
+
+            # 回退：请求的 is_demo 无匹配时，选用该用户任意启用账号（其真实 is_demo 以数据库为准）
+            customers = self.db_pool.query(
+                "SELECT customer_uid, is_demo FROM customers WHERE owner_user_id = %s AND enabled = 1 ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
+            if customers:
+                logger.info(f"用户 {user_id} 无 is_demo={is_demo} 的账号，回退选用其账号 {customers[0].get('customer_uid')} (is_demo={customers[0].get('is_demo')})")
+                return customers[0].get('customer_uid'), customers[0].get('is_demo')
+            return None, None
+
         except Exception as e:
             logger.error(f"获取用户客户账号失败: {e}")
-            return None
+            return None, None
     
-    def _get_default_customer_id(self, is_demo: bool) -> Optional[str]:
+    def _get_default_customer_id(self, is_demo: bool):
         """
         获取默认客户账号ID（管理员使用，返回第一个启用的账号）
         
@@ -665,18 +690,44 @@ class StrategyTradeIntegration:
         """
         try:
             customers = self.db_pool.query(
-                "SELECT customer_uid FROM customers WHERE enabled = 1 AND is_demo = %s ORDER BY created_at DESC LIMIT 1",
+                "SELECT customer_uid, is_demo FROM customers WHERE enabled = 1 AND is_demo = %s ORDER BY created_at DESC LIMIT 1",
                 (is_demo,)
             )
-            
             if customers:
-                return customers[0].get('customer_uid')
-            return None
-            
+                return customers[0].get('customer_uid'), customers[0].get('is_demo')
+
+            # 回退：请求的 is_demo 无匹配时，选用任意启用账号（其真实 is_demo 以数据库为准）
+            customers = self.db_pool.query(
+                "SELECT customer_uid, is_demo FROM customers WHERE enabled = 1 ORDER BY created_at DESC LIMIT 1"
+            )
+            if customers:
+                logger.info(f"无 is_demo={is_demo} 的可用账号，回退选用账号 {customers[0].get('customer_uid')} (is_demo={customers[0].get('is_demo')})")
+                return customers[0].get('customer_uid'), customers[0].get('is_demo')
+            return None, None
+
         except Exception as e:
             logger.error(f"获取默认客户账号失败: {e}")
-            return None
+            return None, None
     
+    def _get_customer_is_demo(self, customer_id: str) -> Optional[int]:
+        """
+        查询客户账号的 is_demo（不按 is_demo 过滤）。
+
+        Returns:
+            账号的 is_demo 值（0/1），账号不存在则返回 None
+        """
+        try:
+            rows = self.db_pool.query(
+                "SELECT is_demo FROM customers WHERE customer_uid = %s LIMIT 1",
+                (customer_id,)
+            )
+            if rows:
+                return rows[0].get('is_demo')
+            return None
+        except Exception as e:
+            logger.error(f"查询客户账号 is_demo 失败: {e}")
+            return None
+
     def _check_customer_exists(self, customer_id: str, is_demo: bool) -> bool:
         """
         检查客户账号是否存在

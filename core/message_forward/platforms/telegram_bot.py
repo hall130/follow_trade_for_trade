@@ -2304,8 +2304,8 @@ class TelegramBotPlatform(MessagePlatform):
             api_sql = """
                 SELECT exchange, customer_uid, name
                 FROM customers
-                WHERE (user_id = %s OR owner_user_id = %s) 
-                AND exchange COLLATE utf8mb4_general_ci = %s COLLATE utf8mb4_general_ci 
+                WHERE (user_id = %s OR owner_user_id = %s)
+                AND exchange = %s
                 AND enabled = 1
                 LIMIT 1
             """
@@ -2432,12 +2432,11 @@ class TelegramBotPlatform(MessagePlatform):
                 await update.callback_query.answer("❌ 配置名称已存在，请使用其他名称", show_alert=True)
                 return
             
-            # 验证 customer_uid 是否存在于 customers 表中，并获取实际的 customer_uid（确保字符编码一致）
-            # 使用 COLLATE utf8mb4_general_ci 匹配 customers 表的排序规则
+            # 验证 customer_uid 是否存在于 customers 表中
             check_customer_sql = """
-                SELECT customer_uid, name, exchange, enabled 
-                FROM customers 
-                WHERE customer_uid = %s COLLATE utf8mb4_general_ci
+                SELECT customer_uid, name, exchange, enabled
+                FROM customers
+                WHERE customer_uid = %s
             """
             customer_exists = db_pool.query(check_customer_sql, (customer_uid,))
             if not customer_exists:
