@@ -217,8 +217,8 @@ def start_flask():
             scheduler_config = {
                 'popular_traders_interval': 3600,  # 1小时采集一次
                 'whale_traders_interval': 3600,    # 1小时采集一次
-                'enable_popular_traders': True,
-                'enable_whale_traders': True,
+                'enable_popular_traders': False,
+                'enable_whale_traders': False,
                 'initial_delay': 60  # 1分钟后开始
             }
             scheduler = get_scheduler(scheduler_config)
@@ -235,17 +235,9 @@ def start_flask():
         logger.info("=" * 60)
         
         try:
-            # 检查消息转发模块是否可用
-            try:
-                from core.message_forward.api_service import MessageForwardAPIService
-                from database.db import get_db_pool
-                import asyncio
-                import threading
-                MESSAGE_FORWARD_AVAILABLE = True
-                logger.info("✓ 消息转发模块导入成功")
-            except ImportError as import_error:
-                logger.error(f"✗ 消息转发模块导入失败: {import_error}")
-                MESSAGE_FORWARD_AVAILABLE = False
+            # 策略精简: 已禁用消息转发模块（避免 telethon 依赖缺失导致启动报错）
+            MESSAGE_FORWARD_AVAILABLE = False
+            logger.info("消息转发模块已在精简模式下禁用")
             
             if MESSAGE_FORWARD_AVAILABLE:
                 # 获取数据库连接池
@@ -764,31 +756,26 @@ def main():
             logger.info("启动前端界面...")
             start_frontend()
         
-        # 启动四个后端进程（恢复多进程架构）
-        p1 = Process(target=start_flask)  # API服务器（包含消息转发服务）
-        p2 = Process(target=start_trade)  # 交易模块（包含限价跟单监控）
+        # 策略精简: 仅启动 API 服务器 + 策略交易模块
+        # 已禁用 start_trade(交易/限价跟单) 与 start_market_maker(做市)
+        p1 = Process(target=start_flask)  # API服务器
         p3 = Process(target=start_strategy_trade)  # 策略交易模块
-        p4 = Process(target=start_market_maker)  # 做市商服务
-        
+
         p1.start()
-        p2.start()
         p3.start()
-        p4.start()
-        
+
         try:
             # 等待所有子进程
             p1.join()
-            p2.join()
             p3.join()
-            p4.join()
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
-            for p in (p1, p2, p3, p4):
+            for p in (p1, p3):
                 try:
                     p.terminate()
                 except Exception:
                     pass
-            for p in (p1, p2, p3, p4):
+            for p in (p1, p3):
                 try:
                     p.join(timeout=5)
                 except Exception:

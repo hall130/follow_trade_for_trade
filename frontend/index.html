@@ -71,72 +71,8 @@
                     </a>
                 </li>
                 
-                <!-- 跟单交易（限价跟单） -->
-                <li class="nav-item">
-                    <a class="nav-link" href="#" data-page="limit-follow" data-permission="limit_follow">
-                        <i class="bi bi-arrow-repeat"></i>
-                        <span>跟单交易</span>
-                    </a>
-                </li>
-                
-                <!-- 信号交易 -->
-                <li class="nav-item">
-                    <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#signalMenu" aria-expanded="false" data-permission="signal_sources" onclick="event.preventDefault();">
-                        <i class="bi bi-broadcast"></i>
-                        <span>信号交易</span>
-                        <i class="bi bi-chevron-down ms-auto"></i>
-                    </a>
-                    <ul class="collapse" id="signalMenu">
-                        <li><a class="nav-link sub-item" href="#" data-page="signal-sources" data-permission="signal_sources">
-                            <i class="bi bi-broadcast"></i> 信号源管理
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="signal-trades" data-permission="signal_sources">
-                            <i class="bi bi-broadcast-pin"></i> 信号源交易
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="strategies" data-permission="strategies">
-                            <i class="bi bi-gear"></i> 策略管理
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="rules" data-permission="rules">
-                            <i class="bi bi-list-check"></i> 规则管理
-                        </a></li>
-                        <li><hr class="dropdown-divider"></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="positions" data-permission="customers">
-                            <i class="bi bi-bag-check"></i> 当前持仓
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="trades" data-permission="customers">
-                            <i class="bi bi-graph-up"></i> 交易记录
-                        </a></li>
-                    </ul>
-                </li>
-                
-                <!-- 热门带单员 -->
-                <li class="nav-item">
-                    <a class="nav-link" href="#" data-page="popular-traders" data-permission="limit_follow">
-                        <i class="bi bi-star-fill"></i>
-                        <span>热门带单员</span>
-                    </a>
-                </li>
-                
-                <!-- 巨鲸交易员 -->
-                <li class="nav-item">
-                    <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#hyperliquidDiscoveryMenu" aria-expanded="false" data-permission="limit_follow" onclick="event.preventDefault();">
-                        <i class="bi bi-water"></i>
-                        <span>巨鲸交易员</span>
-                        <i class="bi bi-chevron-down ms-auto"></i>
-                    </a>
-                    <ul class="collapse" id="hyperliquidDiscoveryMenu">
-                        <li><a class="nav-link sub-item" href="#" data-page="echosync-leaderboard" data-permission="limit_follow">
-                            <i class="bi bi-trophy"></i> 排行榜
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="echosync-whale-orders" data-permission="limit_follow">
-                            <i class="bi bi-cart-check"></i> 巨鲸订单
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="echosync-whale-moves" data-permission="limit_follow">
-                            <i class="bi bi-arrow-left-right"></i> 巨鲸转移
-                        </a></li>
-                    </ul>
-                </li>
-                
+                <!-- 策略精简: 已禁用 跟单交易/信号交易/热门带单员/巨鲸交易员 -->
+
                 <!-- 策略交易 -->
                 <li class="nav-item">
                     <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#strategyMenu" aria-expanded="false" data-permission="strategies" onclick="event.preventDefault();">
@@ -148,53 +84,12 @@
                         <li><a class="nav-link sub-item" href="#" data-page="strategy-trade" data-permission="strategy_live">
                             <i class="bi bi-graph-up-arrow"></i> 策略交易
                         </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="forward-trade" data-permission="strategy_live">
-                            <i class="bi bi-arrow-left-right"></i> 转发交易
-                        </a></li>
+                        <!-- 策略精简: 已禁用 转发交易 -->
                     </ul>
                 </li>
                 
-                <!-- 刷单做市 -->
-                <li class="nav-item">
-                    <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#marketMakerMenu" aria-expanded="false" data-permission="market_maker" onclick="event.preventDefault();">
-                        <i class="bi bi-arrow-left-right"></i>
-                        <span>刷单做市</span>
-                        <i class="bi bi-chevron-down ms-auto"></i>
-                    </a>
-                    <ul class="collapse" id="marketMakerMenu">
-                        <li><a class="nav-link sub-item" href="#" data-page="market-maker" data-permission="market_maker">
-                            <i class="bi bi-activity"></i> 做市管理
-                        </a></li>
-                        <li><a class="nav-link sub-item" href="#" data-page="market-maker-stats" data-permission="market_maker">
-                            <i class="bi bi-graph-up"></i> 做市统计
-                        </a></li>
-                    </ul>
-                </li>
-                
-                <!-- 风险管理 -->
-                <li class="nav-item">
-                    <a class="nav-link" href="#" data-page="risk-control" data-permission="customers">
-                        <i class="bi bi-shield-check"></i>
-                        <span>风险管理</span>
-                    </a>
-                </li>
-                
-                <!-- 会员服务 -->
-                <li class="nav-item">
-                    <a class="nav-link" href="#" data-page="membership-service">
-                        <i class="bi bi-star-fill"></i>
-                        <span>会员服务</span>
-                    </a>
-                </li>
-                
-                <!-- 兑换码 -->
-                <li class="nav-item">
-                    <a class="nav-link" href="#" data-page="redemption-codes">
-                        <i class="bi bi-ticket-perforated"></i>
-                        <span>兑换码</span>
-                    </a>
-                </li>
-                
+                <!-- 策略精简: 已禁用 刷单做市/风险管理/会员服务/兑换码 -->
+
                 <!-- 系统设置 -->
                 <li class="nav-item">
                     <a class="nav-link menu-toggle" href="#" data-bs-toggle="collapse" data-bs-target="#systemMenu" aria-expanded="false" onclick="event.preventDefault();">
@@ -203,9 +98,7 @@
                         <i class="bi bi-chevron-down ms-auto"></i>
                     </a>
                     <ul class="collapse" id="systemMenu">
-                        <li><a class="nav-link sub-item" href="#" data-page="message-forward" data-permission="message_forward">
-                            <i class="bi bi-send"></i> 消息转发
-                        </a></li>
+                        <!-- 策略精简: 已禁用 消息转发 -->
                         <li><a class="nav-link sub-item" href="#" data-page="system" data-permission="system_settings">
                             <i class="bi bi-cpu"></i> 系统状态
                         </a></li>
