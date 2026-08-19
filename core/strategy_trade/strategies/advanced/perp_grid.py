@@ -41,6 +41,7 @@ class PerpGridStrategy(StrategyBase):
 
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
 
         # ── 核心网格参数 ──────────────────────────────────
         grid_value_v = self.get_parameter('grid_value', 500.0)
@@ -92,13 +93,18 @@ class PerpGridStrategy(StrategyBase):
 
     def on_initialize(self) -> None:
         """策略初始化：确定基准价与初始档位"""
-        if self.base_price <= 0 and self.market_data:
+        if not self.market_data or len(self.market_data) == 0:
+            logger.warning("⚠️ 没有市场数据，无法初始化永续网格策略。策略将在接收到第一根K线后初始化。")
+            return
+
+        if self.base_price <= 0:
             self.base_price = self.market_data[-1].close
             logger.info(f"未指定基准价，使用首个价格作为基准: {self.base_price}")
 
-        if self.base_price > 0 and self.market_data:
+        if self.base_price > 0:
             self.last_price = self.market_data[-1].close
             self.last_level = self._price_to_level(self.last_price)
+            logger.info(f"✅ 永续网格策略初始化成功，当前价格: {self.last_price}，历史数据: {len(self.market_data)} 根K线")
 
     def _price_to_level(self, price: float) -> int:
         """

@@ -28,6 +28,7 @@ class FMZGridStrategy(StrategyBase):
     
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
         
         # 策略参数（确保类型转换）
         ratio_value = self.get_parameter('ratio', 0.5)
@@ -94,16 +95,18 @@ class FMZGridStrategy(StrategyBase):
         """策略初始化"""
         # 取消所有现有订单
         self._cancel_all_orders()
-        
+
         # 获取初始账户信息
         self._update_account()
-        
+
         # 获取初始价格
-        if self.market_data:
+        if self.market_data and len(self.market_data) > 0:
             self.last_price = self.market_data[-1].close
+            logger.info(f"✅ 策略初始化成功，当前价格: {self.last_price}，历史数据: {len(self.market_data)} 根K线")
         else:
-            logger.warning("没有市场数据，无法获取初始价格")
-        
+            logger.warning("⚠️ 没有市场数据，无法获取初始价格。策略将在接收到第一根K线后初始化。")
+            return
+
         # 初始化初始值
         if self.init_value is None or self.init_account is None:
             if self.last_price > 0:

@@ -113,19 +113,23 @@ class StrategyTradeService:
                 return False
             
             strategy = strategy_info.strategy
-            
-            # 初始化策略
+
+            # 历史数据预热：在初始化之前填充数据，避免冷启动初期指标失真
+            logger.info(f"🔥 策略 {strategy_id} 开始历史数据预热...")
+            await self._preheat_historical_data(strategy, config)
+
+            # 初始化策略（此时已有历史数据）
             if hasattr(strategy, 'on_initialize'):
                 strategy.on_initialize()
             elif hasattr(strategy, 'on_init'):
                 strategy.on_init()
-            
+
             if hasattr(strategy, 'on_start'):
                 strategy.on_start()
-            
+
             # 保存配置
             self.running_strategies[strategy_id] = config
-            
+
             # 启动市场数据订阅任务
             task = asyncio.create_task(self._run_strategy_loop(strategy_id, strategy, config))
             self.strategy_tasks[strategy_id] = task
@@ -212,11 +216,12 @@ class StrategyTradeService:
             )
             
             self.ws_clients[strategy_id] = client
-            
+
             # 订阅K线数据
             channel = f"candle{self._get_interval_str(strategy.timeframe)}"
             inst_id = config.symbol
-            
+
+            # 注意：历史数据预热已在 start_strategy() 中完成，这里直接订阅实时流
             logger.info(f"📡 策略 {strategy_id} 订阅市场数据: {inst_id} {channel}")
             
             # 订阅回调
@@ -274,20 +279,39 @@ class StrategyTradeService:
                 return
             
             kline = data['data'][0]
-            
+            bar_ts = int(kline[0])
+
+            # 触发粒度按策略类型区分：
+            # - tick_level=True（高频/做市/网格）：逐 tick 报价，每帧都喂，不去重。
+            # - tick_level=False（技术指标类，默认）：只在 K 线收盘后喂一次。
+            #   OKX candle 频道对"未收盘"的当前 bar 会反复推送（confirm index 8:
+            #   "0"=未收盘 "1"=已收盘），若每帧都喂会让同一根 bar 重复计入
+            #   price_data 污染指标，也会与历史预热衔接处产生重复根。
+            tick_level = getattr(strategy, 'tick_level', False)
+            if not tick_level:
+                confirm = str(kline[8]) if len(kline) > 8 else '1'
+                if confirm != '1':
+                    # 未收盘：不喂策略逻辑
+                    return
+                # 与预热/上一根去重：只处理时间戳更新的已收盘根
+                last_ts = getattr(strategy, '_last_bar_ts', None)
+                if last_ts is not None and bar_ts <= last_ts:
+                    return
+                strategy._last_bar_ts = bar_ts
+
             # 创建 MarketData 对象
             market_data = MarketData(
                 symbol=data['arg']['instId'],
-                timestamp=datetime.fromtimestamp(int(kline[0]) / 1000),
+                timestamp=datetime.fromtimestamp(bar_ts / 1000),
                 open=float(kline[1]),
                 high=float(kline[2]),
                 low=float(kline[3]),
                 close=float(kline[4]),
                 volume=float(kline[5])
             )
-            
+
             logger.debug(f"📊 策略 {strategy_id} 接收数据: 价格={market_data.close}, 时间={market_data.timestamp}")
-            
+
             # 喂给策略 - 使用新架构统一接口
             if hasattr(strategy, 'process_market_data'):
                 strategy.process_market_data(market_data)
@@ -810,6 +834,85 @@ class StrategyTradeService:
         except Exception as e:
             logger.error(f"标记策略错误失败: {e}")
     
+    async def _preheat_historical_data(self, strategy, config: StrategyTradeConfig,
+                                       preheat_bars: int = 300):
+        """
+        历史数据预热：在订阅实时流之前，用历史K线填满策略数据缓存。
+
+        解决冷启动问题：策略启动后 market_data/price_data 从空开始累积，
+        依赖历史窗口的指标（MA/MACD/布林/RSI）在攒够 N 根之前信号失真。
+
+        关键安全约束：只填充数据缓冲区，**不**调用 process_market_data /
+        on_market_data，因此历史 bar 绝不会触发策略逻辑或产生真实下单信号。
+
+        Args:
+            strategy: 策略实例
+            config: 策略配置
+            preheat_bars: 预热根数（OKX 单次上限 300）
+        """
+        strategy_id = config.strategy_id
+        try:
+            # 用公共 REST 客户端拉历史（历史数据无需密钥）
+            rest_client = create_exchange_client(
+                exchange='okx', client_type='rest', is_demo=config.is_demo)
+
+            timeframe = getattr(strategy, 'timeframe', '') or ''
+            if not timeframe:
+                logger.info(f"策略 {strategy_id} 未声明 timeframe，跳过历史预热")
+                return
+            bar = self._get_interval_str(timeframe)
+            # get_historical_klines 单次上限 300；不传 after 即返回最新 N 根（倒序）
+            rows = await rest_client.get_historical_klines(
+                symbol=config.symbol, interval=bar,
+                start_time=None, end_time=None, limit=min(preheat_bars, 300))
+
+            if not rows:
+                logger.warning(f"⚠️ 策略 {strategy_id} 历史预热未获取到数据，将冷启动")
+                return
+
+            # OKX 返回倒序（新→旧），预热需按时间升序喂入
+            rows_sorted = sorted(rows, key=lambda r: int(r[0]))
+
+            has_price_data = hasattr(strategy, 'price_data')
+            count = 0
+            for row in rows_sorted:
+                try:
+                    md = MarketData(
+                        symbol=config.symbol,
+                        timestamp=datetime.fromtimestamp(int(row[0]) / 1000),
+                        open=float(row[1]),
+                        high=float(row[2]),
+                        low=float(row[3]),
+                        close=float(row[4]),
+                        volume=float(row[5]),
+                    )
+                except (ValueError, IndexError, TypeError):
+                    continue
+
+                # 直接填充缓冲区，绕过 process_market_data（不触发策略逻辑/信号）
+                strategy.market_data.append(md)
+                if has_price_data:
+                    strategy.price_data.append(md.close)
+                    strategy.volume_data.append(md.volume)
+                count += 1
+
+            # 记录预热最后一根的时间戳，实时流据此去重续接（避免衔接处重复根）
+            if count > 0:
+                strategy._last_bar_ts = int(rows_sorted[-1][0])
+
+            # 预热完成后计算一次指标，使指标缓存与预热数据对齐
+            if has_price_data and hasattr(strategy, '_calculate_indicators'):
+                try:
+                    strategy._calculate_indicators()
+                except Exception as e:
+                    logger.debug(f"策略 {strategy_id} 预热后计算指标失败（忽略）: {e}")
+
+            logger.info(f"🔥 策略 {strategy_id} 历史预热完成: {count} 根 {bar} K线 "
+                        f"({config.symbol})，实时流将在此基础上续接")
+        except Exception as e:
+            # 预热失败不应阻断策略启动，退化为冷启动
+            logger.warning(f"⚠️ 策略 {strategy_id} 历史预热失败，退化为冷启动: {e}")
+
     def _get_interval_str(self, timeframe: str) -> str:
         """将时间周期转换为 OKX K线订阅格式"""
         # 1m -> 1m, 5m -> 5m, 1h -> 1H, 1d -> 1D
