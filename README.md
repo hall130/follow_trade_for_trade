@@ -2,7 +2,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-2.0+-green.svg)](https://flask.palletsprojects.com/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0+-orange.svg)](https://www.mysql.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
+[![TimescaleDB](https://img.shields.io/badge/TimescaleDB-2.x-FDB515.svg)](https://www.timescale.com/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > 🏆 **企业级量化交易系统** - 集成多交易所、智能跟单、策略交易、做市刷单的专业交易平台
@@ -24,6 +25,7 @@
 - [快速开始](#-快速开始)
 - [项目结构](#-项目结构)
 - [配置说明](#-配置说明)
+- [数据库](#-数据库postgresql--timescaledb)
 - [API接口](#-api接口)
 - [前端界面](#-前端界面)
 - [部署指南](#-部署指南)
@@ -185,7 +187,8 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                  🗄️ 数据访问层                               │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
-│  │ MySQL主库 │  │ Redis缓存 │  │ 文件存储 │                  │
+│  │PostgreSQL │  │ Redis缓存 │  │ 文件存储 │                  │
+│  │+Timescale │  │           │  │          │                  │
 │  └──────────┘  └──────────┘  └──────────┘                  │
 └─────────────────────────────────────────────────────────────┘
                             │
@@ -204,7 +207,8 @@
 | 组件 | 版本要求 | 推荐配置 |
 |------|---------|---------|
 | **Python** | 3.10+ | 3.11+ |
-| **MySQL** | 8.0+ | 8.0.32+ |
+| **PostgreSQL** | 15+ | 16+ |
+| **TimescaleDB** | 2.x | 2.x（时序数据可选） |
 | **Redis** | 6.0+ | 7.0+ (可选) |
 | **内存** | 4GB+ | 16GB+ |
 | **CPU** | 2核+ | 8核+ |
@@ -220,16 +224,16 @@ cd follow_trade_for_trade
 # 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 配置数据库
-mysql -u root -p
-CREATE DATABASE follow_trade CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+# 3. 配置数据库（PostgreSQL）
+#    创建数据库（默认库名 trade_db，与 config.py 一致）
+psql -U postgres -c "CREATE DATABASE trade_db;"
 
-# 导入表结构
-mysql -u root -p follow_trade < database/init_database.py
+# 导入完整表结构（69 张表，含触发器/索引）
+psql -U postgres -d trade_db -f database/pg_schema.sql
 
 # 4. 配置系统
-cp config/config_example.py config/config.py
-# 编辑config.py，配置数据库和API密钥
+# 编辑 config/config.py，配置数据库连接与 API 密钥
+#（数据库配置项仍名为 MYSQL_CONFIG，仅为兼容旧调用，底层已是 PostgreSQL）
 
 # 5. 启动系统
 python main.py
@@ -288,15 +292,17 @@ follow_trade_for_trade/
 
 ### 📊 数据库配置
 
+> 数据库已迁移至 **PostgreSQL + TimescaleDB**，底层驱动为 `psycopg2`（见 [database/db.py](database/db.py)）。
+> 配置变量名仍保留 `MYSQL_CONFIG` / `get_mysql_config()` 以兼容全部现有调用点，**不代表仍在使用 MySQL**。
+
 ```python
 # config/config.py
 MYSQL_CONFIG = {
-    'host': 'localhost',
-    'port': 3306,
-    'user': 'trader',
-    'password': 'secure_password',
-    'database': 'follow_trade',
-    'charset': 'utf8mb4'
+    'host': 'localhost',   # PostgreSQL 主机
+    'port': 5432,          # PostgreSQL 端口（注意不是 3306）
+    'user': 'postgres',    # PostgreSQL 用户名
+    'password': '******',  # PostgreSQL 密码
+    'db': 'trade_db',      # 数据库名
 }
 ```
 
@@ -390,6 +396,197 @@ GET /api/v1/popular-traders?exchange=okx&sort_by=yield_ratio&limit=20
 - **实时通信**：WebSocket 双向通信
 - **数据可视化**：ECharts 多维数据展示
 - **图标库**：Bootstrap Icons（本地化部署）
+
+## 🗄️ 数据库（PostgreSQL + TimescaleDB）
+
+### 🔄 从 MySQL 迁移到 PostgreSQL
+
+本项目数据库已由 **MySQL 迁移至 PostgreSQL 15+**（时序类数据可选启用 TimescaleDB）。迁移要点：
+
+| 项目 | 迁移前 (MySQL) | 迁移后 (PostgreSQL) |
+|------|---------------|---------------------|
+| 驱动 | `pymysql` | `psycopg2` |
+| 默认端口 | 3306 | **5432** |
+| 连接池 | `MySQLPool` | 仍名为 `MySQLPool`，底层已换 psycopg2（见 [database/db.py](database/db.py)） |
+| 自增主键 | `AUTO_INCREMENT` | `BIGSERIAL` |
+| 布尔类型 | `TINYINT(1)` | 原生 `BOOLEAN` |
+| JSON 字段 | `JSON` | `JSONB` |
+| 时间戳自动更新 | `ON UPDATE CURRENT_TIMESTAMP` | 触发器 `set_updated_at()` |
+| 时序数据 | 普通表 | TimescaleDB hypertable（可选） |
+
+> **兼容性说明**：配置项、函数名、类名仍沿用 `MYSQL_CONFIG` / `get_mysql_config()` / `MySQLPool` 等旧名称，
+> 这是为兼容全部现有调用点而保留的**别名**，**系统运行时使用的是 PostgreSQL**。
+> 布尔值写入时注意：`db.py` 注册了全局 bool 适配器，向 `BOOLEAN` 列写入时需在 SQL 中显式 `%s::boolean` 转型。
+
+迁移脚本见 [database/mysql_to_pg.py](database/mysql_to_pg.py)，它由 MySQL 建表脚本自动生成 PostgreSQL 版 [database/pg_schema.sql](database/pg_schema.sql)。
+
+### 🚀 建库与建表
+
+```bash
+# 1. 创建数据库（库名 trade_db，需与 config.py 中 MYSQL_CONFIG['db'] 一致）
+psql -U postgres -c "CREATE DATABASE trade_db;"
+
+# 2. （可选）启用 TimescaleDB 扩展，用于 K 线/信号等时序数据
+psql -U postgres -d trade_db -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+
+# 3. 导入完整表结构（69 张表 + 触发器 + 索引）
+psql -U postgres -d trade_db -f database/pg_schema.sql
+```
+
+### 📋 数据表总览
+
+系统共 **69 张表**，按业务域划分：
+
+| 业务域 | 主要表 |
+|--------|--------|
+| **用户与权限** | `users`, `roles`, `modules`, `permissions`, `role_permissions`, `user_permissions`, `sessions`, `login_logs` |
+| **会员与支付** | `membership_levels`, `user_memberships`, `membership_orders`, `membership_payment_orders`, `payment_listener_logs`, `exchange_api_redemption_codes` |
+| **跟单核心** | `signal_sources`, `customers`, `strategies`, `rules`, `customer_strategy`, `customer_rule`, `customer_trades`, `trade_failures` |
+| **限价跟单** | `limit_follow_traders`, `limit_follow_strategies`, `limit_follow_strategy_customers`, `limit_follow_orders`, `limit_follow_executions`, `limit_follow_configs`, `limit_follow_logs`, `trader_trades` |
+| **做市刷单** | `market_maker_accounts`, `market_maker_status`, `market_maker_stats` |
+| **策略引擎** | `strategy_configs`, `strategy_instances`, `strategy_signals`, `strategy_positions`, `strategy_trades`, `strategy_performance`, `strategy_risk_monitor`, `strategy_backtests`, `strategy_market_data`, `strategy_logs` |
+| **风控与持仓** | `signal_stop_loss`, `customer_stop_loss`, `manual_operations`, `position_anomalies`, `customer_positions`, `customer_assets`, `customer_configs` |
+| **消息转发** | `message_platforms`, `message_forward_rules`, `message_history`, `forward_trade_configs`, `forward_trade_records`, `telegram_*`, `wechat_official_*` |
+| **邀请与订阅** | `invitation_codes`, `invitation_code_usage`, `forward_rule_subscriptions` |
+
+### 📜 完整建表 SQL
+
+完整 DDL 见 [database/pg_schema.sql](database/pg_schema.sql)（约 1500 行，69 张表 + 索引 + 触发器）。下方为其中几张核心表的**真实定义**（从 pg_schema.sql 摘录，未改动）：
+
+```sql
+-- =====================================================================
+-- PostgreSQL + TimescaleDB 建表脚本（节选）
+-- 执行完整脚本: psql -U postgres -d trade_db -f database/pg_schema.sql
+-- =====================================================================
+
+-- updated_at 自动刷新触发器函数
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 用户表
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL,
+    username            VARCHAR(100)    NOT NULL,
+    password_hash       VARCHAR(255)    NOT NULL,
+    full_name           VARCHAR(100)    DEFAULT NULL,
+    email               VARCHAR(255)    DEFAULT NULL,
+    role                VARCHAR(50)     NOT NULL DEFAULT 'user',
+    status              VARCHAR(50)     NOT NULL DEFAULT 'active',
+    customer_uid        VARCHAR(64)     DEFAULT NULL,
+    is_password_changed SMALLINT        NOT NULL DEFAULT 0,
+    password_changed_at TIMESTAMP       DEFAULT NULL,
+    last_login_at       TIMESTAMP       DEFAULT NULL,
+    last_login_ip       VARCHAR(45)     DEFAULT NULL,
+    created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+);
+
+-- 客户（跟单账户）表；主键为 customer_uid
+CREATE TABLE IF NOT EXISTS customers (
+    customer_uid        VARCHAR(64)   NOT NULL,
+    name                VARCHAR(255)  NOT NULL,
+    api_key             VARCHAR(255)  NULL,
+    api_secret          VARCHAR(255)  NULL,
+    passphrase          VARCHAR(255)  NULL,
+    exchange            VARCHAR(32)   NOT NULL DEFAULT 'OKX',
+    enabled             SMALLINT      NOT NULL DEFAULT 1,
+    init_asset          DECIMAL(20,8) NOT NULL DEFAULT 0,
+    trading_asset       DECIMAL(20,8) NULL,
+    total_asset         DECIMAL(20,8) NOT NULL DEFAULT 0,
+    leverage            INT           NULL DEFAULT 1,
+    is_demo             SMALLINT      NULL,
+    owner_user_id       BIGINT        NULL,
+    stop_loss_percent   DECIMAL(20,8) NULL,
+    stop_loss_enabled   SMALLINT      NULL DEFAULT 0,
+    recently_assets     DECIMAL(20,8) NULL,
+    last_stop_loss_time TIMESTAMP     NULL,
+    stop_loss_count     INT           NULL DEFAULT 0,
+    created_at          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (customer_uid)
+);
+
+-- 策略实例表（config_json 以 JSONB 存储全部策略参数）
+CREATE TABLE IF NOT EXISTS strategy_instances (
+    id BIGSERIAL PRIMARY KEY,
+    instance_name    VARCHAR(100) NOT NULL UNIQUE,
+    strategy_name    VARCHAR(100) NOT NULL,
+    account_id       VARCHAR(50)  NOT NULL,
+    symbol           VARCHAR(20)  NOT NULL,
+    timeframe        VARCHAR(10)  NOT NULL,
+    status           VARCHAR(50)  DEFAULT 'STOPPED',
+    config_json      JSONB        NOT NULL,
+    performance_json JSONB,
+    started_at       TIMESTAMP    NULL,
+    stopped_at       TIMESTAMP    NULL,
+    last_signal_at   TIMESTAMP    NULL,
+    created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    created_by       VARCHAR(50),
+    FOREIGN KEY (strategy_name) REFERENCES strategy_configs(strategy_name) ON DELETE CASCADE
+);
+
+-- 策略持仓表
+CREATE TABLE IF NOT EXISTS strategy_positions (
+    id BIGSERIAL PRIMARY KEY,
+    instance_id    BIGINT       NOT NULL,
+    position_id    VARCHAR(50)  NOT NULL,
+    symbol         VARCHAR(20)  NOT NULL,
+    side           VARCHAR(50)  NOT NULL,
+    quantity       DECIMAL(20,8) NOT NULL,
+    entry_price    DECIMAL(20,8) NOT NULL,
+    current_price  DECIMAL(20,8),
+    unrealized_pnl DECIMAL(20,8) DEFAULT 0,
+    stop_loss      DECIMAL(20,8),
+    take_profit    DECIMAL(20,8),
+    entry_time     TIMESTAMP    NOT NULL,
+    exit_time      TIMESTAMP    NULL,
+    exit_price     DECIMAL(20,8),
+    realized_pnl   DECIMAL(20,8) DEFAULT 0,
+    status         VARCHAR(50)  DEFAULT 'OPEN',
+    metadata_json  JSONB,
+    created_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (instance_id) REFERENCES strategy_instances(id) ON DELETE CASCADE
+);
+
+-- 限价跟单订单表
+CREATE TABLE IF NOT EXISTS limit_follow_orders (
+    id BIGSERIAL,
+    order_uid          VARCHAR(64)   NOT NULL,
+    strategy_id        BIGINT        NOT NULL DEFAULT 0,
+    trader_unique_name VARCHAR(64)   NOT NULL DEFAULT '',
+    customer_uid       VARCHAR(64)   NOT NULL DEFAULT '',
+    symbol             VARCHAR(32)   NOT NULL DEFAULT '',
+    pos_side           VARCHAR(8)    NOT NULL DEFAULT 'long',
+    follow_value       DECIMAL(20,8) NOT NULL DEFAULT 0,
+    target_price       DECIMAL(20,8) NOT NULL DEFAULT 0,
+    order_size         DECIMAL(20,8) NOT NULL DEFAULT 0,
+    order_type         VARCHAR(16)   NOT NULL DEFAULT 'limit',
+    status             VARCHAR(16)   NOT NULL DEFAULT 'pending',
+    signal_order_id    VARCHAR(64)   DEFAULT NULL,
+    order_id           VARCHAR(64)   DEFAULT NULL,
+    exchange_order_id  VARCHAR(64)   DEFAULT NULL,
+    close_order_id     VARCHAR(64)   DEFAULT NULL,
+    filled_price       DECIMAL(20,8) DEFAULT NULL,
+    filled_size        DECIMAL(20,8) DEFAULT NULL,
+    limit_close_size   DECIMAL(20,8) NOT NULL DEFAULT 0,
+    reduce_only        SMALLINT      NOT NULL DEFAULT 0,
+    created_at         TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id)
+);
+
+-- …… 其余 60+ 张表、索引与触发器详见 database/pg_schema.sql
+```
+
+> ⚠️ 以上为节选，字段以 [database/pg_schema.sql](database/pg_schema.sql) 实际内容为准。建库请直接执行该文件，不要手动复制节选片段。
+>
+> 关于 `is_demo`：建表脚本中定义为 `SMALLINT`，但部分运行环境的该列实际为 `BOOLEAN`。因 `db.py` 注册了全局 bool→整数适配器，向 `BOOLEAN` 列写入布尔值时需在 SQL 中显式 `%s::boolean` 转型，否则会报 “类型为 boolean, 但表达式为 integer”。以你目标库的真实列类型为准。
 
 ## 📈 部署指南
 
