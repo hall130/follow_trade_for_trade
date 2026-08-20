@@ -463,7 +463,7 @@ class EnhancedLimitFollowService:
                 SELECT * FROM limit_follow_orders 
                 WHERE status = 'live' 
                 AND exchange_order_id IS NOT NULL
-                AND updated_at < DATE_SUB(NOW(), INTERVAL {stale_timeout_minutes} MINUTE)
+                AND updated_at < NOW() - INTERVAL '{stale_timeout_minutes} minute'
                 ORDER BY updated_at ASC
                 LIMIT {self.config['auto_repair_max_orders']}
             """
@@ -584,7 +584,7 @@ class EnhancedLimitFollowService:
                     AND ct.symbol = lfo.symbol 
                     AND ct.pos_side = lfo.pos_side
                     AND ct.status = 'open'
-                    AND (ct.volume_contract - IFNULL(ct.close_volume_contract, 0)) > 0
+                    AND (ct.volume_contract - COALESCE(ct.close_volume_contract, 0)) > 0
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM signal_account_trades sat
@@ -592,7 +592,7 @@ class EnhancedLimitFollowService:
                     AND sat.symbol = lfo.symbol
                     AND sat.pos_side = lfo.pos_side
                     AND sat.status = 'open'
-                    AND (sat.volume_contract - IFNULL(sat.close_volume_contract, 0)) > 0
+                    AND (sat.volume_contract - COALESCE(sat.close_volume_contract, 0)) > 0
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM limit_follow_orders lfo2

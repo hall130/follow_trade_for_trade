@@ -112,9 +112,9 @@ class StateManager:
                 INSERT INTO telegram_user_sessions 
                 (user_id, current_state, context_data)
                 VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    current_state = VALUES(current_state),
-                    context_data = VALUES(context_data),
+                ON CONFLICT (user_id) DO UPDATE SET
+                    current_state = EXCLUDED.current_state,
+                    context_data = EXCLUDED.context_data,
                     updated_at = CURRENT_TIMESTAMP
             """
             
@@ -279,9 +279,9 @@ class StateManager:
                 INSERT INTO telegram_user_sessions 
                 (user_id, current_state, context_data)
                 VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    current_state = VALUES(current_state),
-                    context_data = VALUES(context_data),
+                ON CONFLICT (user_id) DO UPDATE SET
+                    current_state = EXCLUDED.current_state,
+                    context_data = EXCLUDED.context_data,
                     updated_at = CURRENT_TIMESTAMP
             """
             

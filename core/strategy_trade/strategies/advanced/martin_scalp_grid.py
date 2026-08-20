@@ -38,6 +38,7 @@ class MartinScalpGridStrategy(StrategyBase):
     
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
         
         # 基础参数
         self.initial_amount = float(self.get_parameter('initial_amount', 0.01))  # 初始下单金额（USDT）

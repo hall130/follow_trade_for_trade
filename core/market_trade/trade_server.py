@@ -469,14 +469,19 @@ async def periodic_reload(trade_service):
             await asyncio.sleep(300)
 
 async def periodic_position_check(trade_service):
-    """定时检查仓位异常"""
+    """定时检查仓位异常，周期由 config 的 reconcile.interval_seconds 决定"""
+    from config import get_reconcile_config
     while True:
+        try:
+            interval = int(get_reconcile_config().get('interval_seconds', 300))
+        except Exception:
+            interval = 300
         try:
             await trade_service.check_position_anomalies()
             logger.info("[定时任务] 仓位异常检查完成")
         except Exception as e:
             logger.error(f"[定时任务] 仓位异常检查失败: {e}")
-        await asyncio.sleep(1800)  # 每30分钟检查一次，进一步减少频率
+        await asyncio.sleep(max(30, interval))  # 下限 30s，防误配成 0 空转
 
 async def periodic_price_check():
     """定期检查价格缓存状态"""
@@ -492,6 +497,33 @@ async def periodic_price_check():
             # 异常后等待较短时间再重试，避免长时间停止
             await asyncio.sleep(60)  # 异常后1分钟重试
 
+async def refresh_contract_specs():
+    """启动时从交易所拉取真实合约规格，覆盖静态表。失败保留静态表兜底。
+
+    OKX 用公共 instruments 接口（无需密钥）。Binance fapi 规格刷新在
+    fapi 客户端就绪后接入（阶段 3），此处 try/except 保证任一失败不影响启动。
+    """
+    from config import contract_spec_manager
+    try:
+        from exchange.base_client import ExchangeClientFactory, ExchangeType
+        okx_public = ExchangeClientFactory.create_rest_client(
+            ExchangeType.OKX, api_key="", api_secret="",
+            passphrase="", is_demo=get_global_is_demo())
+        await contract_spec_manager.refresh_from_okx(okx_public)
+    except Exception as e:
+        logger.error(f"[合约规格] OKX 规格刷新失败，保留静态表: {e}")
+    try:
+        from exchange.binance.binance_fapi_rest_client import BinanceFapiRESTClient
+        fapi_public = BinanceFapiRESTClient(api_key="", api_secret="",
+                                            is_demo=get_global_is_demo())
+        await contract_spec_manager.refresh_from_binance(fapi_public)
+    except ImportError:
+        logger.info("[合约规格] Binance fapi 客户端尚未就绪，跳过 Binance 规格刷新")
+    except Exception as e:
+        logger.error(f"[合约规格] Binance 规格刷新失败，保留静态表: {e}")
+    logger.info(f"[合约规格] 动态规格缓存共 {contract_spec_manager.spec_count()} 个合约")
+
+
 async def main():
     mysql_conf = get_mysql_config()
     db_pool = MySQLPool(**mysql_conf)
@@ -503,6 +535,9 @@ async def main():
     customer_task = trade_service.listen_customer_accounts()
     
     try:
+        # 启动时刷新动态合约规格（覆盖静态表，失败兜底）
+        await refresh_contract_specs()
+
         # 启动定时热重载任务
         # 先启动监控系统
         await trade_service.start_all_monitoring_systems()
@@ -512,7 +547,7 @@ async def main():
             account_manager.monitor_signal_accounts(),
             customer_task,
             periodic_reload(trade_service),
-            # periodic_position_check(trade_service),
+            periodic_position_check(trade_service),
             periodic_price_check(), # 添加价格缓存检查任务
             trade_service.start_no_trading_monitor(),  # 启动长时间无开仓监控
             trade_service.start_stop_loss_monitor(),  # 启动止损监控

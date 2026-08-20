@@ -1,0 +1,10 @@
+# Python 字节码
+__pycache__/
+*.py[cod]
+
+# 日志
+logs/
+*.log
+
+# 本地账户/密钥配置(含 API key，不入库)
+market_maker_accounts.json

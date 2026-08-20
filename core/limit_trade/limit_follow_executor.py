@@ -673,7 +673,7 @@ class LimitFollowExecutor:
             # 从数据库查询带单员的持仓（使用 trader_trades 表）
             sql = """
                 SELECT SUM(volume_contract) as total_volume, 
-                       SUM(IFNULL(close_volume_contract, 0)) as closed_volume
+                       SUM(COALESCE(close_volume_contract, 0)) as closed_volume
                 FROM trader_trades 
                 WHERE trader_unique_name = %s AND symbol = %s AND pos_side = %s AND status = 'open'
             """
@@ -1041,7 +1041,7 @@ class LimitFollowExecutor:
             # 查询该策略下该交易对的所有市价单
             sql = """
                 SELECT order_uid, exchange_order_id, order_size, filled_size, 
-                       IFNULL(limit_close_size, 0) AS limit_close_size,
+                       COALESCE(limit_close_size, 0) AS limit_close_size,
                        status
                 FROM limit_follow_orders 
                 WHERE strategy_id = %s AND symbol = %s AND pos_side = %s 
@@ -1156,7 +1156,7 @@ class LimitFollowExecutor:
                         try:
                             # 使用原子累加操作确保并发安全
                             self.db_pool.execute(
-                                "UPDATE limit_follow_orders SET limit_close_size = IFNULL(limit_close_size, 0) + %s, updated_at = NOW() WHERE order_uid = %s",
+                                "UPDATE limit_follow_orders SET limit_close_size = COALESCE(limit_close_size, 0) + %s, updated_at = NOW() WHERE order_uid = %s",
                                 (close_size, order_uid)
                             )
                             
@@ -2220,7 +2220,6 @@ class LimitFollowExecutor:
                                 await future
                             except RuntimeError:
                                 # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
-                                import time
                                 logger.warning("无法获取运行中的事件循环，使用同步 sleep")
                                 time.sleep(self.config['polling_interval'])
                             continue
@@ -2239,7 +2238,6 @@ class LimitFollowExecutor:
                             if "attached to a different loop" in error_msg:
                                 logger.error(f"❌ 事件循环冲突: {loop_error}")
                                 logger.error("等待事件循环稳定...")
-                                import time
                                 time.sleep(2.0)
                                 # 重新获取事件循环
                                 current_loop = asyncio.get_running_loop()
@@ -2287,7 +2285,6 @@ class LimitFollowExecutor:
                             await future
                         except RuntimeError:
                             # 如果无法获取运行中的事件循环，使用同步 sleep（避免事件循环问题）
-                            import time
                             logger.warning("无法获取运行中的事件循环，使用同步 sleep")
                             time.sleep(interval)
                     

@@ -341,9 +341,9 @@ class PermissionService:
             conn.execute("""
                 INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by)
                 VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE 
-                permission_level = VALUES(permission_level),
-                granted_by = VALUES(granted_by),
+                ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                permission_level = EXCLUDED.permission_level,
+                granted_by = EXCLUDED.granted_by,
                 granted_at = NOW()
             """, (user_id, module_code, permission_level, granted_by))
             
@@ -427,7 +427,7 @@ class PermissionService:
                 WHERE user_id = %s AND granted_by IS NOT NULL
             """, (user_id,))
             
-            # 批量插入/更新新权限（使用 ON DUPLICATE KEY UPDATE 避免重复键错误）
+            # 批量插入/更新新权限（使用 ON CONFLICT (user_id, module_code) DO UPDATE SET 避免重复键错误）
             if permissions:
                 valid_permissions = []
                 for perm in permissions:
@@ -451,15 +451,15 @@ class PermissionService:
                             
                             valid_permissions.append((user_id, module_code, permission_level, granted_by))
                 
-                # 批量插入/更新有效权限（使用 ON DUPLICATE KEY UPDATE）
+                # 批量插入/更新有效权限（使用 ON CONFLICT (user_id, module_code) DO UPDATE SET）
                 if valid_permissions:
                     for perm in valid_permissions:
                         conn.execute("""
                             INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by)
                             VALUES (%s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE 
-                                permission_level = VALUES(permission_level),
-                                granted_by = VALUES(granted_by),
+                            ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                                permission_level = EXCLUDED.permission_level,
+                                granted_by = EXCLUDED.granted_by,
                                 granted_at = NOW()
                         """, perm)
             
@@ -777,7 +777,7 @@ class PermissionService:
             # 获取所有角色及其权限
             query = """
                 SELECT DISTINCT r.role_name, r.role_code,
-                       GROUP_CONCAT(DISTINCT CONCAT(m.module_code, ':', p.permission_level) ORDER BY m.module_code, p.permission_level) as permissions
+                       string_agg(DISTINCT CONCAT(m.module_code, ':', p.permission_level), ',' ORDER BY CONCAT(m.module_code, ':', p.permission_level)) as permissions
                 FROM roles r
                 LEFT JOIN role_permissions rp ON r.id = rp.role_id
                 LEFT JOIN permissions p ON rp.permission_id = p.id

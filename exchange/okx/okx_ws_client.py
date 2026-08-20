@@ -284,7 +284,9 @@ class OKXWebSocketClient(BaseWebSocketClient):
         self.ws_url = "wss://ws.okx.com:8443/ws/v5/public" if not is_demo else "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999"
         if api_key and api_secret and passphrase:
             self.ws_url = "wss://ws.okx.com:8443/ws/v5/private" if not is_demo else "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
-        
+
+        # 出网代理由基类 BaseWebSocketClient.__init__ 统一解析为 self.proxy（为空则直连）。
+
         # API认证信息
         self.api_key = api_key
         self.api_secret = api_secret
@@ -385,6 +387,7 @@ class OKXWebSocketClient(BaseWebSocketClient):
                 websockets.connect(
                     self.ws_url,
                     ssl=ssl_context,
+                    proxy=self.proxy,      # 出网代理（None=直连）
                     close_timeout=30,      # 关闭超时
                     max_size=2**20,        # 最大消息大小
                     max_queue=2**10,       # 最大队列大小

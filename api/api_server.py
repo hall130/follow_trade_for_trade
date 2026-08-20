@@ -3736,13 +3736,44 @@ def force_update_customer_assets():
         if request.method == 'GET':
             # GET请求从URL参数获取
             customer_uid = request.args.get('customer_uid')
-            is_demo = int(request.args.get('is_demo', 0))
+            is_demo_param = request.args.get('is_demo')
         else:
             # POST请求从JSON获取
             data = request.get_json() or {}
             customer_uid = data.get('customer_uid')
-            is_demo = data.get('is_demo', 0)
-        
+            is_demo_param = data.get('is_demo')
+
+        # 如果指定了customer_uid，始终从数据库查询实际的is_demo值（防止前端传错）
+        if customer_uid:
+            db_pool = get_db_pool()
+            customer_real = db_pool.query(
+                "SELECT is_demo FROM customers WHERE customer_uid=%s LIMIT 1",
+                (customer_uid,)
+            )
+            if customer_real:
+                is_demo = int(customer_real[0]['is_demo'])
+
+                # 如果前端传入的is_demo与数据库不一致，记录警告
+                if is_demo_param is not None and int(is_demo_param) != is_demo:
+                    logger.warning(
+                        f"[强制资产更新] 前端传入is_demo={is_demo_param}，但客户 {customer_uid} "
+                        f"实际is_demo={is_demo}，已自动纠正"
+                    )
+                else:
+                    logger.info(f"[强制资产更新] 自动检测客户 {customer_uid} 的 is_demo={is_demo}")
+            else:
+                logger.error(f"[强制资产更新] 客户 {customer_uid} 不存在")
+                return jsonify({
+                    'success': False,
+                    'message': f'客户 {customer_uid} 不存在'
+                }), 404
+        elif is_demo_param is not None:
+            # 没有指定customer_uid，但指定了is_demo（全局更新）
+            is_demo = int(is_demo_param)
+        else:
+            # 都没有指定，使用全局is_demo
+            is_demo = get_global_is_demo()
+
         logger.info(f"[强制资产更新] 开始更新: customer_uid={customer_uid}, is_demo={is_demo}")
         
         # 导入TradeService
@@ -10111,44 +10142,76 @@ def load_strategy_instances_from_db():
     """从数据库加载策略实例"""
     if not db_pool or not strategy_manager:
         return
-    
+
     try:
         query = """
-        SELECT instance_name, strategy_name, account_id, symbol, timeframe, 
-               status, config_json, performance_json, created_at, created_by
-        FROM strategy_instances 
+        SELECT instance_name, strategy_name, account_id, signal_source_uid,
+               symbol, timeframe, status, config_json, performance_json,
+               is_demo, created_at, created_by
+        FROM strategy_instances
         WHERE status != 'DELETED'
         ORDER BY created_at DESC
         """
         results = db_pool.query(query)
-        
+
         loaded_count = 0
+        skipped_count = 0
+
         for row in results:
             try:
+                instance_name = row.get('instance_name')
+
+                # 检查策略是否已存在（避免重复加载）
+                existing_strategies = strategy_manager.get_all_strategies()
+                already_exists = any(s.name == instance_name for s in existing_strategies)
+
+                if already_exists:
+                    skipped_count += 1
+                    logger.debug(f"策略实例已存在，跳过: {instance_name}")
+                    continue
+
                 # 解析配置
                 config = {}
-                if row.get('config_json'):
-                    config = json.loads(row.get('config_json'))
-                
+                config_json = row.get('config_json')
+                if config_json:
+                    if isinstance(config_json, str):
+                        config = json.loads(config_json)
+                    else:
+                        # PostgreSQL JSON字段可能已经反序列化为dict
+                        config = config_json
+
+                # 将数据库字段合并到配置中
+                if row.get('is_demo') is not None:
+                    config['is_demo'] = row.get('is_demo')
+                if row.get('account_id'):
+                    config['account_id'] = row.get('account_id')
+                if row.get('signal_source_uid'):
+                    config['signal_source_uid'] = row.get('signal_source_uid')
+
                 # 创建策略实例
                 strategy_id = strategy_manager.create_strategy(
                     strategy_type=row.get('strategy_name'),
-                    name=row.get('instance_name'),
-                    symbol=row.get('symbol'),
+                    name=instance_name,
+                    symbol=row.get('symbol', 'BTC-USDT'),
                     config=config
                 )
-                
+
                 if strategy_id:
                     loaded_count += 1
-                    logger.info(f"从数据库加载策略实例: {row.get('instance_name')}")
-                
+                    is_demo_text = '模拟盘' if config.get('is_demo', True) else '实盘'
+                    logger.info(f"从数据库加载策略实例: {instance_name} ({is_demo_text})")
+
             except Exception as load_error:
                 logger.error(f"加载策略实例失败 {row.get('instance_name')}: {load_error}")
-        
-        logger.info(f"从数据库加载了 {loaded_count} 个策略实例")
-        
+                import traceback
+                logger.error(traceback.format_exc())
+
+        logger.info(f"从数据库加载了 {loaded_count} 个策略实例，跳过 {skipped_count} 个已存在的实例")
+
     except Exception as e:
         logger.error(f"从数据库加载策略实例失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 # 策略实例管理API
 
@@ -10257,14 +10320,14 @@ def start_strategy_instance(strategy_name):
                 'success': False,
                 'message': '策略交易模块不可用'
             })
-        
+
         manager = get_strategy_manager()
         if not manager:
             return jsonify({
                 'success': False,
                 'message': '策略管理器初始化失败'
             })
-        
+
         # 查找策略并启动
         strategies = manager.get_all_strategies()
         strategy_found = False
@@ -10272,14 +10335,29 @@ def start_strategy_instance(strategy_name):
             if strategy.name == strategy_name:
                 success = manager.start_strategy(strategy.id)
                 strategy_found = True
+
+                # 更新数据库状态
+                if success:
+                    try:
+                        from database.db import get_db_pool
+                        db_pool = get_db_pool()
+                        if db_pool:
+                            db_pool.execute(
+                                "UPDATE strategy_instances SET status = %s, updated_at = NOW() WHERE instance_name = %s",
+                                ('RUNNING', strategy_name)
+                            )
+                            logger.info(f"策略 {strategy_name} 状态已更新为 RUNNING")
+                    except Exception as db_error:
+                        logger.error(f"更新策略状态到数据库失败: {db_error}")
+
                 break
-        
+
         if not strategy_found:
             return jsonify({
                 'success': False,
                 'message': f'策略 {strategy_name} 不存在'
             })
-        
+
         try:
             if success:
                 return jsonify({
@@ -10297,7 +10375,7 @@ def start_strategy_instance(strategy_name):
                 'success': False,
                 'message': f'策略启动失败: {str(async_error)}'
             }), 500
-            
+
     except Exception as e:
         logger.error(f"启动策略失败: {e}")
         return jsonify({
@@ -10314,14 +10392,14 @@ def stop_strategy_instance(strategy_name):
                 'success': False,
                 'message': '策略交易模块不可用'
             })
-        
+
         manager = get_strategy_manager()
         if not manager:
             return jsonify({
                 'success': False,
                 'message': '策略管理器初始化失败'
             })
-        
+
         # 查找策略并停止
         strategies = manager.get_all_strategies()
         strategy_found = False
@@ -10329,14 +10407,29 @@ def stop_strategy_instance(strategy_name):
             if strategy.name == strategy_name:
                 success = manager.stop_strategy(strategy.id)
                 strategy_found = True
+
+                # 更新数据库状态
+                if success:
+                    try:
+                        from database.db import get_db_pool
+                        db_pool = get_db_pool()
+                        if db_pool:
+                            db_pool.execute(
+                                "UPDATE strategy_instances SET status = %s, updated_at = NOW() WHERE instance_name = %s",
+                                ('STOPPED', strategy_name)
+                            )
+                            logger.info(f"策略 {strategy_name} 状态已更新为 STOPPED")
+                    except Exception as db_error:
+                        logger.error(f"更新策略状态到数据库失败: {db_error}")
+
                 break
-        
+
         if not strategy_found:
             return jsonify({
                 'success': False,
                 'message': f'策略 {strategy_name} 不存在'
             })
-        
+
         try:
             if success:
                 return jsonify({
@@ -10354,7 +10447,7 @@ def stop_strategy_instance(strategy_name):
                 'success': False,
                 'message': f'策略停止失败: {str(async_error)}'
             }), 500
-            
+
     except Exception as e:
         logger.error(f"停止策略失败: {e}")
         return jsonify({
@@ -10411,12 +10504,242 @@ def delete_strategy_instance(strategy_name):
                 'success': False,
                 'message': f'策略删除失败: {str(async_error)}'
             }), 500
-            
+
     except Exception as e:
         logger.error(f"删除策略失败: {e}")
         return jsonify({
             'success': False,
             'message': f'删除策略失败: {str(e)}'
+        }), 500
+
+@app.route('/api/v1/strategy/instances/<strategy_name>/monitor', methods=['GET'])
+def get_strategy_monitor_data(strategy_name):
+    """获取策略实时监控数据"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+
+        # 查找策略
+        strategies = manager.get_all_strategies()
+        strategy_info = None
+        for strategy in strategies:
+            if strategy.name == strategy_name:
+                strategy_info = strategy
+                break
+
+        if not strategy_info:
+            return jsonify({
+                'success': False,
+                'message': f'策略 {strategy_name} 不存在'
+            }), 404
+
+        # 获取策略对象
+        strategy_obj = strategy_info.strategy
+
+        # ============ 从数据库读取完整数据 ============
+
+        # 1. 读取策略实例配置和关联信息
+        account_id = None
+        signal_source_uid = None
+        is_demo = True
+        initial_capital = 0
+        current_capital = 0
+        available_capital = 0
+        frozen_capital = 0
+
+        try:
+            if db_pool:
+                # 查询策略实例
+                strategy_record = db_pool.query(
+                    """SELECT account_id, signal_source_uid, is_demo, config_json
+                       FROM strategy_instances
+                       WHERE instance_name = %s""",
+                    (strategy_name,)
+                )
+
+                if strategy_record and len(strategy_record) > 0:
+                    account_id = strategy_record[0].get('account_id')
+                    signal_source_uid = strategy_record[0].get('signal_source_uid')
+                    is_demo = strategy_record[0].get('is_demo', True)
+
+                    # 从配置中读取初始资金（备用）
+                    config_json = strategy_record[0].get('config_json')
+                    if config_json:
+                        config = config_json if isinstance(config_json, dict) else json.loads(config_json)
+                        initial_capital = config.get('initial_capital', 0) or config.get('capital', 0)
+
+                    # 2. 如果有关联客户，从客户表读取资金信息
+                    if account_id:
+                        customer_record = db_pool.query(
+                            """SELECT init_asset, trading_asset
+                               FROM customers
+                               WHERE customer_uid = %s AND is_demo = %s""",
+                            (account_id, is_demo)
+                        )
+
+                        if customer_record and len(customer_record) > 0:
+                            initial_capital = float(customer_record[0].get('init_asset', 0) or 0)
+                            current_capital = float(customer_record[0].get('trading_asset', 0) or 0)
+
+                            # 3. 查询未成交订单计算冻结资金（使用 limit_follow_orders 表）
+                            try:
+                                pending_orders = db_pool.query(
+                                    """SELECT pos_side, target_price, order_size, filled_size
+                                       FROM limit_follow_orders
+                                       WHERE customer_uid = %s
+                                       AND status IN ('NEW', 'PARTIALLY_FILLED', 'PENDING', 'pending', 'partially_filled')""",
+                                    (account_id,)
+                                )
+
+                                if pending_orders:
+                                    for order in pending_orders:
+                                        pos_side = str(order.get('pos_side', '') or '').lower()
+                                        price = float(order.get('target_price', 0) or 0)
+                                        size = float(order.get('order_size', 0) or 0)
+                                        filled = float(order.get('filled_size', 0) or 0)
+                                        remaining = size - filled
+
+                                        # 开多（买入）挂单冻结资金
+                                        if pos_side == 'long':
+                                            frozen_capital += price * remaining
+                            except Exception as orders_error:
+                                logger.debug(f"查询订单失败: {orders_error}")
+
+                            # 可用资金 = 当前资金 - 冻结资金
+                            available_capital = max(0, current_capital - frozen_capital)
+
+                logger.debug(f"策略 {strategy_name} 资金信息: 初始={initial_capital}, 当前={current_capital}, 可用={available_capital}, 冻结={frozen_capital}")
+
+        except Exception as e:
+            logger.warning(f"读取策略数据库信息失败: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
+
+        # ============ 构建监控数据 ============
+
+        monitor_data = {
+            'basic_info': {
+                'name': strategy_info.name,
+                'type': strategy_info.strategy_type,
+                'status': strategy_info.status,
+                'symbol': getattr(strategy_obj, 'symbol', '-'),
+                'timeframe': getattr(strategy_obj, 'timeframe', '-'),
+                'account_id': account_id or '-',
+                'signal_source_uid': signal_source_uid or '-',
+                'is_demo': is_demo,
+            },
+            'capital': {
+                'initial': initial_capital,
+                'current': current_capital,
+                'available': available_capital,
+                'frozen': frozen_capital,
+            },
+            'positions': [],
+            'trades': [],
+            'performance': strategy_info.performance or {},
+            'signals': []
+        }
+
+        # 4. 从数据库读取持仓信息（使用 strategy_positions 表）
+        try:
+            if db_pool and account_id:
+                positions_records = db_pool.query(
+                    """SELECT symbol, side, quantity as amount, entry_price, current_price,
+                              unrealized_pnl
+                       FROM strategy_positions
+                       WHERE instance_id IN (
+                           SELECT id FROM strategy_instances WHERE instance_name = %s
+                       )
+                       AND status = 'OPEN'""",
+                    (strategy_name,)
+                )
+
+                if positions_records:
+                    for pos in positions_records:
+                        entry = float(pos.get('entry_price', 0) or 0)
+                        current = float(pos.get('current_price', 0) or 0)
+                        pnl = float(pos.get('unrealized_pnl', 0) or 0)
+                        pnl_pct = (pnl / entry * 100) if entry > 0 else 0
+
+                        monitor_data['positions'].append({
+                            'symbol': pos.get('symbol', '-'),
+                            'side': pos.get('side', '-'),
+                            'amount': float(pos.get('amount', 0) or 0),
+                            'entry_price': entry,
+                            'current_price': current,
+                            'unrealized_pnl': pnl,
+                            'unrealized_pnl_pct': pnl_pct,
+                        })
+        except Exception as e:
+            logger.debug(f"读取持仓信息失败: {e}")
+
+        # 5. 从数据库读取交易记录（使用 strategy_trades 表）
+        try:
+            if db_pool:
+                trades_records = db_pool.query(
+                    """SELECT id, executed_at as timestamp, symbol, side, price, quantity,
+                              pnl as realized_pnl, commission as fee
+                       FROM strategy_trades
+                       WHERE instance_id IN (
+                           SELECT id FROM strategy_instances WHERE instance_name = %s
+                       )
+                       ORDER BY executed_at DESC
+                       LIMIT 50""",
+                    (strategy_name,)
+                )
+
+                if trades_records:
+                    for trade in trades_records:
+                        pnl = float(trade.get('realized_pnl', 0) or 0)
+                        price = float(trade.get('price', 0) or 0)
+                        pnl_pct = (pnl / price * 100) if price > 0 else 0
+
+                        monitor_data['trades'].append({
+                            'id': trade.get('id', '-'),
+                            'timestamp': str(trade.get('timestamp', '')),
+                            'symbol': trade.get('symbol', '-'),
+                            'side': trade.get('side', '-'),
+                            'price': price,
+                            'amount': float(trade.get('quantity', 0) or 0),
+                            'pnl': pnl,
+                            'pnl_pct': pnl_pct,
+                        })
+        except Exception as e:
+            logger.debug(f"读取交易记录失败: {e}")
+
+        # 6. 尝试从策略对象读取信号历史（如果有）
+        if hasattr(strategy_obj, 'signal_history'):
+            signals = strategy_obj.signal_history[-20:] if strategy_obj.signal_history else []
+            for signal in signals:
+                monitor_data['signals'].append({
+                    'timestamp': str(getattr(signal, 'timestamp', '')),
+                    'type': getattr(signal, 'type', '-'),
+                    'price': float(getattr(signal, 'price', 0)),
+                    'reason': getattr(signal, 'reason', ''),
+                })
+
+        return jsonify({
+            'success': True,
+            'data': monitor_data
+        })
+
+    except Exception as e:
+        logger.error(f"获取策略监控数据失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'获取监控数据失败: {str(e)}'
         }), 500
 
 @app.route('/api/v1/strategy/instances/<strategy_name>', methods=['PUT'])
@@ -10428,37 +10751,90 @@ def update_strategy_instance(strategy_name):
                 'success': False,
                 'message': '策略交易模块不可用'
             })
-        
+
         data = request.get_json()
         new_name = data.get('name', strategy_name)
         config = data.get('config', {})
         signal_sources = data.get('signal_sources', [])
         customers = data.get('customers', [])
-        
+
         manager = get_strategy_manager()
         if not manager:
             return jsonify({
                 'success': False,
                 'message': '策略管理器初始化失败'
             })
-        
-        # 更新策略配置（暂时返回成功，因为新架构中策略配置在创建时确定）
-        success = True
-        logger.info(f"策略配置更新: {strategy_name} -> {new_name}")
-        
-        if success:
-            return jsonify({
-                'success': True,
-                'message': f'策略 {strategy_name} 更新成功'
-            })
-        else:
+
+        # 检查策略是否存在
+        strategy_info = manager.get_strategy(strategy_name)
+        if not strategy_info:
             return jsonify({
                 'success': False,
-                'message': f'策略 {strategy_name} 更新失败'
-            }), 400
-            
+                'message': f'策略 {strategy_name} 不存在'
+            }), 404
+
+        # 更新数据库中的配置
+        try:
+            import json
+            from database.db import get_db_pool
+
+            db_pool = get_db_pool()
+            if db_pool:
+                # 提取 symbol 和 timeframe
+                symbol = config.get('symbol', 'BTC-USDT')
+                timeframe = config.get('timeframe', '1h')
+
+                # 获取客户和信号源
+                customer_id = customers[0] if customers else None
+                signal_source_uid = signal_sources[0] if signal_sources else None
+
+                # 更新数据库
+                db_pool.execute(
+                    """UPDATE strategy_instances
+                       SET instance_name = %s,
+                           symbol = %s,
+                           timeframe = %s,
+                           config_json = %s,
+                           account_id = %s,
+                           signal_source_uid = %s,
+                           updated_at = NOW()
+                       WHERE instance_name = %s""",
+                    (
+                        new_name,
+                        symbol,
+                        timeframe,
+                        json.dumps(config, ensure_ascii=False),
+                        customer_id,
+                        signal_source_uid,
+                        strategy_name
+                    )
+                )
+
+                logger.info(f"策略配置已更新: {strategy_name} -> {new_name} (symbol={symbol}, customer={customer_id})")
+
+                return jsonify({
+                    'success': True,
+                    'message': f'策略 {strategy_name} 更新成功'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': '数据库连接不可用'
+                }), 500
+
+        except Exception as db_error:
+            logger.error(f"更新策略数据库失败: {db_error}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                'success': False,
+                'message': f'更新策略失败: {str(db_error)}'
+            }), 500
+
     except Exception as e:
         logger.error(f"更新策略失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'success': False,
             'message': f'更新策略失败: {str(e)}'
@@ -10499,11 +10875,23 @@ def create_strategy_trade():
         
         # 创建策略
         try:
+            # 从 config 中获取 symbol 和 timeframe（前端放在 config 里）
+            config = data['config']
+            symbol = config.get('symbol', data.get('symbol', 'BTC-USDT'))
+            timeframe = config.get('timeframe', '1h')
+            # 获取交易模式，强制转为 Python bool（PostgreSQL is_demo 列为 boolean 类型，
+            # 前端可能传 1/0 整数，直接插入会报 "boolean 但表达式为 integer" 错误）
+            _raw_is_demo = data.get('is_demo', True)
+            if isinstance(_raw_is_demo, str):
+                is_demo = _raw_is_demo.strip().lower() in ('1', 'true', 'yes', 'on')
+            else:
+                is_demo = bool(_raw_is_demo)
+
             strategy_id = manager.create_strategy(
                 strategy_type=data['strategy_type'],
                 name=data['name'],
-                symbol=data.get('symbol', 'BTC-USDT'),
-                config=data['config']
+                symbol=symbol,
+                config=config
             )
 
             if strategy_id:
@@ -10519,35 +10907,50 @@ def create_strategy_trade():
                         if AUTH_MODULE_AVAILABLE:
                             user_id = get_current_user_id()
 
+                        # 获取客户和信号源关联
+                        customers = data.get('customers', [])
+                        signal_sources = data.get('signal_sources', [])
+                        customer_id = customers[0] if customers else None
+                        signal_source_uid = signal_sources[0] if signal_sources else None
+
+                        # 使用用户输入的名称作为 instance_name，而不是 UUID
+                        instance_name = data['name']
+
                         # 检查是否已存在（幂等性）
                         existing = db_pool.query(
                             "SELECT id FROM strategy_instances WHERE instance_name = %s",
-                            (strategy_id,)
+                            (instance_name,)
                         )
 
                         if not existing:
                             db_pool.execute(
                                 """INSERT INTO strategy_instances
                                    (instance_name, strategy_name, symbol, timeframe, status,
-                                    config_json, user_id, created_at, updated_at)
-                                   VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())""",
+                                    config_json, is_demo, account_id, signal_source_uid,
+                                    user_id, created_at, updated_at)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s::boolean, %s, %s, %s, NOW(), NOW())""",
                                 (
-                                    strategy_id,
+                                    instance_name,
                                     data['strategy_type'],
-                                    data.get('symbol', 'BTC-USDT'),
-                                    data['config'].get('timeframe', '1h'),
+                                    symbol,
+                                    timeframe,
                                     'STOPPED',
-                                    json.dumps(data['config'], ensure_ascii=False),
+                                    json.dumps(config, ensure_ascii=False),
+                                    is_demo,
+                                    customer_id,
+                                    signal_source_uid,
                                     user_id
                                 )
                             )
-                            logger.info(f"策略 {strategy_id} 已保存到数据库")
+                            logger.info(f"策略 {instance_name} 已保存到数据库 (is_demo={is_demo}, customer_id={customer_id})")
                         else:
-                            logger.debug(f"策略 {strategy_id} 已存在于数据库，跳过插入")
+                            logger.debug(f"策略 {instance_name} 已存在于数据库，跳过插入")
                     else:
                         logger.warning("数据库连接不可用，策略仅保存到内存（重启后将丢失）")
                 except Exception as db_error:
                     logger.error(f"保存策略到数据库失败: {db_error}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     # 不阻断返回，策略已在内存中创建成功
 
                 return jsonify({
@@ -10803,15 +11206,23 @@ def get_backtest_detail(backtest_id):
                 results_json = {}
                 
                 try:
-                    if row.get('config_json'):
-                        config_json = json.loads(row.get('config_json'))
+                    config_json_raw = row.get('config_json')
+                    if config_json_raw:
+                        if isinstance(config_json_raw, str):
+                            config_json = json.loads(config_json_raw)
+                        else:
+                            config_json = config_json_raw
                 except Exception as e:
                     logger.warning(f"解析config_json失败: {e}")
                     pass
                 
                 try:
-                    if row.get('results_json'):
-                        results_json = json.loads(row.get('results_json'))
+                    results_json_raw = row.get('results_json')
+                    if results_json_raw:
+                        if isinstance(results_json_raw, str):
+                            results_json = json.loads(results_json_raw)
+                        else:
+                            results_json = results_json_raw
                         logger.info(f"解析results_json成功: {type(results_json)}, 包含字段: {list(results_json.keys()) if isinstance(results_json, dict) else 'not dict'}")
                 except Exception as e:
                     logger.warning(f"解析results_json失败: {e}")
@@ -11156,15 +11567,21 @@ def get_strategy_template_config(strategy_type):
                     elif 'pct' in param_name or 'percent' in param_name:
                         step = 0.001
                     
+                    # 参数标签/说明：优先模板自定义，其次共享字典，都没有则前端回退显示参数名
+                    from config.strategy_config import get_param_meta
+                    meta = get_param_meta(template, full_name)
+
                     params[full_name] = {
                         'default': default_value,
                         'type': param_type,
                         'input_type': input_type,
                         'min': validation.get('min'),
                         'max': validation.get('max'),
-                        'step': step
+                        'step': step,
+                        'label': meta.get('label', ''),
+                        'description': meta.get('description', '')
                     }
-                
+
                 return params
             
             strategy_info['parameters'] = extract_parameters(template.default_config, '', template.validation_rules)
@@ -11327,54 +11744,10 @@ def run_backtest():
                             'message': f'无法创建策略模板: {strategy_name}，请检查策略配置参数'
                         })
                     
-                    # 保存策略实例到数据库
-                    try:
-                        if db_pool:
-                            # 先插入策略配置到 strategy_configs 表
-                            config_insert_query = """
-                            INSERT INTO strategy_configs
-                            (strategy_name, strategy_type, config_json, is_template, created_at, created_by)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (strategy_name) DO NOTHING
-                            """
-                            
-                            db_pool.execute(config_insert_query, (
-                                actual_strategy_type,
-                                actual_strategy_type,
-                                json.dumps(converted_config),
-                                True,  # 是模板
-                                datetime.now(),
-                                'system'
-                            ))
-                            
-                            # 再插入策略实例
-                            instance_insert_query = """
-                            INSERT INTO strategy_instances 
-                            (instance_name, strategy_name, account_id, symbol, timeframe, 
-                             status, config_json, performance_json, created_at, created_by)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """
-                            
-                            db_pool.execute(instance_insert_query, (
-                                template_strategy_name,
-                                actual_strategy_type,
-                                'system',  # 系统创建的策略
-                                converted_config.get('symbol', 'BTC-USDT'),
-                                converted_config.get('timeframe', '1h'),
-                                'STOPPED',
-                                json.dumps(converted_config),
-                                json.dumps({}),
-                                datetime.now(),
-                                'system'
-                            ))
-                            
-                            logger.info(f"策略实例已保存到数据库: {template_strategy_name}")
-                        else:
-                            logger.warning("数据库连接不可用，策略实例未保存")
-                            
-                    except Exception as save_error:
-                        logger.error(f"保存策略实例到数据库失败: {save_error}")
-                        # 即使保存失败，也继续执行
+                    # 回测仅需内存中的策略实例，不再写入 strategy_instances / strategy_configs 正式表。
+                    # （历史上这里会插入 account_id='system' 的记录，导致回测用的 template_xxx
+                    #  策略污染正式策略列表。回测结果应只保存到回测结果表。）
+                    logger.info(f"回测策略实例已在内存创建: {template_strategy_name}（不写入正式策略表）")
                 else:
                     # 策略已存在，更新参数
                     logger.info(f"更新现有策略模板参数: {template_strategy_name}")
@@ -15608,17 +15981,23 @@ def remove_user_subscription(openid, subscription_type):
 
 # ==================== OKX 市场数据代理 ====================
 
-def _fetch_okx_candles_paged(instId, bar, target_limit):
+def _fetch_okx_candles_paged(instId, bar, target_limit, is_demo=True):
     """通过 OKX /market/history-candles 分页拉取，直到攒够 target_limit 条。
 
     复用 OKXRESTClient.get_historical_klines（单页最多 300 条，用 after 游标向过去翻页），
     避免 /market/candles 单次仅 100 条的限制。返回 OKX 数组格式（倒序，最新在前），
     与前端 fetchKlineData 的解析一致。
+
+    Args:
+        instId: 交易对
+        bar: K线周期
+        target_limit: 目标数据条数
+        is_demo: 是否使用模拟盘（默认True）
     """
     import asyncio
     from exchange.exchange_factory import create_exchange_client
 
-    rest_client = create_exchange_client(exchange='okx', client_type='rest', is_demo=True)
+    rest_client = create_exchange_client(exchange='okx', client_type='rest', is_demo=is_demo)
 
     async def _run():
         all_rows = []
@@ -15662,6 +16041,7 @@ def proxy_okx_candles():
         instId: 交易对（如 BTC-USDT-SWAP）
         bar: 时间周期（1m, 5m, 15m, 1H, 4H, 1D 等）
         limit: 数据条数（默认 100）
+        is_demo: 是否使用模拟盘（1=模拟盘，0=实盘，默认1）
 
     limit <= 100 时走实时 /market/candles（最新一根更及时）；
     limit > 100 时走分页历史接口，突破单次 100 条限制。
@@ -15672,6 +16052,7 @@ def proxy_okx_candles():
         instId = request.args.get('instId')
         bar = request.args.get('bar', '15m')
         limit = request.args.get('limit', '100')
+        is_demo_str = request.args.get('is_demo', '1')
 
         if not instId:
             return jsonify({
@@ -15685,25 +16066,33 @@ def proxy_okx_candles():
         except (TypeError, ValueError):
             limit_int = 100
 
+        # 解析 is_demo 参数
+        is_demo = is_demo_str in ('1', 'true', 'True')
+
         # 需要超过 100 条时，走分页历史接口
         if limit_int > 100:
             try:
-                rows = _fetch_okx_candles_paged(instId, bar, limit_int)
+                rows = _fetch_okx_candles_paged(instId, bar, limit_int, is_demo)
                 return jsonify({'code': '0', 'msg': '', 'data': rows}), 200
             except Exception as e:
                 logger.error(f"分页获取 OKX K线失败，回退单次请求: {e}")
                 # 回退到单次 100 条，避免整个图表空白
 
         # 构建 OKX API URL（<=100 条或分页回退）
-        url = f'https://www.okx.com/api/v5/market/candles'
+        url = f'https://openapi.okx.com/api/v5/market/candles'
         params = {
             'instId': instId,
             'bar': bar,
             'limit': str(min(limit_int, 100))
         }
 
+        # 根据 is_demo 添加模拟盘标记
+        headers = {}
+        if is_demo:
+            headers['x-simulated-trading'] = '1'
+
         # 请求 OKX API
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
 
         # 返回 OKX 的响应
@@ -15726,11 +16115,75 @@ def proxy_okx_candles():
             'data': []
         }), 500
 
+@app.route('/api/v1/market/candles/latest', methods=['GET'])
+def get_latest_candle():
+    """
+    获取最新一根K线（用于增量更新，节省带宽）
+
+    查询参数:
+        instId: 交易对（如 BTC-USDT-SWAP）
+        bar: 时间周期（1m, 5m, 15m, 1H, 4H, 1D 等）
+        is_demo: 是否使用模拟盘（1=模拟盘，0=实盘，默认1）
+
+    返回: OKX 格式的单根K线数据
+    """
+    try:
+        import requests
+
+        instId = request.args.get('instId')
+        bar = request.args.get('bar', '1m')
+        is_demo_str = request.args.get('is_demo', '1')
+
+        if not instId:
+            return jsonify({
+                'code': '1',
+                'msg': '缺少 instId 参数',
+                'data': []
+            }), 400
+
+        # 解析 is_demo 参数
+        is_demo = is_demo_str in ('1', 'true', 'True')
+
+        # 构建 OKX API URL（只拉取1根K线）
+        url = 'https://openapi.okx.com/api/v5/market/candles'
+        params = {
+            'instId': instId,
+            'bar': bar,
+            'limit': '1'
+        }
+
+        # 根据 is_demo 添加模拟盘标记
+        headers = {}
+        if is_demo:
+            headers['x-simulated-trading'] = '1'
+
+        # 请求 OKX API
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        response.raise_for_status()
+
+        # 返回 OKX 的响应
+        return jsonify(response.json()), response.status_code
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"获取最新K线失败: {e}")
+        return jsonify({
+            'code': '1',
+            'msg': f'请求失败: {str(e)}',
+            'data': []
+        }), 500
+    except Exception as e:
+        logger.error(f"获取最新K线异常: {e}")
+        return jsonify({
+            'code': '1',
+            'msg': f'服务器错误: {str(e)}',
+            'data': []
+        }), 500
+
 @app.route('/api/v1/market/ticker', methods=['GET'])
 def proxy_okx_ticker():
     """
     代理 OKX 行情数据请求（解决前端 CORS 问题）
-    
+
     查询参数:
         instId: 交易对（如 BTC-USDT-SWAP）
     """
@@ -15973,10 +16426,11 @@ def get_symbols():
 if __name__ == '__main__':
     # 初始化数据库
     init_db()
-    
-    # 启动跟单监控器
-    start_follow_monitor_in_background()
-    
+
+    # 策略精简: 已禁用跟单监控器（strategy-only 分支不需要跟单功能）
+    # start_follow_monitor_in_background()
+    logger.info("ℹ️ 跟单监控器已在 strategy-only 分支禁用")
+
     # 启动自动清理任务
     start_auto_cleanup_task()
     
@@ -15996,10 +16450,12 @@ else:
         except Exception as e:
             logger.error(f"❌ 数据库连接池初始化失败: {e}")
             return
-        
-        time.sleep(3)  # 等待3秒，确保Flask完全启动
-        start_follow_monitor_in_background()
-    
+
+        # 策略精简: 已禁用跟单监控器（strategy-only 分支不需要跟单功能）
+        # time.sleep(3)  # 等待3秒，确保Flask完全启动
+        # start_follow_monitor_in_background()
+        logger.info("ℹ️ 跟单监控器已在 strategy-only 分支禁用")
+
     # 在后台线程中延迟启动监控器
     monitor_thread = threading.Thread(target=delayed_start_monitor, daemon=True)
     monitor_thread.start()

@@ -13,6 +13,11 @@ BINANCE_CONFIG = {
     'testnet_url': 'https://testnet.binance.vision',  # 测试网API基础URL
     'ws_url': 'wss://stream.binance.com:9443/ws',  # 主网WebSocket URL
     'testnet_ws_url': 'wss://testnet.binance.vision/ws',  # 测试网WebSocket URL
+    # USDT-M 永续合约（fapi）相关地址
+    'fapi_base_url': 'https://fapi.binance.com',              # 主网 U 本位合约 REST
+    'fapi_testnet_url': 'https://testnet.binancefuture.com',  # 测试网 U 本位合约 REST
+    'fapi_ws_url': 'wss://fstream.binance.com/ws',            # 主网 U 本位合约 WS
+    'fapi_testnet_ws_url': 'wss://stream.binancefuture.com/ws',  # 测试网 U 本位合约 WS
     'timeout': 30,  # 请求超时时间（秒）
     'max_retries': 3,  # 最大重试次数
     'rate_limit': {
@@ -47,6 +52,29 @@ def get_binance_ws_config():
         'is_demo': config['is_demo'],
         'ws_url': config['testnet_ws_url'] if config['is_demo'] else config['ws_url'],
         'timeout': config['timeout']
+    }
+
+def get_binance_fapi_config():
+    """获取币安 USDT-M 合约(fapi) REST 配置"""
+    config = get_binance_config()
+    return {
+        'api_key': config['api_key'],
+        'api_secret': config['api_secret'],
+        'is_demo': config['is_demo'],
+        'base_url': config['fapi_testnet_url'] if config['is_demo'] else config['fapi_base_url'],
+        'timeout': config['timeout'],
+        'max_retries': config['max_retries'],
+    }
+
+def get_binance_fapi_ws_config():
+    """获取币安 USDT-M 合约(fapi) WebSocket 配置"""
+    config = get_binance_config()
+    return {
+        'api_key': config['api_key'],
+        'api_secret': config['api_secret'],
+        'is_demo': config['is_demo'],
+        'ws_url': config['fapi_testnet_ws_url'] if config['is_demo'] else config['fapi_ws_url'],
+        'timeout': config['timeout'],
     }
 
 def get_binance_rate_limit():

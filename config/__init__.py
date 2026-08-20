@@ -11,7 +11,7 @@
 - 模块调度配置
 """
 
-from .config import get_mysql_config, get_okx_config, get_websocket_config, get_api_server_config, get_stop_loss_config, get_memory_config
+from .config import get_mysql_config, get_okx_config, get_websocket_config, get_api_server_config, get_stop_loss_config, get_memory_config, get_reconcile_config
 from .binance_config import get_binance_config, get_binance_api_config, get_binance_ws_config
 from .logger_config import get_logger_config
 from .dingtalk_config import get_dingtalk_config
@@ -55,5 +55,6 @@ __all__ = [
     "validate_module_config",
     "get_environment_specific_config",
     "get_stop_loss_config",
+    "get_reconcile_config",
     "get_memory_config"
 ] 

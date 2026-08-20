@@ -57,6 +57,7 @@ class HyperliquidWebSocketClient(BaseWebSocketClient):
             logger.info(f"[Hyperliquid WS] 正在连接到 {self.ws_url}")
             self._ws = await websockets.connect(
                 self.ws_url,
+                proxy=self.proxy,    # 出网代理（None=直连）
                 ping_interval=None,  # 禁用自动ping，手动处理心跳
                 close_timeout=10
             )

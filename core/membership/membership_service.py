@@ -224,7 +224,7 @@ class MembershipService:
                     SELECT COUNT(*) as count 
                     FROM strategy_backtests 
                     WHERE created_by_user_id = %s 
-                    AND DATE(created_at) = CURDATE()
+                    AND DATE(created_at) = CURRENT_DATE
                 """
             elif resource_type == 'forward_rules':
                 max_limit = membership.get('max_forward_rules', 0)
@@ -413,8 +413,8 @@ class MembershipService:
                         self.db_pool.execute("""
                             INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
                             VALUES (%s, %s, %s, NULL, NOW())
-                            ON DUPLICATE KEY UPDATE 
-                                permission_level = VALUES(permission_level),
+                            ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                                permission_level = EXCLUDED.permission_level,
                                 granted_at = NOW()
                         """, (user_id, module_code, permission_level))
                     except Exception as perm_error:
@@ -506,8 +506,8 @@ class MembershipService:
                         self.db_pool.execute("""
                             INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
                             VALUES (%s, %s, %s, NULL, NOW())
-                            ON DUPLICATE KEY UPDATE 
-                                permission_level = VALUES(permission_level),
+                            ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                                permission_level = EXCLUDED.permission_level,
                                 granted_at = NOW()
                         """, (user_id, module_code, permission_level))
                     except Exception as perm_error:
@@ -606,8 +606,8 @@ class MembershipService:
                         self.db_pool.execute("""
                             INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
                             VALUES (%s, %s, %s, NULL, NOW())
-                            ON DUPLICATE KEY UPDATE 
-                                permission_level = VALUES(permission_level),
+                            ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                                permission_level = EXCLUDED.permission_level,
                                 granted_at = NOW()
                         """, (user_id, module_code, permission_level))
                     except Exception as perm_error:

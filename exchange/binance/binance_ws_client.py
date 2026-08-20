@@ -93,7 +93,8 @@ class BinanceWebSocketClient(BaseWebSocketClient):
                 headers = {}
             
             logger.info(f"连接币安WebSocket: {auth_url}")
-            websocket = await websockets.connect(auth_url, extra_headers=headers)
+            # 注：websockets 14+ 将 extra_headers 重命名为 additional_headers
+            websocket = await websockets.connect(auth_url, additional_headers=headers, proxy=self.proxy)
             logger.info(f"币安WebSocket连接成功: {stream_name}")
             return websocket
             

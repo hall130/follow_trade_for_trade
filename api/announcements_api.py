@@ -40,7 +40,7 @@ def get_announcements():
         sql = """
             SELECT * FROM system_announcements 
             WHERE is_active = 1 
-            AND (expire_at IS NULL OR expire_at > UTC_TIMESTAMP())
+            AND (expire_at IS NULL OR expire_at > (NOW() AT TIME ZONE 'UTC'))
             ORDER BY is_pinned DESC, priority DESC, created_at DESC
             LIMIT 50
         """
@@ -138,7 +138,7 @@ def create_announcement():
         sql = """
             INSERT INTO system_announcements 
             (title, content, type, priority, is_pinned, created_by, created_at) 
-            VALUES (%s, %s, %s, %s, %s, %s, UTC_TIMESTAMP())
+            VALUES (%s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
         """
         
         announcement_id = db_pool.execute(sql, (
@@ -186,7 +186,7 @@ def update_announcement(announcement_id):
         sql = """
             UPDATE system_announcements 
             SET title = %s, content = %s, type = %s, 
-                priority = %s, is_pinned = %s, updated_at = UTC_TIMESTAMP()
+                priority = %s, is_pinned = %s, updated_at = (NOW() AT TIME ZONE 'UTC')
             WHERE id = %s
         """
         

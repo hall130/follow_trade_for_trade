@@ -1,13 +1,17 @@
 # config.py
-
+#
+# 数据库已迁移至 PostgreSQL + TimescaleDB。
+# 保留 MYSQL_CONFIG 变量名与 get_mysql_config() 函数名以兼容全部现有调用点，
+# 仅底层驱动改为 psycopg2（见 database/db.py）。键名 host/port/user/password/db
+# 直接作为关键字参数传给 MySQLPool。
 MYSQL_CONFIG = {
-    'host': 'localhost',      # 修改为你的MySQL主机
-    'port': 3306,            # MySQL端口
-    'user': 'root',     # MySQL用户名
-    'password': 'root', # MySQL密码
-    'db': 'trade_db',        # 数据库名
-    'mincached': 5,          # 最小缓存连接数（提高以支持更多并发）
-    'maxcached': 50          # 最大缓存连接数（提高以支持100+用户并发）
+    'host': 'localhost',        # PostgreSQL 主机
+    'port': 5432,               # PostgreSQL 端口
+    'user': 'postgres',         # PostgreSQL 用户名
+    'password': 'Sfplc_2026!',  # PostgreSQL 密码
+    'db': 'trade_db',           # 数据库名
+    'mincached': 5,             # 最小缓存连接数
+    'maxcached': 50             # 最大缓存连接数（支持100+用户并发）
 }
 
 REDIS_CONFIG = {
@@ -59,7 +63,19 @@ def get_stop_loss_config():
         'notification_enabled': True,          # 是否启用通知
         'auto_close_positions': True,         # 是否自动平仓
         'max_stop_loss_count': 5,             # 最大止损次数
-    } 
+    }
+
+# 对账（仓位异常检查）配置
+RECONCILE_CONFIG = {
+    'interval_seconds': 300,   # 定时对账周期（秒），原为固定 1800
+    'on_fill': True,           # 成交后是否触发定向对账
+    'on_fill_delay': 3,        # 成交后延迟多少秒再对账（等交易所持仓刷新）
+    'on_fill_throttle': 10,    # 同一 customer+symbol 触发的最小间隔（秒），防刷屏
+}
+
+def get_reconcile_config():
+    """获取对账模块配置"""
+    return RECONCILE_CONFIG.copy()
 
 # 内存管理配置
 MEMORY_CONFIG = {
@@ -92,6 +108,32 @@ OKX_CONFIG = {
 def get_okx_config():
     """获取OKX交易所配置"""
     return OKX_CONFIG.copy()
+
+# 出网代理配置
+# 用于国内网络环境下访问被墙的交易所 REST/行情接口（如 OKX）。
+# enabled=True 时，url 生效；url 留空则回退读取环境变量 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY。
+# 例：Clash/V2Ray 本地代理通常为 http://127.0.0.1:7897
+PROXY_CONFIG = {
+    'enabled': True,
+    'url': 'http://127.0.0.1:7897',
+}
+
+def get_proxy_url():
+    """返回可用的代理 URL（字符串）；未启用或未配置时返回 None。
+
+    优先级：PROXY_CONFIG['url'] > 环境变量 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY。
+    """
+    import os
+    if not PROXY_CONFIG.get('enabled'):
+        return None
+    url = (PROXY_CONFIG.get('url') or '').strip()
+    if url:
+        return url
+    for key in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'):
+        val = os.environ.get(key)
+        if val:
+            return val.strip()
+    return None
 
 # 注意：REDIS_CONFIG 已在文件开头定义（第13行），这里不再重复定义
 

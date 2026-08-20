@@ -4457,15 +4457,12 @@
                         </div>
                         <div class="col-md-6">
                             <h6>策略设置</h6>
-                            <table class="table table-borderless">
-                                <tr><td><strong>信号源:</strong></td><td id="strategyDetailTrader">-</td></tr>
-                                <tr><td><strong>规则:</strong></td><td id="strategyDetailSymbol">-</td></tr>
-                                <tr><td><strong>信号源数量:</strong></td><td id="strategyDetailPosSide">-</td></tr>
-                                <tr><td><strong>规则数量:</strong></td><td id="strategyDetailFollowValue">-</td></tr>
-                                <tr><td><strong>杠杆倍数:</strong></td><td id="strategyDetailLeverage">-</td></tr>
-                                <tr><td><strong>最大净杠杆:</strong></td><td id="strategyDetailMaxLeverage">-</td></tr>
-                                <tr><td><strong>最大订单数:</strong></td><td id="strategyDetailMaxOrders">-</td></tr>
-                            </table>
+                            <div id="strategyDetailSettings">
+                                <!-- 策略参数将根据策略类型动态显示 -->
+                                <table class="table table-borderless">
+                                    <tr><td colspan="2" class="text-muted">加载中...</td></tr>
+                                </table>
+                            </div>
                         </div>
                     </div>
                     <div class="row mt-3">
@@ -4535,6 +4532,14 @@
                 </div>
                 <div class="modal-body">
                     <form id="createStrategyTradeForm">
+                        <!-- 基本信息 -->
+                        <div class="row">
+                            <div class="col-12 mb-3">
+                                <h6><i class="bi bi-gear"></i> 基本设置</h6>
+                                <hr>
+                            </div>
+                        </div>
+
                         <div class="row">
                             <div class="col-md-6">
                                 <label for="createStrategyTradeType" class="form-label">策略类型</label>
@@ -4548,7 +4553,16 @@
                                 <input type="text" class="form-control" id="createStrategyTradeName" name="strategyName" required>
                             </div>
                         </div>
+
                         <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="createStrategyTradeIsDemo" class="form-label">交易模式</label>
+                                <select class="form-select" id="createStrategyTradeIsDemo" required>
+                                    <option value="1" selected>模拟盘</option>
+                                    <option value="0">实盘</option>
+                                </select>
+                                <div class="form-text">选择交易模式后会自动筛选对应的客户列表</div>
+                            </div>
                             <div class="col-md-6">
                                 <label for="tradingSymbol" class="form-label">交易对</label>
                                 <select class="form-select" id="tradingSymbol" name="tradingSymbol" required>
@@ -4558,13 +4572,15 @@
                                     <option value="BNB-USDT-SWAP">BNB-USDT-SWAP</option>
                                     <option value="ADA-USDT-SWAP">ADA-USDT-SWAP</option>
                                     <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
-
                                 </select>
                             </div>
+                        </div>
+
+                        <div class="row mt-3">
                             <div class="col-md-6">
-                                <label for="timeframe" class="form-label">时间框架</label>
+                                <label for="timeframe" class="form-label">K线周期</label>
                                 <select class="form-select" id="timeframe" name="timeframe" required>
-                                    <option value="">请选择时间框架</option>
+                                    <option value="">请选择K线周期</option>
                                     <option value="1m">1分钟</option>
                                     <option value="5m">5分钟</option>
                                     <option value="15m">15分钟</option>
@@ -4572,26 +4588,41 @@
                                     <option value="4h">4小时</option>
                                     <option value="1d">1天</option>
                                 </select>
+                                <div class="form-text">策略接收的K线数据周期</div>
                             </div>
                         </div>
-                        <div class="row mt-3">
-                            <div class="col-md-6">
-                                <label for="riskPerTrade" class="form-label">每次交易风险比例</label>
-                                <input type="number" class="form-control" id="riskPerTrade" name="riskPerTrade" value="0.02" min="0.01" max="0.1" step="0.01" required>
-                            </div>
-                            <div class="col-md-6">
-                                <label for="maxPositions" class="form-label">最大持仓数量</label>
-                                <input type="number" class="form-control" id="maxPositions" name="maxPositions" value="3" min="1" max="10" required>
+
+                        <!-- 风险管理参数 -->
+                        <div class="row mt-4">
+                            <div class="col-12 mb-3">
+                                <h6><i class="bi bi-shield-check"></i> 风险管理</h6>
+                                <hr>
                             </div>
                         </div>
-                        <div class="row mt-3">
+
+                        <div class="row">
                             <div class="col-md-6">
                                 <label for="stopLossPct" class="form-label">止损百分比</label>
                                 <input type="number" class="form-control" id="stopLossPct" name="stopLossPct" value="0.02" min="0.005" max="0.1" step="0.005" required>
+                                <div class="form-text">单笔交易最大亏损比例（如2%）</div>
                             </div>
                             <div class="col-md-6">
                                 <label for="takeProfitPct" class="form-label">止盈百分比</label>
                                 <input type="number" class="form-control" id="takeProfitPct" name="takeProfitPct" value="0.06" min="0.01" max="0.5" step="0.01" required>
+                                <div class="form-text">单笔交易目标盈利比例（如6%）</div>
+                            </div>
+                        </div>
+
+                        <div class="row mt-3">
+                            <div class="col-md-6">
+                                <label for="maxPositions" class="form-label">最大持仓数</label>
+                                <input type="number" class="form-control" id="maxPositions" name="maxPositions" value="3" min="1" max="10" required>
+                                <div class="form-text">同时持有的最大仓位数量</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="riskPerTrade" class="form-label">单笔交易风险</label>
+                                <input type="number" class="form-control" id="riskPerTrade" name="riskPerTrade" value="0.02" min="0.01" max="0.1" step="0.01" required>
+                                <div class="form-text">每笔交易的风险比例（如2%）</div>
                             </div>
                         </div>
                         
@@ -4759,6 +4790,14 @@
                         
                         <div class="row mt-3">
                             <div class="col-md-6">
+                                <label for="editStrategyTradeIsDemo" class="form-label">交易模式</label>
+                                <select class="form-select" id="editStrategyTradeIsDemo" required>
+                                    <option value="1">模拟盘</option>
+                                    <option value="0">实盘</option>
+                                </select>
+                                <div class="form-text">选择交易模式后会自动筛选对应的客户列表</div>
+                            </div>
+                            <div class="col-md-6">
                                 <label for="editStrategyTradeSymbol" class="form-label">交易对</label>
                                 <select class="form-select" id="editStrategyTradeSymbol" required>
                                     <option value="BTC-USDT-SWAP">BTC-USDT-SWAP</option>
@@ -4768,8 +4807,11 @@
                                     <option value="SOL-USDT-SWAP">SOL-USDT-SWAP</option>
                                 </select>
                             </div>
+                        </div>
+
+                        <div class="row mt-3">
                             <div class="col-md-6">
-                                <label for="editStrategyTradeTimeframe" class="form-label">时间框架</label>
+                                <label for="editStrategyTradeTimeframe" class="form-label">K线周期</label>
                                 <select class="form-select" id="editStrategyTradeTimeframe" required>
                                     <option value="1m">1分钟</option>
                                     <option value="5m">5分钟</option>
@@ -4778,6 +4820,10 @@
                                     <option value="4h">4小时</option>
                                     <option value="1d">1天</option>
                                 </select>
+                                <div class="form-text">策略接收的K线数据周期</div>
+                            </div>
+                            <div class="col-md-6">
+                                <!-- 预留空间 -->
                             </div>
                         </div>
                         

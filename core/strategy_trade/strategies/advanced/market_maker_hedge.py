@@ -28,6 +28,7 @@ class MarketMakerHedgeStrategy(MarketMakerStrategy):
     
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
         
         # 对冲参数
         self.enable_hedge = self.get_parameter('enable_hedge', True)  # 是否启用对冲

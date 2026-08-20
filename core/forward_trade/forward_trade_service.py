@@ -41,7 +41,7 @@ class ForwardTradeService:
         """刷新配置缓存"""
         try:
             query = """
-                SELECT 
+                SELECT
                     ftc.id,
                     ftc.config_name,
                     ftc.user_id,
@@ -50,12 +50,7 @@ class ForwardTradeService:
                     ftc.customer_uid,
                     ftc.customer_name,
                     ftc.amount_ratio,
-                    ftc.min_amount,
-                    ftc.max_amount,
                     ftc.enabled,
-                    ftc.symbol_filter,
-                    ftc.action_filter,
-                    ftc.risk_control,
                     c.exchange,
                     c.api_key,
                     c.api_secret,
@@ -78,11 +73,6 @@ class ForwardTradeService:
                     'customer_uid': row['customer_uid'],
                     'customer_name': row['customer_name'],
                     'amount_ratio': float(row['amount_ratio']),
-                    'min_amount': float(row['min_amount']) if row['min_amount'] else None,
-                    'max_amount': float(row['max_amount']) if row['max_amount'] else None,
-                    'symbol_filter': json.loads(row['symbol_filter']) if row['symbol_filter'] else None,
-                    'action_filter': json.loads(row['action_filter']) if row['action_filter'] else None,
-                    'risk_control': json.loads(row['risk_control']) if row['risk_control'] else {},
                     'exchange': row['exchange'],
                     'api_key': row['api_key'],
                     'api_secret': row['api_secret'],

@@ -28,6 +28,7 @@ class MarketMakerStrategy(StrategyBase):
     
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
         
         # 初始化 signals 属性（基类 BaseStrategy 没有此属性，需要手动初始化）
         if not hasattr(self, 'signals'):

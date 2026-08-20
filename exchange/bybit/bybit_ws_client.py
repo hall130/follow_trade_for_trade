@@ -43,12 +43,12 @@ class BybitWebSocketClient(BaseWebSocketClient):
         """连接WebSocket"""
         try:
             if not self._connected:
-                self._websocket = await websockets.connect(self.ws_url)
+                self._websocket = await websockets.connect(self.ws_url, proxy=self.proxy)
                 self._connected = True
                 logger.info("Bybit公共WebSocket连接成功")
-            
+
             if self.api_key and not self._private_connected:
-                self._private_websocket = await websockets.connect(self.private_ws_url)
+                self._private_websocket = await websockets.connect(self.private_ws_url, proxy=self.proxy)
                 self._private_connected = True
                 logger.info("Bybit私有WebSocket连接成功")
             

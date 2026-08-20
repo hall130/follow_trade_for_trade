@@ -18,6 +18,7 @@ class HighFrequencyStrategy(StrategyBase):
     
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
         
         # 策略参数
         self.fast_ema_period = self.get_parameter('fast_ema_period', 5)

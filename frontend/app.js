@@ -39,11 +39,21 @@ class OKXTradingApp {
                 'dashboard': 30000,     // 仪表盘：30秒
                 'limit-follow': 15000,  // 限价跟单：15秒
                 'strategy-trade': 20000, // 策略交易：20秒
-                'kline': 1000         // K线图：1秒
+                'kline': 30000        // K线图：30秒（全量更新）
             },
             timers: {},
             lastRefresh: {}
         };
+
+        // K线图相关状态
+        this.klineChart = null;
+        this.klineCandleSeries = null;
+        this.klineVolumeSeries = null;
+        this.klineMA7Series = null;
+        this.klineMA25Series = null;
+        this.klineSeparatorSeries = null;
+        this.klineRawData = null; // 原始K线数据缓存
+        this.klineIncrementalTimer = null; // 增量更新定时器
         
         this.init();
     }
@@ -1207,10 +1217,11 @@ class OKXTradingApp {
         if (this.currentPage) {
             this.stopAutoRefresh(this.currentPage);
         }
-        
-        // 如果当前是仪表盘页面，也要停止K线图的自动刷新
+
+        // 如果当前是仪表盘页面，也要停止K线图的自动刷新和增量更新
         if (this.currentPage === 'dashboard') {
             this.stopAutoRefresh('kline');
+            this.stopKlineIncrementalUpdate();
         }
         
         // 更新导航状态
@@ -1427,12 +1438,9 @@ class OKXTradingApp {
                 this.updateDashboardStats(statsData.data);
             }
 
-            // 加载最近活动（使用apiRequest自动包含认证Token）
-            const activitiesResponse = await this.apiRequest(`${this.apiBaseUrl}/activities/recent`);
-            if (activitiesResponse && activitiesResponse.ok) {
-                const activitiesData = await activitiesResponse.json();
-                this.updateRecentActivities(activitiesData.data);
-            }
+            // 注：原先此处调用 this.updateRecentActivities()，但该方法从未实现、
+            // 页面也无对应容器，权威版 loadDashboardData() 同样不加载“最近活动”。
+            // 该调用会抛 TypeError 并中断后续图表刷新，故移除以与权威版保持一致。
 
             // 更新图表
             this.updateDashboardCharts();
@@ -1886,38 +1894,26 @@ class OKXTradingApp {
 
     // 从OKX API获取K线数据（通过后端代理）
     async fetchKlineData(symbol, timeframe) {
-        // 根据时间周期计算需要的数据量
-        let limit = 100;
+        // 每个周期请求的条数 + 展示时间窗口（毫秒）。
+        // 后端 limit>100 时会分页拉取，突破 OKX 单次100条限制。
+        // 展示窗口按周期而定：小周期看几天，大周期看更长跨度，
+        // 避免日线只剩 7 根这种“数据很少”的问题。
         const now = Date.now();
-        
-        // 计算7天前的时间戳
-        const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
-        
-        // 根据时间周期调整数据量
-        switch(timeframe) {
-            case '1m':
-                limit = 4320; // 7天 * 24小时 * 60分钟
-                break;
-            case '5m':
-                limit = 2016; // 7天 * 24小时 * 12
-                break;
-            case '15m':
-                limit = 672; // 7天 * 24小时 * 4
-                break;
-            case '1H':
-                limit = 168; // 7天 * 24小时
-                break;
-            case '4H':
-                limit = 42; // 7天 * 6
-                break;
-            case '1D':
-                limit = 7; // 7天
-                break;
-        }
-        
+        const DAY = 24 * 60 * 60 * 1000;
+        const config = {
+            '1m':  { limit: 500,  window: 1 * DAY },    // 约8小时展示
+            '5m':  { limit: 500,  window: 2 * DAY },
+            '15m': { limit: 500,  window: 5 * DAY },
+            '1H':  { limit: 500,  window: 20 * DAY },
+            '4H':  { limit: 400,  window: 60 * DAY },
+            '1D':  { limit: 300,  window: 300 * DAY },  // 原为7根，改为约300天
+        };
+        const { limit, window } = config[timeframe] || { limit: 300, window: 30 * DAY };
+        const windowStart = now - window;
+
         // 使用后端代理，避免 CORS 问题
         const url = `${this.apiBaseUrl}/market/candles?instId=${symbol}&bar=${timeframe}&limit=${limit}`;
-        
+
         const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1930,7 +1926,7 @@ class OKXTradingApp {
             throw new Error(data.msg || 'API请求失败');
         }
 
-        // 转换数据格式并过滤最近3天的数据
+        // 转换数据格式并按周期对应的时间窗口过滤
         const klineData = data.data
             .map(item => ({
                 time: parseInt(item[0]), // 保持毫秒级时间戳
@@ -1940,7 +1936,7 @@ class OKXTradingApp {
                 close: parseFloat(item[4]),
                 volume: parseFloat(item[5]),
             }))
-            .filter(item => item.time >= sevenDaysAgo) // 只保留最近7天的数据
+            .filter(item => item.time >= windowStart) // 按周期动态窗口过滤
             .sort((a, b) => a.time - b.time); // 按时间排序
 
 
@@ -1976,7 +1972,7 @@ class OKXTradingApp {
         try {
             const symbolInput = document.getElementById('symbolSearch');
             const timeframeSelect = document.getElementById('timeframeSelect');
-            
+
             if (!symbolInput || !timeframeSelect) {
                 return;
             }
@@ -1988,18 +1984,112 @@ class OKXTradingApp {
                 return;
             }
 
-    
-
-            // 获取最新K线数据
+            // 获取最新K线数据（全量更新，30秒一次）
             const klineData = await this.fetchKlineData(symbol, timeframe);
-            
+
             if (klineData && klineData.length > 0) {
                 // 更新现有图表数据
                 this.updateKlineChartData(klineData);
-        
             }
         } catch (error) {
             console.error('❌ 静默更新K线图数据失败:', error);
+        }
+    }
+
+    // 增量更新最新一根K线（3秒一次，准实时）
+    async updateLatestKlineBar() {
+        try {
+            const symbolInput = document.getElementById('symbolSearch');
+            const timeframeSelect = document.getElementById('timeframeSelect');
+
+            if (!symbolInput || !timeframeSelect || !this.klineCandleSeries) {
+                return;
+            }
+
+            const symbol = symbolInput.value.trim().toUpperCase();
+            const timeframe = timeframeSelect.value;
+
+            if (!symbol) {
+                return;
+            }
+
+            // 只拉取最新一根K线
+            const url = `${this.apiBaseUrl}/market/candles/latest?instId=${symbol}&bar=${timeframe}`;
+            const response = await fetch(url);
+            const result = await response.json();
+
+            if (result.code === '0' && result.data && result.data.length > 0) {
+                const [ts, o, h, l, c, vol] = result.data[0];
+                const timestamp = parseInt(ts) / 1000;
+
+                const newBar = {
+                    time: timestamp,
+                    open: parseFloat(o),
+                    high: parseFloat(h),
+                    low: parseFloat(l),
+                    close: parseFloat(c)
+                };
+
+                const newVolume = {
+                    time: timestamp,
+                    value: parseFloat(vol),
+                    color: newBar.close >= newBar.open ? '#26a69a' : '#ef5350'
+                };
+
+                // 更新K线和成交量（LightweightCharts.update会自动判断是追加还是更新）
+                this.klineCandleSeries.update(newBar);
+                if (this.klineVolumeSeries) {
+                    this.klineVolumeSeries.update(newVolume);
+                }
+
+                // 更新原始数据缓存
+                if (this.klineRawData && this.klineRawData.length > 0) {
+                    const lastBar = this.klineRawData[this.klineRawData.length - 1];
+                    if (lastBar.time === parseInt(ts)) {
+                        // 更新最后一根K线
+                        lastBar.open = parseFloat(o);
+                        lastBar.high = parseFloat(h);
+                        lastBar.low = parseFloat(l);
+                        lastBar.close = parseFloat(c);
+                        lastBar.volume = parseFloat(vol);
+                    } else {
+                        // 追加新K线
+                        this.klineRawData.push({
+                            time: parseInt(ts),
+                            open: parseFloat(o),
+                            high: parseFloat(h),
+                            low: parseFloat(l),
+                            close: parseFloat(c),
+                            volume: parseFloat(vol)
+                        });
+                    }
+                }
+            }
+        } catch (error) {
+            // 静默失败，避免干扰用户
+            console.debug('增量更新K线失败:', error);
+        }
+    }
+
+    // 启动K线增量更新定时器
+    startKlineIncrementalUpdate() {
+        // 停止旧定时器
+        this.stopKlineIncrementalUpdate();
+
+        // 每3秒增量更新最新一根K线
+        this.klineIncrementalTimer = setInterval(() => {
+            this.updateLatestKlineBar();
+        }, 1000);
+
+        // console.log('✅ K线增量更新已启动（1秒间隔）');
+    }
+
+    // 停止K线增量更新定时器
+    stopKlineIncrementalUpdate() {
+        if (this.klineIncrementalTimer) {
+            clearInterval(this.klineIncrementalTimer);
+            this.klineIncrementalTimer = null;
+            // console.log('🛑 K线增量更新已停止');
         }
     }
 
@@ -2252,6 +2342,7 @@ class OKXTradingApp {
             this.klineMA7Series = ma7Series;
             this.klineMA25Series = ma25Series;
             this.klineSeparatorSeries = separatorSeries;
+            this.klineRawData = klineData; // 保存原始数据用于增量更新
 
             // 监听窗口大小变化
             const resizeObserver = new ResizeObserver(() => {
@@ -2262,7 +2353,9 @@ class OKXTradingApp {
             });
             resizeObserver.observe(container);
 
-    
+            // 启动增量更新定时器（3秒更新最新一根K线）
+            this.startKlineIncrementalUpdate();
+
         } catch (error) {
             console.error('专业K线图创建失败:', error);
             this.showKlineDataTable(klineData, 'K线数据');
@@ -2277,6 +2370,9 @@ class OKXTradingApp {
         }
 
         try {
+            // 保存原始数据
+            this.klineRawData = klineData;
+
             // 准备数据
             const candleData = klineData.map(item => ({
                 time: Math.floor(item.time / 1000),
@@ -2404,7 +2500,7 @@ class OKXTradingApp {
                 <td>${customer.stop_loss_enabled ? '<span class="badge bg-warning">已设置</span>' : '<span class="badge bg-light text-dark">未设置</span>'}</td>
                 <td>
                     <div class="btn-group" role="group">
-                        <button class="btn btn-sm btn-outline-success update-asset-btn" data-customer-uid="${customer.customer_uid}" title="更新资产">
+                        <button class="btn btn-sm btn-outline-success update-asset-btn" data-customer-uid="${customer.customer_uid}" data-is-demo="${customer.is_demo || 0}" title="更新资产">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-primary" onclick="app.editCustomer('${customer.customer_uid}')" title="编辑">
@@ -2728,7 +2824,8 @@ class OKXTradingApp {
         updateButtons.forEach(button => {
             button.addEventListener('click', (e) => {
                 const customerUid = e.target.closest('.update-asset-btn').getAttribute('data-customer-uid');
-                this.forceUpdateCustomerAsset(customerUid);
+                const isDemo = parseInt(e.target.closest('.update-asset-btn').getAttribute('data-is-demo')) || 0;
+                this.forceUpdateCustomerAsset(customerUid, isDemo);
             });
         });
     }
@@ -2774,18 +2871,22 @@ class OKXTradingApp {
     }
 
     // 强制更新指定客户资产
-    async forceUpdateCustomerAsset(customerUid) {
+    async forceUpdateCustomerAsset(customerUid, isDemo) {
         // 防止重复点击
         if (this.isUpdatingAssets) {
             this.showToast('提示', '正在更新中，请稍候...', 'info');
             return;
         }
-        
+
         try {
             this.isUpdatingAssets = true;
             this.showToast('提示', `正在更新客户 ${customerUid} 的资产...`, 'info');
-            
-            const isDemo = this.getIsDemo();
+
+            // 如果没有传入isDemo，使用全局配置
+            if (isDemo === undefined || isDemo === null) {
+                isDemo = this.getIsDemo();
+            }
+
             const response = await this.apiRequest(`${this.apiBaseUrl}/force_update_customer_assets`, {
                 method: 'POST',
                 headers: {
@@ -11721,13 +11822,16 @@ class OKXTradingApp {
                 <td class="text-danger">${strategy.max_drawdown ? (strategy.max_drawdown * 100).toFixed(2) + '%' : '-'}</td>
                 <td>
                     <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-info btn-sm" onclick="app.openStrategyMonitor('${strategy.name || strategy.instance_name}')" title="实时监控">
+                            <i class="bi bi-tv"></i>
+                        </button>
                         <button class="btn btn-outline-primary btn-sm" onclick="app.viewStrategyTradeDetail('${strategy.name || strategy.instance_name}')" title="查看详情">
                             <i class="bi bi-eye"></i>
                         </button>
                         <button class="btn btn-outline-secondary btn-sm" onclick="app.editStrategyTrade('${strategy.name || strategy.instance_name}')" title="编辑策略">
                             <i class="bi bi-pencil"></i>
                         </button>
-                        ${strategy.status === 'STOPPED' ? 
+                        ${strategy.status === 'STOPPED' ?
                             `<button class="btn btn-outline-success btn-sm" onclick="app.startStrategyTrade('${strategy.name || strategy.instance_name}')" title="启动策略">
                                 <i class="bi bi-play"></i>
                             </button>` :
@@ -11959,74 +12063,135 @@ class OKXTradingApp {
     // 显示策略详情模态框
     showStrategyTradeDetailModal(strategy) {
         // 填充基本信息
-        const elements = {
-            'strategyDetailName': strategy.name || '-',
-            'strategyDetailType': strategy.strategy_type || '-',
-            'strategyDetailSymbol': strategy.symbol || '-',
-            'strategyDetailTimeframe': strategy.timeframe || '-',
-            'strategyDetailReturn': strategy.total_return ? (strategy.total_return * 100).toFixed(2) + '%' : '-',
-            'strategyDetailWinRate': strategy.win_rate ? (strategy.win_rate * 100).toFixed(2) + '%' : '-',
-            'strategyDetailDrawdown': strategy.max_drawdown ? (strategy.max_drawdown * 100).toFixed(2) + '%' : '-',
-            'strategyDetailTrades': strategy.total_trades || '0',
-            'strategyDetailSharpe': strategy.sharpe_ratio ? strategy.sharpe_ratio.toFixed(2) : '-'
-        };
-        
-        for (const [id, value] of Object.entries(elements)) {
-            const element = document.getElementById(id);
-            if (element) {
-                element.textContent = value;
-            }
-        }
-        
+        document.getElementById('strategyDetailName').textContent = strategy.name || '-';
+        document.getElementById('strategyDetailType').textContent = strategy.strategy_type || '-';
+
         // 设置状态
         const statusElement = document.getElementById('strategyDetailStatus');
         if (statusElement) {
             statusElement.innerHTML = `<span class="badge ${this.getStatusBadgeClass(strategy.status)}">${this.getStatusText(strategy.status)}</span>`;
         }
-        
+
+        // 根据策略类型动态显示参数
+        const strategySettingsContainer = document.getElementById('strategyDetailSettings');
+        if (strategySettingsContainer) {
+            strategySettingsContainer.innerHTML = this.renderStrategySettings(strategy);
+        }
+
         // 显示模态框
         const modal = new bootstrap.Modal(document.getElementById('strategyDetailModal'));
         modal.show();
+    }
+
+    renderStrategySettings(strategy) {
+        const config = strategy.config || {};
+        const strategyType = strategy.strategy_type || '';
+
+        let html = '<table class="table table-borderless">';
+
+        // 通用字段
+        html += `<tr><td><strong>交易对:</strong></td><td>${strategy.symbol || '-'}</td></tr>`;
+        html += `<tr><td><strong>K线周期:</strong></td><td>${strategy.timeframe || '-'}</td></tr>`;
+
+        // 添加交易模式显示
+        const isDemoText = (config.is_demo === true || config.is_demo === 1 || strategy.is_demo === true || strategy.is_demo === 1) ? '模拟盘' : '实盘';
+        const isDemoColor = isDemoText === '模拟盘' ? 'text-warning' : 'text-danger';
+        html += `<tr><td><strong>交易模式:</strong></td><td><span class="${isDemoColor} fw-bold">${isDemoText}</span></td></tr>`;
+
+        // 根据策略类型显示特定参数
+        if (strategyType === 'FMZGrid_Strategy') {
+            // FMZ网格策略参数
+            html += `<tr><td><strong>目标比例:</strong></td><td>${config.ratio ? (config.ratio * 100).toFixed(1) + '%' : '-'}</td></tr>`;
+            html += `<tr><td><strong>网格密度:</strong></td><td>${config.grid_ratio ? (config.grid_ratio * 100).toFixed(2) + '%' : '-'}</td></tr>`;
+            html += `<tr><td><strong>更新间隔:</strong></td><td>${config.interval ? config.interval + 'ms' : '-'}</td></tr>`;
+            html += `<tr><td><strong>价格精度:</strong></td><td>${config.price_precision || '-'}</td></tr>`;
+            html += `<tr><td><strong>数量精度:</strong></td><td>${config.amount_precision || '-'}</td></tr>`;
+            html += `<tr><td><strong>最大持仓数:</strong></td><td>${config.max_positions || '-'}</td></tr>`;
+        } else if (strategyType === 'PerpGrid_Strategy') {
+            // 永续网格策略参数
+            html += `<tr><td><strong>网格交易价值:</strong></td><td>${config.grid_value ? config.grid_value + ' USDT' : '-'}</td></tr>`;
+            html += `<tr><td><strong>网格间距:</strong></td><td>${config.grid_spacing ? (config.grid_spacing * 100).toFixed(2) + '%' : '-'}</td></tr>`;
+            html += `<tr><td><strong>基准价:</strong></td><td>${config.base_price || '自动'}</td></tr>`;
+            html += `<tr><td><strong>杠杆倍数:</strong></td><td>${config.leverage || '1'}x</td></tr>`;
+            html += `<tr><td><strong>价格上界:</strong></td><td>${config.upper_bound || '无限制'}</td></tr>`;
+            html += `<tr><td><strong>价格下界:</strong></td><td>${config.lower_bound || '无限制'}</td></tr>`;
+            html += `<tr><td><strong>最大持仓价值:</strong></td><td>${config.max_position_value ? config.max_position_value + ' USDT' : '无限制'}</td></tr>`;
+        } else if (strategyType === 'RSI_Strategy') {
+            // RSI策略参数
+            html += `<tr><td><strong>RSI周期:</strong></td><td>${config.rsi_period || '-'}</td></tr>`;
+            html += `<tr><td><strong>超买阈值:</strong></td><td>${config.overbought || '-'}</td></tr>`;
+            html += `<tr><td><strong>超卖阈值:</strong></td><td>${config.oversold || '-'}</td></tr>`;
+        } else if (strategyType === 'MA_Cross_Strategy') {
+            // 均线交叉策略参数
+            html += `<tr><td><strong>快线周期:</strong></td><td>${config.fast_period || '-'}</td></tr>`;
+            html += `<tr><td><strong>慢线周期:</strong></td><td>${config.slow_period || '-'}</td></tr>`;
+        } else {
+            // 通用策略参数
+            html += `<tr><td><strong>止损百分比:</strong></td><td>${config.stop_loss_pct ? (config.stop_loss_pct * 100).toFixed(2) + '%' : '-'}</td></tr>`;
+            html += `<tr><td><strong>止盈百分比:</strong></td><td>${config.take_profit_pct ? (config.take_profit_pct * 100).toFixed(2) + '%' : '-'}</td></tr>`;
+            html += `<tr><td><strong>每次交易风险:</strong></td><td>${config.risk_per_trade ? (config.risk_per_trade * 100).toFixed(2) + '%' : '-'}</td></tr>`;
+            html += `<tr><td><strong>最大持仓数:</strong></td><td>${config.max_positions || '-'}</td></tr>`;
+        }
+
+        html += '</table>';
+        return html;
     }
     
     // 启动策略（带权限控制）
     async startStrategyTrade(strategyName) {
         try {
-            // 构建启动配置
+            // 先获取策略的完整配置
+            const strategyResponse = await fetch(`${this.apiBaseUrl}/strategy/instances/${strategyName}`);
+            let strategyConfig = {};
+
+            if (strategyResponse.ok) {
+                const strategyData = await strategyResponse.json();
+                if (strategyData.success && strategyData.data) {
+                    strategyConfig = strategyData.data;
+                }
+            }
+
+            // 构建启动配置（使用策略保存的配置）
             const config = {
-                symbol: 'BTC-USDT-SWAP', // 默认值，实际应该从策略配置中获取
+                symbol: strategyConfig.symbol || 'BTC-USDT-SWAP',
+                timeframe: strategyConfig.timeframe || '1m',
                 initial_capital: 10000,
                 max_position_value: 5000,
                 is_demo: this.getIsDemo() ? 1 : 0
             };
-            
+
+            // 如果策略有完整配置，合并所有参数
+            if (strategyConfig.config) {
+                Object.assign(config, strategyConfig.config);
+            }
+
             // 权限控制：只有管理员可以指定customer_id和signal_source_uid
             const isAdmin = this.currentUser && this.currentUser.role === 'admin';
             if (isAdmin) {
                 // 管理员：可以从表单或模态框中选择账号和信号源
                 const customerSelect = document.getElementById('createStrategyTradeCustomers');
                 const signalSourceSelect = document.getElementById('createStrategyTradeSignalSources');
-                
+
                 if (customerSelect && customerSelect.selectedOptions.length > 0) {
                     // 使用第一个选中的客户账号
                     config.customer_id = customerSelect.selectedOptions[0].value;
                 }
-                
+
                 if (signalSourceSelect && signalSourceSelect.selectedOptions.length > 0) {
                     // 使用第一个选中的信号源
                     config.signal_source_uid = signalSourceSelect.selectedOptions[0].value;
                 }
             }
             // 普通用户：不传递customer_id和signal_source_uid，后端会自动选择用户的账号
-            
-            const response = await this.apiRequest(`${this.apiBaseUrl}/strategy-live/strategies/${strategyName}/start`, {
+
+            const response = await this.apiRequest(`${this.apiBaseUrl}/strategy/instances/${strategyName}/start`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(config)
             });
-            
+
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
@@ -12109,7 +12274,12 @@ class OKXTradingApp {
             this.showToast('错误', `策略删除失败: ${error.message}`, 'danger');
         }
     }
-    
+
+    // 打开策略实时监控页面
+    openStrategyMonitor(strategyName) {
+        window.open(`strategy_monitor.html?strategy=${encodeURIComponent(strategyName)}`, '_blank');
+    }
+
     // 加载策略列表用于回测
     async loadStrategiesForBacktest() {
         try {
@@ -12271,8 +12441,9 @@ class OKXTradingApp {
     // 保留此方法仅用于向后兼容，实际应该使用 generateParamInputFromTemplate
     generateBacktestParamInput(paramName, paramInfo) {
         // 使用统一的参数生成方法，但需要添加 backtest_ 前缀到ID
-        const label = this.getParamLabel(paramName);
-        const description = this.getParamDescription(paramName);
+        // 标签/说明来自后端模板；未定义则回退显示英文参数名
+        const label = (paramInfo && paramInfo.label) ? paramInfo.label : paramName;
+        const description = (paramInfo && paramInfo.description) ? paramInfo.description : '';
         const inputType = paramInfo.input_type || (paramInfo.type === 'boolean' ? 'checkbox' : 'number');
         const step = paramInfo.step || (inputType === 'number' ? '0.001' : '');
         const min = paramInfo.min !== undefined ? paramInfo.min : '';
@@ -19698,35 +19869,37 @@ class OKXTradingApp {
                 this.showToast('错误', '表单不存在', 'danger');
                 return;
             }
-            
+
             const formData = new FormData(form);
             const strategyTypeSelect = document.getElementById('createStrategyTradeType');
             const strategyType = formData.get('strategyType') || strategyTypeSelect?.value;
             const strategyName = formData.get('strategyName') || document.getElementById('createStrategyTradeName')?.value;
             const tradingSymbol = formData.get('tradingSymbol') || document.getElementById('tradingSymbol')?.value;
             const timeframe = formData.get('timeframe') || document.getElementById('timeframe')?.value;
+            const isDemo = document.getElementById('createStrategyTradeIsDemo')?.value;
             const riskPerTrade = formData.get('riskPerTrade') || document.getElementById('riskPerTrade')?.value;
             const maxPositions = formData.get('maxPositions') || document.getElementById('maxPositions')?.value;
             const stopLossPct = formData.get('stopLossPct') || document.getElementById('stopLossPct')?.value;
             const takeProfitPct = formData.get('takeProfitPct') || document.getElementById('takeProfitPct')?.value;
-            
+
             if (!strategyType || !strategyName || !tradingSymbol || !timeframe) {
                 this.showToast('错误', '请填写所有必需字段', 'danger');
                 return;
             }
-            
+
             const config = {
                 symbol: tradingSymbol,
                 timeframe: timeframe,
+                is_demo: parseInt(isDemo) === 1,
                 risk_per_trade: parseFloat(riskPerTrade),
                 max_positions: parseInt(maxPositions),
                 stop_loss_pct: parseFloat(stopLossPct),
                 take_profit_pct: parseFloat(takeProfitPct)
             };
-            
+
             // 动态收集策略特定参数
             this.collectDynamicStrategyParams(config);
-            
+
             // 获取选中的客户和信号源
             const selectedSignalSources = Array.from(document.getElementById('createStrategyTradeSignalSources')?.selectedOptions || [])
                 .map(option => option.value);
@@ -19738,11 +19911,12 @@ class OKXTradingApp {
                 name: strategyName,
                 config: config,
                 signal_sources: selectedSignalSources,
-                customers: selectedCustomers
+                customers: selectedCustomers,
+                is_demo: parseInt(isDemo) === 1
             };
-            
+
             this.showToast('信息', '正在创建策略...', 'info');
-            
+
             const response = await fetch(`${this.apiBaseUrl}/strategy/create`, {
                 method: 'POST',
                 headers: {
@@ -19750,19 +19924,19 @@ class OKXTradingApp {
                 },
                 body: JSON.stringify(requestData)
             });
-            
+
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
                     this.showToast('成功', '策略创建成功', 'success');
-                    
+
                     // 关闭模态框
                     const modal = bootstrap.Modal.getInstance(document.getElementById('createStrategyTradeModal'));
                     if (modal) modal.hide();
-                    
+
                     // 重置表单
                     form.reset();
-                    
+
                     // 刷新策略列表
                     this.loadStrategyTradeList();
                 } else {
@@ -20472,8 +20646,10 @@ class OKXTradingApp {
 
     // 从模板生成参数输入框（统一方法，支持回测和创建策略）
     generateParamInputFromTemplate(paramName, paramInfo, defaultValue, validation, prefix = '') {
-        const label = this.getParamLabel(paramName);
-        const description = this.getParamDescription(paramName);
+        // 标签/说明来自后端模板（config/strategy_config.py）。
+        // 后端定义了中文 label 就用中文，否则回退显示英文参数名。
+        const label = (paramInfo && paramInfo.label) ? paramInfo.label : paramName;
+        const description = (paramInfo && paramInfo.description) ? paramInfo.description : '';
         const inputType = paramInfo.input_type || (paramInfo.type === 'boolean' ? 'checkbox' : 'number');
         const step = paramInfo.step || (inputType === 'number' ? '0.001' : '');
         const min = paramInfo.min !== undefined ? paramInfo.min : (validation?.min || '');
@@ -20559,133 +20735,11 @@ class OKXTradingApp {
         `;
     }
 
-    // 获取参数标签
-    getParamLabel(paramName) {
-        const labels = {
-            'short_period': '短期均线周期',
-            'long_period': '长期均线周期',
-            'rsi_period': 'RSI周期',
-            'rsi_oversold': 'RSI超卖线',
-            'rsi_overbought': 'RSI超买线',
-            'bb_period': '布林带周期',
-            'bb_std': '布林带标准差',
-            'fast_period': 'MACD快线周期',
-            'slow_period': 'MACD慢线周期',
-            'signal_period': 'MACD信号线周期',
-            'grid_levels': '网格层数',
-            'grid_spacing': '网格间距',
-            'base_price': '基准价格',
-            'ratio': '目标币种比例',
-            'grid_ratio': '网格密度',
-            'interval': '更新间隔(毫秒)',
-            'price_precision': '价格精度',
-            'amount_precision': '数量精度',
-            'fast_ema_period': '快线EMA周期',
-            'slow_ema_period': '慢线EMA周期',
-            'volume_threshold': '成交量倍数阈值',
-            'price_change_threshold': '价格变化阈值',
-            'min_trade_interval': '最小交易间隔(分钟)',
-            'max_trades_per_day': '每日最大交易次数',
-            // 网格策略参数
-            'dynamic_grid': '动态网格',
-            'enable_trend_following': '启用趋势跟踪',
-            'grid_adjustment_threshold': '网格调整阈值',
-            'investment_per_grid': '每网格投资金额',
-            'max_grid_adjustments': '最大网格调整次数',
-            'max_grid_positions': '最大网格持仓数',
-            'position_sizing': '仓位大小',
-            // 风险管理参数
-            'risk_per_trade': '每笔交易风险',
-            'stop_loss_pct': '止损百分比',
-            'take_profit_pct': '止盈百分比',
-            'max_positions': '最大持仓数',
-            'risk_config': '风险配置',
-            // 做市商策略参数
-            'spread': '价差',
-            'quantity': '每单数量',
-            'max_orders': '每侧最大订单数',
-            'enable_stop_loss': '启用止损',
-            'enable_take_profit': '启用止盈',
-            'stop_loss': '止损金额(USDC)',
-            'take_profit': '止盈金额(USDC)',
-            'enable_rebalance': '启用重平衡',
-            'base_asset_target': '基础资产目标比例(%)',
-            'rebalance_threshold': '重平衡触发阈值(%)',
-            // 对冲策略参数
-            'enable_hedge': '启用对冲',
-            'hedge_threshold': '对冲触发阈值',
-            'hedge_size_ratio': '对冲比例',
-            'max_position_exposure': '最大持仓暴露倍数'
-        };
-        return labels[paramName] || paramName;
-    }
-
     // 获取参数输入类型
     getParamInputType(paramName, validation) {
         if (validation?.type === 'int') return 'number';
         if (validation?.type === 'float') return 'number';
         return 'number';
-    }
-
-    // 获取参数描述
-    getParamDescription(paramName) {
-        const descriptions = {
-            'short_period': '短期移动平均线周期',
-            'long_period': '长期移动平均线周期',
-            'rsi_period': 'RSI计算周期',
-            'rsi_oversold': '超卖阈值 (通常20-40)',
-            'rsi_overbought': '超买阈值 (通常60-80)',
-            'bb_period': '布林带计算周期',
-            'bb_std': '标准差倍数',
-            'fast_period': 'MACD快线周期',
-            'slow_period': 'MACD慢线周期',
-            'signal_period': 'MACD信号线周期',
-            'grid_levels': '网格总层数',
-            'grid_spacing': '网格间距百分比',
-            'base_price': '网格中心价格',
-            'ratio': '目标币种比例 (0.1-0.9，如0.5表示50%)',
-            'grid_ratio': '网格密度 (0.0005-0.1，建议0.01即1%)',
-            'interval': '策略更新间隔，单位毫秒 (建议1000)',
-            'price_precision': '价格精度，小数点后位数 (2-8)',
-            'amount_precision': '数量精度，小数点后位数 (2-8)',
-            'fast_ema_period': '快线EMA周期 (建议3-20)',
-            'slow_ema_period': '慢线EMA周期 (建议5-50)',
-            'volume_threshold': '成交量倍数阈值 (建议1.0-5.0)',
-            'price_change_threshold': '价格变化阈值 (建议0.001-0.05)',
-            'min_trade_interval': '最小交易间隔分钟数 (建议1-60)',
-            'max_trades_per_day': '每日最大交易次数 (建议10-200)',
-            // 网格策略参数描述
-            'dynamic_grid': '是否启用动态网格调整 (true/false)',
-            'enable_trend_following': '是否启用趋势跟踪功能 (true/false)',
-            'grid_adjustment_threshold': '网格调整的价格变化阈值 (0.01-0.1)',
-            'investment_per_grid': '每个网格的投资金额 (建议100-10000)',
-            'max_grid_adjustments': '最大网格调整次数 (建议1-10)',
-            'max_grid_positions': '最大网格持仓数量 (建议3-20)',
-            'position_sizing': '仓位大小计算方式 (fixed/percentage)',
-            // 风险管理参数描述
-            'risk_per_trade': '每笔交易的风险比例 (0.01-0.1)',
-            'stop_loss_pct': '止损百分比 (0.01-0.2)',
-            'take_profit_pct': '止盈百分比 (0.01-0.5)',
-            'max_positions': '最大同时持仓数量 (1-50)',
-            'risk_config': '风险配置对象 (包含详细风险参数)',
-            // 做市商策略参数描述
-            'spread': '买卖价差 (0.0001-0.1，如0.002表示0.2%)',
-            'quantity': '每单数量 (0.001-1000)',
-            'max_orders': '每侧最大订单数 (1-20)',
-            'enable_stop_loss': '是否启用止损功能',
-            'enable_take_profit': '是否启用止盈功能',
-            'stop_loss': '止损金额，负数 (如-25表示亏损25 USDC时止损)',
-            'take_profit': '止盈金额，正数 (如50表示盈利50 USDC时止盈)',
-            'enable_rebalance': '是否启用资产重平衡功能',
-            'base_asset_target': '基础资产目标比例 (0-100%，如30表示30%)',
-            'rebalance_threshold': '重平衡触发阈值 (1-50%，如15表示当偏差超过15%时触发)',
-            // 对冲策略参数描述
-            'enable_hedge': '是否启用对冲功能 (降低方向性风险)',
-            'hedge_threshold': '对冲触发阈值 (0.1-1.0，如0.5表示持仓暴露超过50%时触发)',
-            'hedge_size_ratio': '对冲比例 (0.1-1.0，如0.8表示对冲80%的持仓)',
-            'max_position_exposure': '最大持仓暴露倍数 (0.1-5.0，限制单边风险)'
-        };
-        return descriptions[paramName] || '';
     }
 
     // 动态收集策略参数
@@ -20829,12 +20883,13 @@ class OKXTradingApp {
         
         try {
             this.showToast('信息', '正在上传策略...', 'info');
-            
+
             const response = await fetch(`${this.apiBaseUrl}/strategy/user/upload`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
+                credentials: 'include',  // 包含认证凭据（session cookie）
                 body: JSON.stringify({
                     strategy_id: strategyId,
                     code: strategyCode,

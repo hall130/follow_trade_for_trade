@@ -73,7 +73,7 @@ class HyperliquidRESTClient(BaseRESTClient):
         try:
             async with aiohttp.ClientSession() as session:
                 if method.upper() == 'GET':
-                    async with session.get(url, headers=headers, params=params) as response:
+                    async with session.get(url, headers=headers, params=params, proxy=self.proxy) as response:
                         if response.status != 200:
                             error_text = await response.text()
                             logger.error(f"Hyperliquid API请求失败: {response.status}, {error_text}")
@@ -81,7 +81,7 @@ class HyperliquidRESTClient(BaseRESTClient):
                         result = await response.json()
                         return result
                 elif method.upper() == 'POST':
-                    async with session.post(url, headers=headers, json=data) as response:
+                    async with session.post(url, headers=headers, json=data, proxy=self.proxy) as response:
                         if response.status != 200:
                             error_text = await response.text()
                             logger.error(f"Hyperliquid API请求失败: {response.status}, {error_text}")

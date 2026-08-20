@@ -41,12 +41,20 @@ class ExchangeFactory:
             统一REST API客户端实例
         """
         exchange = exchange.lower()
-        
+
         if exchange not in self.supported_exchanges:
             raise ValueError(f"不支持的交易所: {exchange}")
-        
+
+        # 缓存键包含 is_demo，避免演示模式客户端被复用到实盘请求（反之亦然）
+        cache_key = f'{exchange}_{api_key}_{"demo" if is_demo else "live"}'
+
+        # 已有同参数的客户端则直接复用，避免每次请求（如公共行情 K 线轮询）都重建客户端
+        cached = self.rest_clients.get(cache_key)
+        if cached is not None:
+            return cached
+
         client = create_unified_rest_client(exchange, api_key, api_secret, passphrase, is_demo)
-        self.rest_clients[f'{exchange}_{api_key}'] = client
+        self.rest_clients[cache_key] = client
         logger.info(f"已创建{exchange.upper()}统一REST客户端: {api_key}")
         return client
     
@@ -75,10 +83,17 @@ class ExchangeFactory:
         logger.info(f"已创建{exchange.upper()}统一WebSocket客户端: {api_key or 'public'}")
         return client
     
-    def get_rest_client(self, exchange: str, api_key: str) -> Optional[UnifiedRESTClient]:
-        """获取已创建的REST客户端"""
-        key = f'{exchange.lower()}_{api_key}'
-        return self.rest_clients.get(key)
+    def get_rest_client(self, exchange: str, api_key: str, is_demo: bool = None) -> Optional[UnifiedRESTClient]:
+        """获取已创建的REST客户端
+
+        is_demo 明确指定时精确匹配；未指定时优先返回实盘客户端，其次演示客户端，
+        以兼容旧调用方（仅传 exchange + api_key）。
+        """
+        exchange = exchange.lower()
+        if is_demo is not None:
+            return self.rest_clients.get(f'{exchange}_{api_key}_{"demo" if is_demo else "live"}')
+        return (self.rest_clients.get(f'{exchange}_{api_key}_live')
+                or self.rest_clients.get(f'{exchange}_{api_key}_demo'))
     
     def get_ws_client(self, exchange: str, api_key: str = None) -> Optional[UnifiedWebSocketClient]:
         """获取已创建的WebSocket客户端"""

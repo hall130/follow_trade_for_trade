@@ -515,11 +515,11 @@ def start_unified_api_server():
         
         # 等待API服务器启动
         time.sleep(2)
-        
-        # 启动限价跟单监控器
-        limit_follow_thread = threading.Thread(target=start_limit_follow_background, daemon=True)
-        limit_follow_thread.start()
-        logger.info("✅ 限价跟单监控已在后台启动")
+
+        # 策略精简: 已禁用限价跟单监控器（strategy-only 分支不需要跟单功能）
+        # limit_follow_thread = threading.Thread(target=start_limit_follow_background, daemon=True)
+        # limit_follow_thread.start()
+        logger.info("ℹ️ 限价跟单监控已在 strategy-only 分支禁用")
         
         # 保持服务运行
         while True:

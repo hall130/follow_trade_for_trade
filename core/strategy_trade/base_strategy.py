@@ -110,7 +110,12 @@ class BaseStrategy(ABC):
         # 策略状态
         self.initialized = False
         self.running = False
-        
+
+        # 触发粒度：默认按 K 线收盘触发（技术指标类策略的正确语义）。
+        # 逐 tick 报价类策略（高频/做市/网格）应在子类中置为 True，
+        # 以在每次行情推送（含未收盘 bar）时都被调用。
+        self.tick_level = False
+
         # 数据缓存（限制大小防止内存溢出）
         self.market_data: List[MarketData] = []
         self.max_data_cache = 1000  # 最大缓存数据量

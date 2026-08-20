@@ -1,0 +1,181 @@
+"""
+策略实时监控API端点
+提供策略运行时的实时数据，包括：
+1. 持仓信息
+2. 交易记录
+3. 资金变化
+4. 性能指标
+5. 交易信号
+"""
+
+# 在 api_server.py 中添加以下API端点
+
+@app.route('/api/v1/strategy/instances/<strategy_name>/monitor', methods=['GET'])
+def get_strategy_monitor_data(strategy_name):
+    """获取策略实时监控数据"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+
+        # 查找策略
+        strategies = manager.get_all_strategies()
+        strategy_info = None
+        for strategy in strategies:
+            if strategy.name == strategy_name:
+                strategy_info = strategy
+                break
+
+        if not strategy_info:
+            return jsonify({
+                'success': False,
+                'message': f'策略 {strategy_name} 不存在'
+            }), 404
+
+        # 获取策略对象
+        strategy_obj = strategy_info.strategy
+
+        # 收集监控数据
+        monitor_data = {
+            'basic_info': {
+                'name': strategy_info.name,
+                'type': strategy_info.strategy_type,
+                'status': strategy_info.status,
+                'symbol': getattr(strategy_obj, 'symbol', '-'),
+                'timeframe': getattr(strategy_obj, 'timeframe', '-'),
+            },
+            'capital': {
+                'initial': getattr(strategy_obj, 'initial_capital', 0),
+                'current': getattr(strategy_obj, 'capital', 0),
+                'available': getattr(strategy_obj, 'available_capital', 0),
+                'frozen': getattr(strategy_obj, 'frozen_capital', 0),
+            },
+            'positions': [],
+            'trades': [],
+            'performance': strategy_info.performance or {},
+            'signals': []
+        }
+
+        # 获取持仓信息
+        if hasattr(strategy_obj, 'positions'):
+            positions = strategy_obj.positions
+            if isinstance(positions, dict):
+                for symbol, pos in positions.items():
+                    monitor_data['positions'].append({
+                        'symbol': symbol,
+                        'side': getattr(pos, 'side', '-'),
+                        'amount': getattr(pos, 'amount', 0),
+                        'entry_price': getattr(pos, 'entry_price', 0),
+                        'current_price': getattr(pos, 'current_price', 0),
+                        'unrealized_pnl': getattr(pos, 'unrealized_pnl', 0),
+                        'unrealized_pnl_pct': getattr(pos, 'unrealized_pnl_pct', 0),
+                    })
+
+        # 获取交易记录（最近50条）
+        if hasattr(strategy_obj, 'trade_history'):
+            trades = strategy_obj.trade_history[-50:] if strategy_obj.trade_history else []
+            for trade in trades:
+                monitor_data['trades'].append({
+                    'id': getattr(trade, 'id', '-'),
+                    'timestamp': getattr(trade, 'timestamp', ''),
+                    'symbol': getattr(trade, 'symbol', '-'),
+                    'side': getattr(trade, 'side', '-'),
+                    'price': getattr(trade, 'price', 0),
+                    'amount': getattr(trade, 'amount', 0),
+                    'pnl': getattr(trade, 'pnl', 0),
+                    'pnl_pct': getattr(trade, 'pnl_pct', 0),
+                })
+
+        # 获取最近的交易信号
+        if hasattr(strategy_obj, 'signal_history'):
+            signals = strategy_obj.signal_history[-20:] if strategy_obj.signal_history else []
+            for signal in signals:
+                monitor_data['signals'].append({
+                    'timestamp': getattr(signal, 'timestamp', ''),
+                    'type': getattr(signal, 'type', '-'),
+                    'price': getattr(signal, 'price', 0),
+                    'reason': getattr(signal, 'reason', ''),
+                })
+
+        return jsonify({
+            'success': True,
+            'data': monitor_data
+        })
+
+    except Exception as e:
+        logger.error(f"获取策略监控数据失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'message': f'获取监控数据失败: {str(e)}'
+        }), 500
+
+
+@app.route('/api/v1/strategy/instances/<strategy_name>/equity-curve', methods=['GET'])
+def get_strategy_equity_curve(strategy_name):
+    """获取策略资金曲线数据"""
+    try:
+        if not STRATEGY_MODULE_AVAILABLE:
+            return jsonify({
+                'success': False,
+                'message': '策略交易模块不可用'
+            })
+
+        manager = get_strategy_manager()
+        if not manager:
+            return jsonify({
+                'success': False,
+                'message': '策略管理器初始化失败'
+            })
+
+        # 查找策略
+        strategies = manager.get_all_strategies()
+        strategy_info = None
+        for strategy in strategies:
+            if strategy.name == strategy_name:
+                strategy_info = strategy
+                break
+
+        if not strategy_info:
+            return jsonify({
+                'success': False,
+                'message': f'策略 {strategy_name} 不存在'
+            }), 404
+
+        # 获取策略对象
+        strategy_obj = strategy_info.strategy
+
+        # 获取资金曲线数据
+        equity_curve = []
+        if hasattr(strategy_obj, 'equity_history'):
+            equity_history = strategy_obj.equity_history
+            for entry in equity_history:
+                equity_curve.append({
+                    'timestamp': getattr(entry, 'timestamp', ''),
+                    'equity': getattr(entry, 'equity', 0),
+                    'drawdown': getattr(entry, 'drawdown', 0),
+                })
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'equity_curve': equity_curve
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"获取资金曲线失败: {e}")
+        return jsonify({
+            'success': False,
+            'message': f'获取资金曲线失败: {str(e)}'
+        }), 500

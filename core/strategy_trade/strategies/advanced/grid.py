@@ -18,6 +18,7 @@ class GridStrategy(StrategyBase):
     
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
+        self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
         
         # 策略参数
         self.base_price = self.get_parameter('base_price', 100.0)

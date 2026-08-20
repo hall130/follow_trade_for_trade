@@ -446,13 +446,26 @@ class StrategyTradeIntegration:
                 # 尝试从内存中的策略管理器获取
                 strategy_info = self.strategy_manager.get_strategy(strategy_id)
                 if strategy_info:
+                    # 从策略对象获取 symbol 和 timeframe
+                    symbol = getattr(strategy_info.strategy, 'symbol', '') if hasattr(strategy_info, 'strategy') else ''
+                    timeframe = getattr(strategy_info.strategy, 'timeframe', '') if hasattr(strategy_info, 'strategy') else ''
+
+                    # 获取配置
+                    config = {}
+                    if hasattr(strategy_info.strategy, 'config'):
+                        config = strategy_info.strategy.config
+                    elif hasattr(strategy_info, 'config'):
+                        config = strategy_info.config
+
                     return {
                         'success': True,
                         'data': {
                             'name': strategy_info.name,
                             'strategy_type': strategy_info.strategy_type if hasattr(strategy_info, 'strategy_type') else '',
-                            'symbol': strategy_info.symbol,
-                            'config': strategy_info.config if hasattr(strategy_info, 'config') else {}
+                            'symbol': symbol,
+                            'timeframe': timeframe,
+                            'status': strategy_info.status if hasattr(strategy_info, 'status') else 'unknown',
+                            'config': config
                         }
                     }
                 else:

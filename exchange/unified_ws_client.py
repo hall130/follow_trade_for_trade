@@ -461,9 +461,10 @@ class WebSocketClientManager:
         # 延迟启动清理任务（避免在__init__中创建异步任务）
         self._cleanup_task = None
     
-    async def get_client(self, client_key: str, is_demo: bool = False, 
-                        api_key: str = '', api_secret: str = '', passphrase: str = ''):
-        """获取或创建WebSocket客户端 - 防止重复创建"""
+    async def get_client(self, client_key: str, is_demo: bool = False,
+                        api_key: str = '', api_secret: str = '', passphrase: str = '',
+                        exchange: str = 'okx'):
+        """获取或创建WebSocket客户端 - 防止重复创建（exchange 路由 okx / binance）"""
         try:
             # 启动清理任务（如果还没有启动）
             if not self._running:
@@ -485,17 +486,28 @@ class WebSocketClientManager:
                 if client_key in self._clients:
                     return self._clients[client_key]
                 
-                logger.info(f"创建新客户端: {client_key}")
-                # 使用统一接口创建客户端
-                from exchange.exchange_factory import create_exchange_client
-                client = create_exchange_client(
-                    exchange='okx',
-                    client_type='ws',
-                    api_key=api_key,
-                    api_secret=api_secret,
-                    passphrase=passphrase,
-                    is_demo=is_demo
-                )
+                exchange = (exchange or 'okx').lower()
+                logger.info(f"创建新客户端: {client_key} (exchange={exchange})")
+                if exchange == 'binance':
+                    # Binance USDT-M 合约：直接用 fapi WS 客户端（内部做 OKX 形状隔离），
+                    # 无需 Unified 包装，其接口已与上层消费对齐。
+                    from exchange.binance.binance_fapi_ws_client import BinanceFapiWebSocketClient
+                    client = BinanceFapiWebSocketClient(
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        is_demo=is_demo
+                    )
+                else:
+                    # 使用统一接口创建客户端（OKX）
+                    from exchange.exchange_factory import create_exchange_client
+                    client = create_exchange_client(
+                        exchange='okx',
+                        client_type='ws',
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        passphrase=passphrase,
+                        is_demo=is_demo
+                    )
                 
                 # 设置客户端唯一标识
                 client._connection_id = client_key

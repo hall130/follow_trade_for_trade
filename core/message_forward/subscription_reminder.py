@@ -86,7 +86,7 @@ class SubscriptionReminderService:
                 SELECT * FROM forward_rule_subscriptions 
                 WHERE subscription_status = 'active'
                 AND expire_date > NOW()
-                AND expire_date <= DATE_ADD(NOW(), INTERVAL 3 DAY)
+                AND expire_date <= NOW() + INTERVAL '3 day'
                 ORDER BY expire_date ASC
             """
             subscriptions = db_pool.query(sql)

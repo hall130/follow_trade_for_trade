@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>策略实时监控</title>
+    <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.0.1/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body {
+            background-color: #f8f9fa;
+            padding: 20px;
+        }
+        .monitor-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stat-card {
+            text-align: center;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .stat-card.profit {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .stat-card.position {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        .stat-card.trades {
+            background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+        }
+        .stat-value {
+            font-size: 28px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        #klineChart {
+            height: 500px;
+            margin-bottom: 20px;
+        }
+        #equityChart {
+            height: 300px;
+        }
+        .trade-row.buy {
+            border-left: 3px solid #28a745;
+        }
+        .trade-row.sell {
+            border-left: 3px solid #dc3545;
+        }
+        .position-card {
+            border-left: 4px solid;
+            padding: 15px;
+            margin-bottom: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .position-card.long {
+            border-left-color: #28a745;
+        }
+        .position-card.short {
+            border-left-color: #dc3545;
+        }
+        .refresh-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- 返回按钮 -->
+        <div class="mb-3">
+            <button class="btn btn-outline-secondary" onclick="window.history.back()">
+                <i class="bi bi-arrow-left"></i> 返回
+            </button>
+        </div>
+
+        <!-- 策略基本信息 -->
+        <div class="monitor-card">
+            <h4 id="strategyName">策略监控</h4>
+            <div class="row mt-3">
+                <div class="col-md-2">
+                    <small class="text-muted">状态</small>
+                    <div id="strategyStatus">-</div>
+                </div>
+                <div class="col-md-2">
+                    <small class="text-muted">交易对</small>
+                    <div id="strategySymbol">-</div>
+                </div>
+                <div class="col-md-2">
+                    <small class="text-muted">周期</small>
+                    <div id="strategyTimeframe">-</div>
+                </div>
+                <div class="col-md-2">
+                    <small class="text-muted">类型</small>
+                    <div id="strategyType">-</div>
+                </div>
+                <div class="col-md-4 text-end">
+                    <button class="btn btn-sm btn-primary" onclick="refreshData()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
+                    <button class="btn btn-sm btn-secondary" id="autoRefreshBtn" onclick="toggleAutoRefresh()">
+                        <i class="bi bi-pause"></i> 暂停自动刷新
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 核心指标卡片 -->
+        <div class="row">
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="stat-label">当前资金</div>
+                    <div class="stat-value" id="currentCapital">-</div>
+                    <div class="stat-label">初始: <span id="initialCapital">-</span></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card profit">
+                    <div class="stat-label">累计盈亏</div>
+                    <div class="stat-value" id="totalPnl">-</div>
+                    <div class="stat-label">收益率: <span id="returnRate">-</span></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card position">
+                    <div class="stat-label">当前持仓</div>
+                    <div class="stat-value" id="positionCount">-</div>
+                    <div class="stat-label">浮动盈亏: <span id="unrealizedPnl">-</span></div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card trades">
+                    <div class="stat-label">交易次数</div>
+                    <div class="stat-value" id="tradeCount">-</div>
+                    <div class="stat-label">胜率: <span id="winRate">-</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- K线图表 -->
+        <div class="monitor-card">
+            <h5><i class="bi bi-graph-up"></i> K线图表 + 交易信号</h5>
+            <div id="klineChart"></div>
+        </div>
+
+        <!-- 持仓信息 + 资金曲线 -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="monitor-card">
+                    <h5><i class="bi bi-wallet2"></i> 当前持仓</h5>
+                    <div id="positionsList">
+                        <div class="text-center text-muted py-4">暂无持仓</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="monitor-card">
+                    <h5><i class="bi bi-graph-up-arrow"></i> 资金曲线</h5>
+                    <div id="equityChart"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 交易记录 -->
+        <div class="monitor-card">
+            <h5><i class="bi bi-list-ul"></i> 交易记录</h5>
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>方向</th>
+                            <th>价格</th>
+                            <th>数量</th>
+                            <th>盈亏</th>
+                            <th>收益率</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesTableBody">
+                        <tr>
+                            <td colspan="6" class="text-center text-muted">暂无交易记录</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 刷新指示器 -->
+    <div class="refresh-indicator" id="refreshIndicator">
+        <i class="bi bi-arrow-clockwise"></i> 正在刷新...
+    </div>
+
+    <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 从URL获取策略名称
+        const urlParams = new URLSearchParams(window.location.search);
+        const strategyName = urlParams.get('strategy') || 'unknown';
+        const apiBaseUrl = 'http://localhost:5001/api/v1';
+
+        let chart = null;
+        let candleSeries = null;
+        let markers = [];
+        let equityChart = null;
+        let equityLine = null;
+        let autoRefreshInterval = null;
+        let isAutoRefresh = true;
+
+        // 初始化K线图表
+        function initKlineChart() {
+            const chartContainer = document.getElementById('klineChart');
+            chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: 500,
+                layout: {
+                    background: { color: '#ffffff' },
+                    textColor: '#333',
+                },
+                grid: {
+                    vertLines: { color: '#f0f0f0' },
+                    horzLines: { color: '#f0f0f0' },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+                rightPriceScale: {
+                    borderColor: '#d1d4dc',
+                },
+                timeScale: {
+                    borderColor: '#d1d4dc',
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+            });
+
+            candleSeries = chart.addCandlestickSeries({
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            });
+
+            // 响应式调整
+            window.addEventListener('resize', () => {
+                chart.applyOptions({ width: chartContainer.clientWidth });
+            });
+        }
+
+        // 初始化资金曲线图表
+        function initEquityChart() {
+            const chartContainer = document.getElementById('equityChart');
+            equityChart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: 300,
+                layout: {
+                    background: { color: '#ffffff' },
+                    textColor: '#333',
+                },
+                grid: {
+                    vertLines: { color: '#f0f0f0' },
+                    horzLines: { color: '#f0f0f0' },
+                },
+                rightPriceScale: {
+                    borderColor: '#d1d4dc',
+                },
+                timeScale: {
+                    borderColor: '#d1d4dc',
+                    timeVisible: true,
+                },
+            });
+
+            equityLine = equityChart.addLineSeries({
+                color: '#2196F3',
+                lineWidth: 2,
+            });
+
+            window.addEventListener('resize', () => {
+                equityChart.applyOptions({ width: chartContainer.clientWidth });
+            });
+        }
+
+        // 加载K线数据
+        async function loadKlineData(symbol, timeframe) {
+            try {
+                const response = await fetch(`${apiBaseUrl}/market/candles?instId=${symbol}&bar=${timeframe}&limit=200`);
+                const data = await response.json();
+
+                if (data.code === '0' && data.data && data.data.length > 0) {
+                    const klineData = data.data.reverse().map(item => ({
+                        time: parseInt(item[0]) / 1000,
+                        open: parseFloat(item[1]),
+                        high: parseFloat(item[2]),
+                        low: parseFloat(item[3]),
+                        close: parseFloat(item[4]),
+                    }));
+
+                    candleSeries.setData(klineData);
+                    return klineData;
+                }
+            } catch (error) {
+                console.error('加载K线数据失败:', error);
+            }
+            return [];
+        }
+
+        // 加载策略监控数据
+        async function loadMonitorData() {
+            showRefreshIndicator();
+
+            try {
+                const response = await fetch(`${apiBaseUrl}/strategy/instances/${strategyName}/monitor`);
+                const result = await response.json();
+
+                if (result.success && result.data) {
+                    updateUI(result.data);
+                } else {
+                    console.error('加载监控数据失败:', result.message);
+                }
+            } catch (error) {
+                console.error('加载监控数据失败:', error);
+            }
+
+            hideRefreshIndicator();
+        }
+
+        // 更新UI
+        function updateUI(data) {
+            // 基本信息
+            document.getElementById('strategyName').textContent = data.basic_info.name + ' - 实时监控';
+            document.getElementById('strategyStatus').innerHTML = `<span class="badge bg-${data.basic_info.status === 'RUNNING' ? 'success' : 'secondary'}">${getStatusText(data.basic_info.status)}</span>`;
+            document.getElementById('strategySymbol').textContent = data.basic_info.symbol;
+            document.getElementById('strategyTimeframe').textContent = data.basic_info.timeframe;
+            document.getElementById('strategyType').textContent = data.basic_info.type;
+
+            // 资金信息
+            const currentCapital = data.capital.current || 0;
+            const initialCapital = data.capital.initial || 0;
+            const pnl = currentCapital - initialCapital;
+            const returnRate = initialCapital > 0 ? ((pnl / initialCapital) * 100).toFixed(2) : 0;
+
+            document.getElementById('currentCapital').textContent = currentCapital.toFixed(2) + ' USDT';
+            document.getElementById('initialCapital').textContent = initialCapital.toFixed(2);
+            document.getElementById('totalPnl').textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' USDT';
+            document.getElementById('totalPnl').className = 'stat-value ' + (pnl >= 0 ? 'text-success' : 'text-danger');
+            document.getElementById('returnRate').textContent = (returnRate >= 0 ? '+' : '') + returnRate + '%';
+
+            // 持仓信息
+            const positions = data.positions || [];
+            const unrealizedPnl = positions.reduce((sum, pos) => sum + (pos.unrealized_pnl || 0), 0);
+            document.getElementById('positionCount').textContent = positions.length;
+            document.getElementById('unrealizedPnl').textContent = (unrealizedPnl >= 0 ? '+' : '') + unrealizedPnl.toFixed(2);
+
+            // 性能指标
+            const performance = data.performance || {};
+            document.getElementById('tradeCount').textContent = performance.total_trades || 0;
+            document.getElementById('winRate').textContent = performance.win_rate ? (performance.win_rate * 100).toFixed(2) + '%' : '-';
+
+            // 更新持仓列表
+            updatePositionsList(positions);
+
+            // 更新交易记录
+            updateTradesList(data.trades || []);
+
+            // 加载K线图并标记交易信号
+            if (data.basic_info.symbol && data.basic_info.timeframe) {
+                loadKlineData(data.basic_info.symbol, data.basic_info.timeframe).then(klineData => {
+                    if (klineData.length > 0) {
+                        updateTradeMarkers(data.signals || []);
+                    }
+                });
+            }
+        }
+
+        // 更新持仓列表
+        function updatePositionsList(positions) {
+            const container = document.getElementById('positionsList');
+
+            if (positions.length === 0) {
+                container.innerHTML = '<div class="text-center text-muted py-4">暂无持仓</div>';
+                return;
+            }
+
+            container.innerHTML = positions.map(pos => `
+                <div class="position-card ${pos.side === 'long' ? 'long' : 'short'}">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>${pos.symbol}</strong>
+                            <span class="badge bg-${pos.side === 'long' ? 'success' : 'danger'} ms-2">
+                                ${pos.side === 'long' ? '做多' : '做空'}
+                            </span>
+                        </div>
+                        <div class="${pos.unrealized_pnl >= 0 ? 'text-success' : 'text-danger'}">
+                            ${(pos.unrealized_pnl >= 0 ? '+' : '')}${pos.unrealized_pnl.toFixed(2)}
+                            (${(pos.unrealized_pnl_pct * 100).toFixed(2)}%)
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="text-muted">
+                            数量: ${pos.amount} |
+                            开仓价: ${pos.entry_price} |
+                            当前价: ${pos.current_price}
+                        </small>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 更新交易记录
+        function updateTradesList(trades) {
+            const tbody = document.getElementById('tradesTableBody');
+
+            if (trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无交易记录</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = trades.reverse().map(trade => `
+                <tr class="trade-row ${trade.side === 'buy' ? 'buy' : 'sell'}">
+                    <td>${formatTime(trade.timestamp)}</td>
+                    <td>
+                        <span class="badge bg-${trade.side === 'buy' ? 'success' : 'danger'}">
+                            ${trade.side === 'buy' ? '买入' : '卖出'}
+                        </span>
+                    </td>
+                    <td>${trade.price}</td>
+                    <td>${trade.amount}</td>
+                    <td class="${trade.pnl >= 0 ? 'text-success' : 'text-danger'}">
+                        ${trade.pnl ? ((trade.pnl >= 0 ? '+' : '') + trade.pnl.toFixed(2)) : '-'}
+                    </td>
+                    <td class="${trade.pnl_pct >= 0 ? 'text-success' : 'text-danger'}">
+                        ${trade.pnl_pct ? ((trade.pnl_pct >= 0 ? '+' : '') + (trade.pnl_pct * 100).toFixed(2) + '%') : '-'}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // 更新交易信号标记
+        function updateTradeMarkers(signals) {
+            markers = signals.map(signal => ({
+                time: new Date(signal.timestamp).getTime() / 1000,
+                position: signal.type === 'buy' ? 'belowBar' : 'aboveBar',
+                color: signal.type === 'buy' ? '#26a69a' : '#ef5350',
+                shape: signal.type === 'buy' ? 'arrowUp' : 'arrowDown',
+                text: signal.type === 'buy' ? '买' : '卖'
+            }));
+
+            if (candleSeries && markers.length > 0) {
+                candleSeries.setMarkers(markers);
+            }
+        }
+
+        // 状态文本转换
+        function getStatusText(status) {
+            const map = {
+                'RUNNING': '运行中',
+                'STOPPED': '已停止',
+                'PAUSED': '已暂停',
+                'ERROR': '错误'
+            };
+            return map[status] || '未知';
+        }
+
+        // 格式化时间
+        function formatTime(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(timestamp);
+            return `${date.getMonth()+1}-${date.getDate()} ${date.getHours().toString().padStart(2,'0')}:${date.getMinutes().toString().padStart(2,'0')}`;
+        }
+
+        // 显示刷新指示器
+        function showRefreshIndicator() {
+            document.getElementById('refreshIndicator').style.display = 'block';
+        }
+
+        // 隐藏刷新指示器
+        function hideRefreshIndicator() {
+            document.getElementById('refreshIndicator').style.display = 'none';
+        }
+
+        // 刷新数据
+        function refreshData() {
+            loadMonitorData();
+        }
+
+        // 切换自动刷新
+        function toggleAutoRefresh() {
+            isAutoRefresh = !isAutoRefresh;
+            const btn = document.getElementById('autoRefreshBtn');
+
+            if (isAutoRefresh) {
+                btn.innerHTML = '<i class="bi bi-pause"></i> 暂停自动刷新';
+                startAutoRefresh();
+            } else {
+                btn.innerHTML = '<i class="bi bi-play"></i> 开启自动刷新';
+                stopAutoRefresh();
+            }
+        }
+
+        // 启动自动刷新
+        function startAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+            autoRefreshInterval = setInterval(refreshData, 5000); // 每5秒刷新
+        }
+
+        // 停止自动刷新
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+
+        // 页面初始化
+        window.addEventListener('load', () => {
+            initKlineChart();
+            initEquityChart();
+            loadMonitorData();
+            startAutoRefresh();
+        });
+
+        // 页面卸载时停止自动刷新
+        window.addEventListener('beforeunload', () => {
+            stopAutoRefresh();
+        });
+    </script>
+</body>
+</html>

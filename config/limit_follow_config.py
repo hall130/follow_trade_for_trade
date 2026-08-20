@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 限价跟单配置模块
@@ -169,9 +169,9 @@ def update_config_in_db(config_data: Dict[str, Any]) -> bool:
             db_pool.execute(
                 """INSERT INTO limit_follow_configs (config_key, config_value, config_type) 
                    VALUES (%s, %s, %s)
-                   ON DUPLICATE KEY UPDATE 
-                   config_value = VALUES(config_value), 
-                   config_type = VALUES(config_type),
+                   ON CONFLICT (config_key) DO UPDATE SET 
+                   config_value = EXCLUDED.config_value, 
+                   config_type = EXCLUDED.config_type,
                    updated_at = CURRENT_TIMESTAMP""",
                 (key, str(value), config_type)
             )

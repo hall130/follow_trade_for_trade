@@ -24,12 +24,98 @@ class StrategyTemplate:
     validation_rules: Dict[str, Any] = None
     risk_profile: str = "MEDIUM"  # LOW, MEDIUM, HIGH
     complexity: str = "INTERMEDIATE"  # BEGINNER, INTERMEDIATE, ADVANCED
-    
+    # 参数元信息：{参数名: {"label": 中文标签, "description": 说明}}
+    # 支持嵌套路径键（如 "risk_config.max_daily_loss"）。
+    # 标签/说明跟随策略定义，前端直接展示；未定义的参数前端回退显示英文参数名。
+    param_meta: Dict[str, Dict[str, str]] = None
+
     def __post_init__(self):
         if self.required_fields is None:
             self.required_fields = []
         if self.validation_rules is None:
             self.validation_rules = {}
+        if self.param_meta is None:
+            self.param_meta = {}
+
+
+# 共享参数元信息（标签 + 说明）。
+# 从原前端硬编码字典迁移而来，作为所有策略的默认标签来源，标签自此归后端所有。
+# 单个策略如需覆盖（同名参数在不同策略含义不同），在该策略模板的 param_meta 中定义即可。
+# 前端不再维护标签字典：后端未定义的参数，前端回退显示英文参数名。
+SHARED_PARAM_META: Dict[str, Dict[str, str]] = {
+    # 均线 / 趋势
+    "short_period": {"label": "短期均线周期", "description": "短期移动平均线周期"},
+    "long_period": {"label": "长期均线周期", "description": "长期移动平均线周期"},
+    # RSI
+    "rsi_period": {"label": "RSI周期", "description": "RSI计算周期"},
+    "rsi_oversold": {"label": "RSI超卖线", "description": "超卖阈值 (通常20-40)"},
+    "rsi_overbought": {"label": "RSI超买线", "description": "超买阈值 (通常60-80)"},
+    # 布林带
+    "bb_period": {"label": "布林带周期", "description": "布林带计算周期"},
+    "bb_std": {"label": "布林带标准差", "description": "标准差倍数"},
+    # MACD
+    "fast_period": {"label": "MACD快线周期", "description": "MACD快线周期"},
+    "slow_period": {"label": "MACD慢线周期", "description": "MACD慢线周期"},
+    "signal_period": {"label": "MACD信号线周期", "description": "MACD信号线周期"},
+    # 网格
+    "grid_levels": {"label": "网格层数", "description": "网格总层数"},
+    "grid_spacing": {"label": "网格间距", "description": "网格间距百分比"},
+    "base_price": {"label": "基准价格", "description": "网格中心价格"},
+    "ratio": {"label": "目标币种比例", "description": "目标币种比例 (0.1-0.9，如0.5表示50%)"},
+    "grid_ratio": {"label": "网格密度", "description": "网格密度 (0.0005-0.1，建议0.01即1%)"},
+    "interval": {"label": "更新间隔(毫秒)", "description": "策略更新间隔，单位毫秒 (建议1000)"},
+    "price_precision": {"label": "价格精度", "description": "价格精度，小数点后位数 (2-8)"},
+    "amount_precision": {"label": "数量精度", "description": "数量精度，小数点后位数 (2-8)"},
+    # 高频 EMA
+    "fast_ema_period": {"label": "快线EMA周期", "description": "快线EMA周期 (建议3-20)"},
+    "slow_ema_period": {"label": "慢线EMA周期", "description": "慢线EMA周期 (建议5-50)"},
+    "volume_threshold": {"label": "成交量倍数阈值", "description": "成交量倍数阈值 (建议1.0-5.0)"},
+    "price_change_threshold": {"label": "价格变化阈值", "description": "价格变化阈值 (建议0.001-0.05)"},
+    "min_trade_interval": {"label": "最小交易间隔(分钟)", "description": "最小交易间隔分钟数 (建议1-60)"},
+    "max_trades_per_day": {"label": "每日最大交易次数", "description": "每日最大交易次数 (建议10-200)"},
+    # 动态网格
+    "dynamic_grid": {"label": "动态网格", "description": "是否启用动态网格调整 (true/false)"},
+    "enable_trend_following": {"label": "启用趋势跟踪", "description": "是否启用趋势跟踪功能 (true/false)"},
+    "grid_adjustment_threshold": {"label": "网格调整阈值", "description": "网格调整的价格变化阈值 (0.01-0.1)"},
+    "investment_per_grid": {"label": "每网格投资金额", "description": "每个网格的投资金额 (建议100-10000)"},
+    "max_grid_adjustments": {"label": "最大网格调整次数", "description": "最大网格调整次数 (建议1-10)"},
+    "max_grid_positions": {"label": "最大网格持仓数", "description": "最大网格持仓数量 (建议3-20)"},
+    "position_sizing": {"label": "仓位大小", "description": "仓位大小计算方式 (fixed/percentage)"},
+    # 风险管理
+    "risk_per_trade": {"label": "每笔交易风险", "description": "每笔交易的风险比例 (0.01-0.1)"},
+    "stop_loss_pct": {"label": "止损百分比", "description": "止损百分比 (0.01-0.2)"},
+    "take_profit_pct": {"label": "止盈百分比", "description": "止盈百分比 (0.01-0.5)"},
+    "max_positions": {"label": "最大持仓数", "description": "最大同时持仓数量 (1-50)"},
+    "risk_config": {"label": "风险配置", "description": "风险配置对象 (包含详细风险参数)"},
+    # 做市商
+    "spread": {"label": "价差", "description": "买卖价差 (0.0001-0.1，如0.002表示0.2%)"},
+    "quantity": {"label": "每单数量", "description": "每单数量 (0.001-1000)"},
+    "max_orders": {"label": "每侧最大订单数", "description": "每侧最大订单数 (1-20)"},
+    "enable_stop_loss": {"label": "启用止损", "description": "是否启用止损功能"},
+    "enable_take_profit": {"label": "启用止盈", "description": "是否启用止盈功能"},
+    "stop_loss": {"label": "止损金额(USDC)", "description": "止损金额，负数 (如-25表示亏损25 USDC时止损)"},
+    "take_profit": {"label": "止盈金额(USDC)", "description": "止盈金额，正数 (如50表示盈利50 USDC时止盈)"},
+    "enable_rebalance": {"label": "启用重平衡", "description": "是否启用资产重平衡功能"},
+    "base_asset_target": {"label": "基础资产目标比例(%)", "description": "基础资产目标比例 (0-100%，如30表示30%)"},
+    "rebalance_threshold": {"label": "重平衡触发阈值(%)", "description": "重平衡触发阈值 (1-50%，如15表示当偏差超过15%时触发)"},
+    # 对冲
+    "enable_hedge": {"label": "启用对冲", "description": "是否启用对冲功能 (降低方向性风险)"},
+    "hedge_threshold": {"label": "对冲触发阈值", "description": "对冲触发阈值 (0.1-1.0，如0.5表示持仓暴露超过50%时触发)"},
+    "hedge_size_ratio": {"label": "对冲比例", "description": "对冲比例 (0.1-1.0，如0.8表示对冲80%的持仓)"},
+    "max_position_exposure": {"label": "最大持仓暴露倍数", "description": "最大持仓暴露倍数 (0.1-5.0，限制单边风险)"},
+}
+
+
+def get_param_meta(strategy_template, param_name: str) -> Dict[str, str]:
+    """获取参数的标签/说明：优先策略模板自定义(param_meta)，否则用共享字典，都没有则返回空。
+
+    前端据此显示：有 label 用 label（中文），没有则回退显示英文参数名。
+    """
+    if strategy_template is not None and getattr(strategy_template, 'param_meta', None):
+        if param_name in strategy_template.param_meta:
+            return strategy_template.param_meta[param_name]
+    return SHARED_PARAM_META.get(param_name, {})
+
 
 class StrategyConfigManager:
     """策略配置管理器"""

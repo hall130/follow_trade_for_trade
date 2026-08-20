@@ -163,8 +163,8 @@ class TelegramBotUserService:
                                 self.db_pool.execute("""
                                     INSERT INTO user_permissions (user_id, module_code, permission_level, granted_by, granted_at)
                                     VALUES (%s, %s, %s, NULL, NOW())
-                                    ON DUPLICATE KEY UPDATE 
-                                        permission_level = VALUES(permission_level),
+                                    ON CONFLICT (user_id, module_code) DO UPDATE SET 
+                                        permission_level = EXCLUDED.permission_level,
                                         granted_at = NOW()
                                 """, (user_id, module_code, permission_level))
                             except Exception as perm_error:

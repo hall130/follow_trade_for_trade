@@ -77,14 +77,14 @@ class BinanceRESTClient(BaseRESTClient):
         try:
             async with aiohttp.ClientSession() as session:
                 if method == 'GET':
-                    async with session.get(url, headers=headers, params=params) as response:
+                    async with session.get(url, headers=headers, params=params, proxy=self.proxy) as response:
                         result = await response.json()
                 elif method == 'POST':
                     if data:
-                        async with session.post(url, headers=headers, params=params, data=json.dumps(data)) as response:
+                        async with session.post(url, headers=headers, params=params, data=json.dumps(data), proxy=self.proxy) as response:
                             result = await response.json()
                     else:
-                        async with session.post(url, headers=headers, params=params) as response:
+                        async with session.post(url, headers=headers, params=params, proxy=self.proxy) as response:
                             result = await response.json()
                 else:
                     raise ValueError(f"不支持的HTTP方法: {method}")

@@ -26,15 +26,14 @@ class OKXRESTClient(BaseRESTClient):
     
     def __init__(self, api_key: str, api_secret: str, passphrase: str, is_demo: bool = True):
         super().__init__(api_key, api_secret, passphrase, is_demo)
-        
-        # 根据是否为演示账户选择不同的URL
-        if is_demo:
-            self.base_url = "https://www.okx.com"
-            self.api_url = "https://www.okx.com/api/v5"
-        else:
-            self.base_url = "https://www.okx.com"
-            self.api_url = "https://www.okx.com/api/v5"
-    
+
+        # OKX实盘和模拟盘的REST API地址是相同的
+        # 参考: https://www.okx.com/docs-v5/zh/#overview-production-trading-services
+        self.base_url = "https://openapi.okx.com"
+        self.api_url = "https://openapi.okx.com/api/v5"
+
+        # 出网代理由基类 BaseRESTClient.__init__ 统一解析为 self.proxy（为空则直连）。
+
     def _get_exchange_type(self) -> ExchangeType:
         """获取交易所类型"""
         return ExchangeType.OKX
@@ -111,6 +110,9 @@ class OKXRESTClient(BaseRESTClient):
             headers = {
                 'Content-Type': 'application/json'
             }
+            # 模拟盘的公共接口也需要添加模拟盘标记
+            if self.is_demo:
+                headers['x-simulated-trading'] = '1'
         else:
             headers = self._get_headers(method, request_path, body)
         
@@ -127,14 +129,14 @@ class OKXRESTClient(BaseRESTClient):
                 
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     if method == 'GET':
-                        async with session.get(url, headers=headers) as response:
+                        async with session.get(url, headers=headers, proxy=self.proxy) as response:
                             result = await response.json()
                     elif method == 'POST':
                         if data:
-                            async with session.post(url, headers=headers, data=body) as response:
+                            async with session.post(url, headers=headers, data=body, proxy=self.proxy) as response:
                                 result = await response.json()
                         else:
-                            async with session.post(url, headers=headers) as response:
+                            async with session.post(url, headers=headers, proxy=self.proxy) as response:
                                 result = await response.json()
                     else:
                         raise ValueError(f"不支持的HTTP方法: {method}")

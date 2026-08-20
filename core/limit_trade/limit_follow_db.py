@@ -385,11 +385,11 @@ class LimitFollowDB:
             sql = """INSERT INTO limit_follow_configs 
                      (config_key, config_value, config_type, description, enabled) 
                      VALUES (%s, %s, %s, %s, %s)
-                     ON DUPLICATE KEY UPDATE 
-                     config_value = VALUES(config_value), 
-                     config_type = VALUES(config_type),
-                     description = VALUES(description),
-                     enabled = VALUES(enabled),
+                     ON CONFLICT (config_key) DO UPDATE SET 
+                     config_value = EXCLUDED.config_value, 
+                     config_type = EXCLUDED.config_type,
+                     description = EXCLUDED.description,
+                     enabled = EXCLUDED.enabled,
                      updated_at = CURRENT_TIMESTAMP"""
             
             params = (

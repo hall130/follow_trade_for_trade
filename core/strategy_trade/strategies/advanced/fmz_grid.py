@@ -29,7 +29,10 @@ class FMZGridStrategy(StrategyBase):
     def __init__(self, name: str, symbol: str, config: Dict[str, Any]):
         super().__init__(name, symbol, config)
         self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
-        
+
+        # K线周期（用于历史数据预热）
+        self.timeframe = '1m'  # 使用1分钟K线
+
         # 策略参数（确保类型转换）
         ratio_value = self.get_parameter('ratio', 0.5)
         self.ratio = float(ratio_value) if ratio_value is not None else 0.5  # 目标币种比例（0-1之间）

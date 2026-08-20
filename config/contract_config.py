@@ -1092,40 +1092,92 @@ INVERSE_CONTRACT_TICK_SZ = {
 }
 
 # ============================================================================
+# 动态规格接入
+# ============================================================================
+# 启动时 contract_spec_manager 会从交易所拉取真实规格填充动态缓存。
+# 下面所有 getter 优先查动态缓存（key 为 OKX 格式符号），未命中再落静态表。
+# 这样 40+ 调用点无需改动（签名不变），且新增/Binance 品种也能拿到正确规格。
+
+def _dynamic_spec(symbol):
+    """返回动态缓存里的规格 dict，未命中或管理器未就绪返回 None。"""
+    try:
+        from config.contract_spec_manager import get_spec
+        return get_spec(symbol)
+    except Exception:
+        return None
+
+# 已对未知品种告警过的符号，避免刷屏
+_WARNED_UNKNOWN = set()
+
+def _warn_unknown(symbol, field):
+    if symbol not in _WARNED_UNKNOWN:
+        _WARNED_UNKNOWN.add(symbol)
+        try:
+            from utils.logger import logger
+            logger.warning(f"[合约规格] 未知品种 {symbol}（取 {field} 时），"
+                           f"动态缓存与静态表均无记录，使用默认值")
+        except Exception:
+            pass
+
+# ============================================================================
 # 智能识别函数
 # ============================================================================
 
 def is_inverse_contract(symbol):
     """判断是否为币本位合约"""
+    spec = _dynamic_spec(symbol)
+    if spec is not None:
+        # 动态缓存以符号后缀区分；-USD-SWAP 视为币本位
+        return symbol.endswith('-USD-SWAP')
     return symbol in INVERSE_CONTRACT_MULTIPLIERS
 
 def get_contract_sz_precision(symbol):
-    """获取合约张数精度（智能识别合约类型）"""
-    if is_inverse_contract(symbol):
+    """获取合约张数精度（优先动态缓存）"""
+    spec = _dynamic_spec(symbol)
+    if spec is not None:
+        return spec['sz_precision']
+    if symbol in INVERSE_CONTRACT_MULTIPLIERS:
         return INVERSE_CONTRACT_SZ_PRECISION.get(symbol, 1)
-    else:
-        return CONTRACT_SZ_PRECISION.get(symbol, 0)
+    if symbol in CONTRACT_SZ_PRECISION:
+        return CONTRACT_SZ_PRECISION[symbol]
+    _warn_unknown(symbol, 'sz_precision')
+    return 0
 
 def get_contract_min_sz(symbol):
-    """获取合约最小张数（智能识别合约类型）"""
-    if is_inverse_contract(symbol):
+    """获取合约最小张数（优先动态缓存）"""
+    spec = _dynamic_spec(symbol)
+    if spec is not None:
+        return spec['min_sz']
+    if symbol in INVERSE_CONTRACT_MULTIPLIERS:
         return INVERSE_CONTRACT_MIN_SZ.get(symbol, 1.0)
-    else:
-        return CONTRACT_MIN_SZ.get(symbol, 1)
+    if symbol in CONTRACT_MIN_SZ:
+        return CONTRACT_MIN_SZ[symbol]
+    _warn_unknown(symbol, 'min_sz')
+    return 1
 
 def get_contract_multiplier(symbol):
-    """获取合约乘数（智能识别合约类型）"""
-    if is_inverse_contract(symbol):
-        return INVERSE_CONTRACT_MULTIPLIERS.get(symbol, 10.0)
-    else:
-        return CONTRACT_MULTIPLIERS.get(symbol, 1)
+    """获取合约乘数（优先动态缓存）"""
+    spec = _dynamic_spec(symbol)
+    if spec is not None:
+        return spec['multiplier']
+    if symbol in INVERSE_CONTRACT_MULTIPLIERS:
+        return INVERSE_CONTRACT_MULTIPLIERS[symbol]
+    if symbol in CONTRACT_MULTIPLIERS:
+        return CONTRACT_MULTIPLIERS[symbol]
+    _warn_unknown(symbol, 'multiplier')
+    return 1
 
 def get_contract_tick_sz(symbol):
-    """获取合约价格精度（智能识别合约类型）"""
-    if is_inverse_contract(symbol):
+    """获取合约价格精度（优先动态缓存）"""
+    spec = _dynamic_spec(symbol)
+    if spec is not None:
+        return spec['tick_sz']
+    if symbol in INVERSE_CONTRACT_MULTIPLIERS:
         return INVERSE_CONTRACT_TICK_SZ.get(symbol, 0.01)
-    else:
-        return CONTRACT_TICK_SZ.get(symbol, 0.01)  # U本位默认价格精度
+    if symbol in CONTRACT_TICK_SZ:
+        return CONTRACT_TICK_SZ[symbol]
+    _warn_unknown(symbol, 'tick_sz')
+    return 0.01  # 默认价格精度
 
 def get_contract_value_in_usdt(symbol, sz):
     """计算合约张数对应的USDT价值（智能识别合约类型）"""
@@ -1147,10 +1199,7 @@ def get_contract_sz_from_usdt_value(symbol, usdt_value):
 
 def get_contract_tick_sz_from_usdt_value(symbol):
     """根据USDT价值计算需要的合约价格精度（智能识别合约类型）"""
-    if is_inverse_contract(symbol):
-        return INVERSE_CONTRACT_TICK_SZ.get(symbol, 0.01)
-    else:
-        return get_contract_tick_sz(symbol)  # U本位默认价格精度
+    return get_contract_tick_sz(symbol)  # 已内建动态缓存优先
 
 def list_inverse_contracts():
     """列出所有币本位合约"""

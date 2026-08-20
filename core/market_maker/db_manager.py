@@ -298,12 +298,12 @@ class MarketMakerDBManager:
                 INSERT INTO market_maker_status 
                 (account_name, symbol, status, process_id, start_time, error_message)
                 VALUES (%s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    status = VALUES(status),
-                    process_id = VALUES(process_id),
-                    start_time = CASE WHEN VALUES(status) = 'running' AND start_time IS NULL THEN NOW() ELSE start_time END,
-                    stop_time = CASE WHEN VALUES(status) = 'stopped' THEN NOW() ELSE stop_time END,
-                    error_message = VALUES(error_message),
+                ON CONFLICT (account_name, symbol) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    process_id = EXCLUDED.process_id,
+                    start_time = CASE WHEN EXCLUDED.status = 'running' AND start_time IS NULL THEN NOW() ELSE start_time END,
+                    stop_time = CASE WHEN EXCLUDED.status = 'stopped' THEN NOW() ELSE stop_time END,
+                    error_message = EXCLUDED.error_message,
                     last_update = NOW()
             """
             

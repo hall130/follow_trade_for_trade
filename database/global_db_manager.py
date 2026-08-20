@@ -10,89 +10,12 @@ import asyncio
 import threading
 from typing import Optional, Union
 import concurrent.futures
-import pymysql
 from config.config import get_mysql_config
 from utils.logger import logger
 
-# 直接导入DBUtils，避免循环导入
-try:
-    from dbutils.pooled_db import PooledDB
-    DBUTILS_AVAILABLE = True
-except ImportError:
-    logger.warning("DBUtils不可用，将使用简化的数据库连接")
-    DBUTILS_AVAILABLE = False
-    PooledDB = None
-
-class MySQLPool:
-    """MySQL连接池包装类"""
-    def __init__(self, host, user, password, db, port=3306, mincached=2, maxcached=10):
-        self.host = host
-        self.user = user
-        self.password = password
-        self.db = db
-        self.port = port
-        
-        if DBUTILS_AVAILABLE and PooledDB:
-            self.pool = PooledDB(
-                creator=pymysql,
-                host=host, user=user, password=password, db=db, port=port,
-                mincached=mincached, maxcached=maxcached,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=True
-            )
-        else:
-            # Fallback: 使用简单的连接
-            self.pool = None
-            logger.warning("使用简化的数据库连接（无连接池）")
-    
-    def get_conn(self):
-        """获取数据库连接"""
-        if self.pool:
-            return self.pool.connection()
-        else:
-            # Fallback: 直接创建连接
-            return pymysql.connect(
-                host=self.host,
-                user=self.user,
-                password=self.password,
-                db=self.db,
-                port=self.port,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=True
-            )
-    
-    def query(self, sql, args=None):
-        """执行查询"""
-        with self.get_conn().cursor() as cursor:
-            cursor.execute(sql, args or ())
-            return cursor.fetchall()
-    
-    def query_one(self, sql, args=None):
-        """查询单条记录，返回第一条结果或None"""
-        result = self.query(sql, args)
-        if result and len(result) > 0:
-            return result[0]
-        return None
-    
-    def execute(self, sql, args=None):
-        """执行更新并返回最后插入的ID"""
-        with self.get_conn().cursor() as cursor:
-            cursor.execute(sql, args or ())
-            return cursor.lastrowid
-    
-    def execute_with_rowcount(self, sql, args=None):
-        """执行更新并返回影响的行数"""
-        with self.get_conn().cursor() as cursor:
-            cursor.execute(sql, args or ())
-            return cursor.rowcount
-    
-    def executemany(self, sql, args_list):
-        """批量执行更新"""
-        with self.get_conn().cursor() as cursor:
-            cursor.executemany(sql, args_list)
-            return cursor.rowcount
+# 全局连接池统一复用 database/db.py 里迁移到 PostgreSQL 的 MySQLPool 实现，
+# 避免两套连接池 + 两份驱动逻辑漂移。
+from database.db import MySQLPool  # 已迁移至 psycopg2
 
 
 class GlobalDBManager:
@@ -155,7 +78,7 @@ class GlobalDBManager:
     def _create_pool(self) -> Optional[MySQLPool]:
         """创建数据库连接池的内部方法"""
         try:
-            mysql_config = get_mysql_config()
+            mysql_config = dict(get_mysql_config())  # 拷贝，避免污染模块级配置字典
             # 优化连接池配置（提高并发能力）
             mysql_config["mincached"] = 20     # 最小连接数（提高以应对高并发）
             mysql_config["maxcached"] = 100    # 最大连接数（提高以应对高并发）

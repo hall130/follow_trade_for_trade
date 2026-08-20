@@ -43,6 +43,9 @@ class PerpGridStrategy(StrategyBase):
         super().__init__(name, symbol, config)
         self.tick_level = True  # 逐 tick 报价：每次行情推送都触发
 
+        # K线周期（用于历史数据预热）
+        self.timeframe = '1m'  # 使用1分钟K线
+
         # ── 核心网格参数 ──────────────────────────────────
         grid_value_v = self.get_parameter('grid_value', 500.0)
         self.grid_value = float(grid_value_v) if grid_value_v is not None else 500.0  # 单格交易价值（USDT）

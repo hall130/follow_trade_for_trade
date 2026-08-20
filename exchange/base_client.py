@@ -217,7 +217,18 @@ class BaseRESTClient(ABC):
         self.passphrase = passphrase
         self.is_demo = is_demo
         self.exchange_type = self._get_exchange_type()
-    
+        # 出网代理（国内网络环境访问交易所需要）。为空则直连。
+        self.proxy = self._resolve_proxy()
+
+    @staticmethod
+    def _resolve_proxy() -> Optional[str]:
+        """解析代理地址，失败时安全退化为直连（返回 None）。"""
+        try:
+            from config.config import get_proxy_url
+            return get_proxy_url()
+        except Exception:
+            return None
+
     @abstractmethod
     def _get_exchange_type(self) -> ExchangeType:
         """获取交易所类型"""
@@ -321,7 +332,9 @@ class BaseWebSocketClient(ABC):
         self.exchange_type = self._get_exchange_type()
         self._subscriptions = {}
         self._callbacks = {}
-        
+        # 出网代理（国内网络环境访问交易所 WS 需要）。为空则直连。
+        self.proxy = BaseRESTClient._resolve_proxy()
+
         # 初始化状态机
         self._state_machine = WebSocketStateMachine(self.exchange_type.value)
         self._setup_state_callbacks()
